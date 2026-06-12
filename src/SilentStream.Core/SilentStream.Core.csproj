@@ -11,6 +11,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
     <PackageReference Include="NLog" Version="5.3.4" />
+    <!-- Compiles everywhere; DPAPI throws PlatformNotSupportedException off-Windows. -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

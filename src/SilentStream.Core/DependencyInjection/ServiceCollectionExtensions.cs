@@ -18,6 +18,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddSilentStreamCore(this IServiceCollection services)
     {
         services.AddSingleton<ILogService, LogService>();
+        services.AddSingleton<ITokenProtector, DpapiTokenProtector>();
         services.AddSingleton<IConfigStore, ConfigStore>();
         services.AddSingleton<IScreenCaptureSource, ScreenCaptureSource>();
         services.AddSingleton<IAudioMixer, AudioMixer>();

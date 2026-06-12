@@ -52,6 +52,13 @@ public class ContractsScaffoldingTests
     }
 
     [Fact]
+    public void Token_protector_is_registered_as_an_additive_contract()
+    {
+        using var provider = BuildProvider();
+        Assert.NotNull(provider.GetService<ITokenProtector>());
+    }
+
+    [Fact]
     public void Orchestrator_starts_in_idle_state()
     {
         using var provider = BuildProvider();

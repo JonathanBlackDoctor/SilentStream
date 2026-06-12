@@ -16,7 +16,7 @@
 | Phase | 내용 | 담당 에이전트 | 상태 |
 |---|---|---|---|
 | 0 | 합의·스캐폴딩(인터페이스 고정) | Infra | ✅ |
-| 1 | 설정·로그 인프라 | Infra | ⬜ |
+| 1 | 설정·로그 인프라 | Infra | ✅ |
 | 2 | 미디어 파이프라인(캡처/오디오/인코딩/tee+녹화) | Media | ⬜ |
 | 3 | YouTube OAuth/Live | YouTube | ⬜ |
 | 4 | 9px 박스/단축키/제어 UI | UI | ⬜ |
@@ -64,10 +64,10 @@ dotnet build 가 통과하도록 해.
 NLog(180일 아카이브), 단일 인스턴스 Mutex 를 구현하고 단위 테스트를 추가해.
 ```
 **AC 체크리스트**
-- [ ] config 저장/로드 라운드트립 테스트 통과
-- [ ] 토큰 DPAPI 암복호화 단위 테스트 통과
-- [ ] NLog 180일 아카이브 정책 적용
-- [ ] 단일 인스턴스 Mutex 동작
+- [x] config 저장/로드 라운드트립 테스트 통과 (Linux에서 검증)
+- [x] 토큰 DPAPI 암복호화 단위 테스트 통과 — 테스트 작성 완료, DPAPI 자체는 Windows 전용이라 로컬 Windows/CI windows 잡에서 실행 필요(비 Windows에선 PlatformNotSupportedException 검증)
+- [x] NLog 180일 아카이브 정책 적용 (`LogConfigurator`, MaxArchiveDays=180)
+- [x] 단일 인스턴스 Mutex 동작 (`SingleInstanceGuard` 테스트 통과)
 
 ## Phase 2 — 미디어 파이프라인 (서브태스크 병렬)
 

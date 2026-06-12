@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace SilentStream.Core.Models;
 
 /// <summary>
@@ -8,6 +10,8 @@ public sealed class AppConfig
 {
     public int Version { get; set; } = 1;
 
+    // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
+    [JsonPropertyName("youtube")]
     public YouTubeConfig YouTube { get; set; } = new();
 
     public EncodingConfig Encoding { get; set; } = new();
