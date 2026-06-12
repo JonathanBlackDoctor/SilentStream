@@ -332,7 +332,7 @@ Live ──(stop/shutdown)──► Stopping → Idle
 ---
 
 ## 10. 산출물 체크리스트 (Orchestrator용)
-- [ ] Phase 0 인터페이스 고정 & 빌드
+- [x] Phase 0 인터페이스 고정 & 빌드
 - [ ] Phase 1 Config/Log/단일인스턴스
 - [ ] Phase 2 캡처/오디오/인코딩/tee+녹화
 - [ ] Phase 3 YouTube OAuth/Live

@@ -15,7 +15,7 @@
 
 | Phase | 내용 | 담당 에이전트 | 상태 |
 |---|---|---|---|
-| 0 | 합의·스캐폴딩(인터페이스 고정) | Infra | ⬜ |
+| 0 | 합의·스캐폴딩(인터페이스 고정) | Infra | ✅ |
 | 1 | 설정·로그 인프라 | Infra | ⬜ |
 | 2 | 미디어 파이프라인(캡처/오디오/인코딩/tee+녹화) | Media | ⬜ |
 | 3 | YouTube OAuth/Live | YouTube | ⬜ |
@@ -51,9 +51,9 @@ IConfigStore, ILogService)를 빈 구현과 함께 정의해. DI 컨테이너를
 dotnet build 가 통과하도록 해.
 ```
 **AC 체크리스트**
-- [ ] 솔루션이 인터페이스+빈 구현으로 `dotnet build` 성공
-- [ ] `Core/Contracts` 인터페이스 8종 정의 완료
-- [ ] DI 컨테이너 구성 완료
+- [x] 솔루션이 인터페이스+빈 구현으로 `dotnet build` 성공 — Core/Tests는 Linux에서 빌드·테스트 통과(11 tests). WPF App(`net8.0-windows`)은 로컬 Windows 빌드 필요.
+- [x] `Core/Contracts` 인터페이스 8종 정의 완료
+- [x] DI 컨테이너 구성 완료 (`AddSilentStreamCore`, 컨테이너 resolve 테스트 통과)
 
 ## Phase 1 — 설정·로그 인프라
 

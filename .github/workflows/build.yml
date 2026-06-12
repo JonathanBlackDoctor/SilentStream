@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  # Platform-neutral Core + tests build and run on Linux (fast feedback).
+  core-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Restore
+        run: dotnet restore src/SilentStream.Core/SilentStream.Core.csproj tests/SilentStream.Tests/SilentStream.Tests.csproj
+      - name: Build Core
+        run: dotnet build src/SilentStream.Core/SilentStream.Core.csproj -c Release --no-restore
+      - name: Test
+        run: dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release
+
+  # Full solution (incl. the WPF host) builds only on Windows.
+  full-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Build solution
+        run: dotnet build SilentStream.sln -c Release
