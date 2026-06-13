@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Data;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Hotkeys;
 using SilentStream.Core.Logging;
@@ -24,6 +25,10 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly ILogService _log;
 
     private CancellationTokenSource? _startCts;
+
+    // Guards LogLines so it can be fed from background logging threads while WPF's
+    // virtualizing ListBox reads it on the UI thread (BindingOperations.EnableCollectionSynchronization).
+    private readonly object _logSync = new();
 
     public MainViewModel(
         IStreamOrchestrator orchestrator,
@@ -56,18 +61,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _orchestrator.StateChanged += (_, state) => OnUi(() => ApplyState(state));
         _orchestrator.MetricsUpdated += (_, metrics) => OnUi(() => ApplyMetrics(metrics));
 
-        foreach (var line in InMemoryLogSink.Snapshot())
+        // Let WPF synchronise on _logSync so log lines appended from background
+        // threads don't desync the virtualizing ListBox's item generator.
+        BindingOperations.EnableCollectionSynchronization(LogLines, _logSync);
+        lock (_logSync)
         {
-            LogLines.Add(line);
-        }
-        InMemoryLogSink.LineAdded += line => OnUi(() =>
-        {
-            LogLines.Add(line);
-            while (LogLines.Count > InMemoryLogSink.Capacity)
+            foreach (var line in InMemoryLogSink.Snapshot())
             {
-                LogLines.RemoveAt(0);
+                LogLines.Add(line);
             }
-        });
+        }
+        InMemoryLogSink.LineAdded += line =>
+        {
+            lock (_logSync)
+            {
+                LogLines.Add(line);
+                while (LogLines.Count > InMemoryLogSink.Capacity)
+                {
+                    LogLines.RemoveAt(0);
+                }
+            }
+        };
 
         RefreshDevices();
         RefreshRecordingStatus();
