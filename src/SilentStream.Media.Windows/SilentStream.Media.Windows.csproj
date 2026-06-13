@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Windows-only capture/audio implementations (DXGI Desktop Duplication, WASAPI).
+         Does NOT build on Linux; verified by the windows CI job / local Windows. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>SilentStream.Media.Windows</RootNamespace>
+    <!-- Pointer access for the DXGI cursor-shape buffer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Allows compiling (not running) this project on Linux dev boxes/CI. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.3.0" />
+    <PackageReference Include="SharpDX.Direct3D11" Version="4.2.0" />
+    <PackageReference Include="SharpDX.DXGI" Version="4.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SilentStream.Core\SilentStream.Core.csproj" />
+  </ItemGroup>
+
+</Project>

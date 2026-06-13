@@ -1,0 +1,49 @@
+<Window x:Class="SilentStream.App.ConsentWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SilentStream 사용 동의"
+        Width="560" Height="460"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="{StaticResource BgBrush}"
+        Topmost="True">
+    <!-- 최초 실행 시 1회 표시되는 동의 화면 (계획서 §1.1 / §3.11) -->
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="SilentStream 사용 전 확인해 주세요"
+                   FontSize="18" FontWeight="Bold" Margin="0,0,0,12" />
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <TextBlock TextWrapping="Wrap" LineHeight="22">
+                이 프로그램은 다음 동작을 백그라운드에서 자동으로 수행합니다.<LineBreak />
+                <LineBreak />
+                • 주 모니터 화면 전체를 캡처합니다 (마우스 커서 포함).<LineBreak />
+                • 시스템 오디오와 마이크 소리를 캡처·혼합합니다.<LineBreak />
+                • 캡처한 화면과 소리를 사용자의 YouTube 채널로 송출합니다 (일부 공개).<LineBreak />
+                • 동일한 내용을 지정한 폴더에 로컬 녹화 파일로 저장합니다 (기본 7일 보관).<LineBreak />
+                <LineBreak />
+                <Run FontWeight="Bold">중요:</Run> 본 프로그램은 사용자 본인 소유 PC에서
+                본인의 화면과 음성을 기록·방송하는 목적에만 사용할 수 있습니다.
+                타인의 PC, 화면, 음성을 동의 없이 캡처하는 용도의 사용은 금지되며,
+                관련 법령에 따라 처벌될 수 있습니다. 자세한 내용은 최종 사용자
+                라이선스 계약(EULA)을 참고하세요.
+            </TextBlock>
+        </ScrollViewer>
+
+        <CheckBox Grid.Row="2" x:Name="AgreeCheck" Margin="0,14,0,10"
+                  Content="위 내용을 모두 확인했으며, 본인 소유 PC의 자기 기록·방송 목적으로만 사용하는 데 동의합니다." />
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="동의하고 시작" Width="120" Margin="0,0,8,0"
+                    IsEnabled="{Binding IsChecked, ElementName=AgreeCheck}"
+                    Click="OnAgree" />
+            <Button Content="종료" Width="84" Click="OnDecline" />
+        </StackPanel>
+    </Grid>
+</Window>

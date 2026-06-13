@@ -1,0 +1,19 @@
+<Window x:Class="SilentStream.App.StatusIndicator.StatusBoxWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="9" Height="9"
+        Left="0" Top="0"
+        WindowStyle="None" ResizeMode="NoResize"
+        AllowsTransparency="True" Background="Transparent"
+        Topmost="True" ShowInTaskbar="False" ShowActivated="False"
+        IsHitTestVisible="False" Focusable="False">
+    <!-- 9x9px 상태 박스 (계획서 §3.2): 좌상단 고정, 정적, 클릭 통과.
+         WS_EX_* 확장 스타일은 코드비하인드(SourceInitialized)에서 적용. -->
+    <Grid>
+        <Rectangle x:Name="StateRect" Fill="#F1C40F" />
+        <!-- 녹화 실패 보조 표시: 우하단 1px 보라색 (계획서 §3.2 선택 사양) -->
+        <Rectangle x:Name="RecordingFailDot" Width="1" Height="1"
+                   HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                   Fill="#9B59B6" Visibility="Collapsed" />
+    </Grid>
+</Window>

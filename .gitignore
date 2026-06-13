@@ -35,3 +35,8 @@ ffmpeg/*.exe
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 인스톨러 빌드 산출물 (installer/SilentStream.iss 참고)
+installer/publish/
+installer/ffmpeg/
+installer/output/

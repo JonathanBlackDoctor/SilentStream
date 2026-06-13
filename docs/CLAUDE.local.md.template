@@ -15,6 +15,9 @@
 
 - Google Cloud 프로젝트명/ID:
 - OAuth 클라이언트(데스크톱 앱) 자격증명 파일 위치(예: `client_secret.json` — 커밋 금지):
+  - 앱이 읽는 위치(고정): `%AppData%\SilentStream\client_secret.json`
+  - Google Cloud Console → API 및 서비스 → 사용자 인증 정보 → "데스크톱 앱" OAuth 클라이언트 생성 후 JSON 다운로드 → 위 경로에 복사
+  - YouTube Data API v3 활성화 필요
 - 테스트 채널 / 라이브 스트리밍 활성화 여부:
 
 ## 로컬 실행 메모
