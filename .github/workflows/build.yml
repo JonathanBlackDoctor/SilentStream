@@ -15,7 +15,9 @@ jobs:
         with:
           dotnet-version: "8.0.x"
       - name: Restore
-        run: dotnet restore src/SilentStream.Core/SilentStream.Core.csproj tests/SilentStream.Tests/SilentStream.Tests.csproj
+        run: |
+          dotnet restore src/SilentStream.Core/SilentStream.Core.csproj
+          dotnet restore tests/SilentStream.Tests/SilentStream.Tests.csproj
       - name: Build Core
         run: dotnet build src/SilentStream.Core/SilentStream.Core.csproj -c Release --no-restore
       - name: Test
@@ -33,3 +35,59 @@ jobs:
           dotnet-version: "8.0.x"
       - name: Build solution
         run: dotnet build SilentStream.sln -c Release
+
+  # Builds a downloadable self-contained Windows installer (Setup.exe) and uploads
+  # it as a workflow artifact. Self-contained => the test PC needs NO .NET runtime.
+  # Runs only after the Windows solution build passes.
+  installer-windows:
+    needs: full-windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # 1) Publish the WPF host self-contained (bundles the .NET + ASP.NET Core runtime).
+      - name: Publish app (self-contained, win-x64)
+        run: >
+          dotnet publish src/SilentStream.App/SilentStream.App.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=false
+          -o installer/publish
+
+      # 2) Fetch a static ffmpeg.exe (gitignored in the repo) into installer/ffmpeg/.
+      #    GPL build is fine for internal testing.
+      - name: Download FFmpeg
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
+          $exe = Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $exe) { throw "ffmpeg.exe not found in archive" }
+          New-Item -ItemType Directory -Force -Path installer/ffmpeg | Out-Null
+          Copy-Item $exe.FullName -Destination installer/ffmpeg/ffmpeg.exe -Force
+
+      # 3) Install Inno Setup (provides ISCC.exe + bundled Korean.isl).
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      # 4) Compile the installer. ISCC resolves [Files] Source paths relative to the
+      #    .iss directory (installer/), so publish/, ffmpeg/, output/ all line up.
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc installer\SilentStream.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+
+      # 5) Upload the Setup.exe so it can be downloaded from the Actions run page.
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SilentStream-Setup
+          path: installer/output/SilentStream-Setup-*.exe
+          if-no-files-found: error
