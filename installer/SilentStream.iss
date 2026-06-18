@@ -1,8 +1,9 @@
 ; SilentStream Inno Setup 스크립트 (계획서 §3.11 / Phase 6)
-; 빌드 전 준비:
-;   1) dotnet publish src/SilentStream.App -c Release -r win-x64 --self-contained false -o installer\publish
+; 빌드 전 준비 (self-contained: 대상 PC에 .NET/ASP.NET Core 런타임 불필요):
+;   1) dotnet publish src/SilentStream.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o installer\publish
 ;   2) FFmpeg 정적 빌드(ffmpeg.exe)를 installer\ffmpeg\ 에 배치 (커밋 금지 — .gitignore 적용)
-;   3) ISCC.exe installer\SilentStream.iss
+;   3) OAuth 데스크톱 시크릿을 installer\secrets\client_secret.json 에 배치 (커밋 금지 — .gitignore 적용)
+;   4) ISCC.exe installer\SilentStream.iss
 
 #define MyAppName "SilentStream"
 #define MyAppVersion "0.1.0"
@@ -33,6 +34,11 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Source: "publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 ; FFmpeg 번들 (계획서 §3.11)
 Source: "ffmpeg\ffmpeg.exe"; DestDir: "{app}\ffmpeg"; Flags: ignoreversion
+; OAuth 데스크톱 클라이언트 시크릿 번들 — 대상 PC의 %AppData%\SilentStream\ 에 자동 배치(이미 있으면 보존).
+; 데스크톱 OAuth client는 기밀이 아니며(설치본은 gitignore), 사용자의 수동 복사 단계를 없애기 위함.
+; 설치 후 사용자가 할 일은 최초 1회 브라우저 OAuth 로그인뿐(토큰은 기기+계정 종속이라 사전 굽기 불가).
+; skipifsourcedoesntexist: 시크릿이 없는 환경(예: CI 체크아웃)에서는 컴파일러가 이 항목을 조용히 건너뛴다.
+Source: "secrets\client_secret.json"; DestDir: "{userappdata}\SilentStream"; Flags: onlyifdoesntexist skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName} 제어판"; Filename: "{app}\{#MyAppExeName}"

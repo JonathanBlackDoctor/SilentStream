@@ -40,3 +40,5 @@ desktop.ini
 installer/publish/
 installer/ffmpeg/
 installer/output/
+# OAuth 데스크톱 시크릿(설치본에 번들, 커밋 금지)
+installer/secrets/
