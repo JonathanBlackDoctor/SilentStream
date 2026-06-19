@@ -1,21 +1,22 @@
 using SilentStream.Core.Contracts;
-using Squirrel;
+using Velopack;
+using Velopack.Sources;
 
 namespace SilentStream.App.Updates;
 
 /// <summary>
-/// Squirrel auto-update (plan §3.11): checks the release feed periodically, applies
-/// updates in the background, and logs that the new version takes effect on the next
-/// start (i.e. the next boot of this always-on app). Uses Clowd.Squirrel, the
-/// maintained .NET 8 continuation of Squirrel.Windows.
+/// Velopack 자동 업데이트 (plan §3.11): GitHub Releases 피드를 6시간마다 확인하고, 새 버전이 있으면
+/// 백그라운드로 내려받아 <b>다음 종료/재시작 시 적용</b>되도록 예약한다(라이브 송출 중에는 강제 재시작하지
+/// 않는다). 개발 실행(미설치)·네트워크 실패는 조용히 건너뛴다. Clowd.Squirrel의 후속작 Velopack 사용.
 /// </summary>
 public sealed class AppUpdateManager(ILogService log) : IDisposable
 {
-    // 배포 피드 URL — 릴리스 인프라 확정 시 교체 (예: GitHub Releases 또는 정적 호스팅).
-    private const string UpdateUrl = "https://example.com/silentstream/releases";
+    // GitHub Releases 피드(공개 리포라 토큰 불필요). CI의 `vpk upload github` 가 게시하는 릴리스를 읽는다.
+    private const string RepoUrl = "https://github.com/JonathanBlackDoctor/obs-alternative";
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
     private CancellationTokenSource? _cts;
+    private string? _stagedVersion; // 이미 내려받아 적용 예약한 버전 — 중복 다운로드/대기 프로세스 방지.
 
     public void Start()
     {
@@ -27,7 +28,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
     {
         while (!ct.IsCancellationRequested)
         {
-            await CheckOnceAsync().ConfigureAwait(false);
+            await CheckOnceAsync(ct).ConfigureAwait(false);
             try
             {
                 await Task.Delay(CheckInterval, ct).ConfigureAwait(false);
@@ -39,21 +40,33 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
         }
     }
 
-    private async Task CheckOnceAsync()
+    private async Task CheckOnceAsync(CancellationToken ct)
     {
         try
         {
-            using var manager = new UpdateManager(UpdateUrl);
-            if (!manager.IsInstalledApp)
+            var manager = new UpdateManager(new GithubSource(RepoUrl, accessToken: null, prerelease: false));
+            if (!manager.IsInstalled)
             {
-                return; // dev run (not a Squirrel install) — nothing to update
+                return; // 개발 실행(Velopack 설치본 아님) — 업데이트 대상 없음
             }
 
-            var release = await manager.UpdateApp().ConfigureAwait(false);
-            if (release is not null)
+            var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+            if (update is null)
             {
-                log.Info($"업데이트 적용됨: v{release.Version} — 다음 시작 시 반영됩니다.");
+                return; // 최신 상태
             }
+
+            var version = update.TargetFullRelease.Version.ToString();
+            if (version == _stagedVersion)
+            {
+                return; // 이미 내려받아 적용 대기 중 — 다음 종료 때 반영된다.
+            }
+
+            await manager.DownloadUpdatesAsync(update, cancelToken: ct).ConfigureAwait(false);
+            // 라이브 송출을 끊지 않도록 즉시 재시작하지 않고, 앱/PC가 다음에 종료될 때 적용되도록 예약한다.
+            manager.WaitExitThenApplyUpdates(update, silent: true, restart: false);
+            _stagedVersion = version;
+            log.Info($"업데이트 다운로드 완료: v{version} — PC를 끄거나 앱을 재시작하면 적용됩니다.");
         }
         catch (Exception ex)
         {

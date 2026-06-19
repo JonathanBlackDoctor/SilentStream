@@ -1,3 +1,13 @@
+; ============================================================================
+; [DEPRECATED] 2026-06-19 부터 배포는 Velopack(자동 업데이트) 으로 전환되었습니다.
+;   - 신규 배포/업데이트: 버전 태그(vX.Y.Z) 푸시 → CI(.github/workflows/build.yml)가
+;     Velopack 패키지를 GitHub Releases 에 게시 → 앱이 6시간마다 자동 업데이트.
+;   - 로컬 패키징: docs/EXECUTION_GUIDE.md 의 "Velopack 릴리스" 절 참고(vpk pack/upload).
+; 이 .iss 는 더 이상 CI 에서 빌드하지 않습니다. 마법사 페이지(자동시작/녹화폴더/원격)와
+; 방화벽·config 초기화 로직은 앱 기본값 + 런타임(AutoStartManager/RemoteControlServer)으로
+; 이전되었으므로 참조용으로만 보존합니다.
+; ============================================================================
+;
 ; SilentStream Inno Setup 스크립트 (계획서 §3.11 / Phase 6)
 ; 빌드 전 준비 (self-contained: 대상 PC에 .NET/ASP.NET Core 런타임 불필요):
 ;   1) dotnet publish src/SilentStream.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o installer\publish

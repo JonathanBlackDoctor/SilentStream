@@ -46,6 +46,9 @@ public partial class App : Application
         _services = collection.BuildServiceProvider();
 
         var log = _services.GetRequiredService<ILogService>();
+        // Velopack 패키지에 동봉한 OAuth client_secret 을 사용자 폴더에 1회 배치(없을 때만).
+        // 기존 Inno [Files] onlyifdoesntexist 단계를 대체 — 토큰/시크릿 등 사용자 자산은 보존한다.
+        SeedBundledClientSecret(log);
         var configStore = _services.GetRequiredService<IConfigStore>();
         var config = configStore.Load();
 
@@ -84,6 +87,37 @@ public partial class App : Application
         log.Info("SilentStream 시작 완료 (백그라운드 대기)");
 
         _ = StartupSequence.RunAsync(_services, this);
+    }
+
+    /// <summary>
+    /// Copies the OAuth client secret bundled in the install dir to %AppData%\SilentStream
+    /// on first run (only when absent, so the user's token/secret survive updates). Velopack
+    /// ships client_secret.json next to the exe; a dev build without it is a silent no-op.
+    /// </summary>
+    private static void SeedBundledClientSecret(ILogService log)
+    {
+        try
+        {
+            var target = AppPaths.ClientSecretFile;
+            if (File.Exists(target))
+            {
+                return; // 사용자 자산 보존 (Inno onlyifdoesntexist 동등)
+            }
+
+            var bundled = Path.Combine(AppContext.BaseDirectory, "client_secret.json");
+            if (!File.Exists(bundled))
+            {
+                return; // 번들에 시크릿이 없는 빌드(로컬 dev 등) — 사용자가 수동 배치
+            }
+
+            Directory.CreateDirectory(AppPaths.AppDataDir);
+            File.Copy(bundled, target);
+            log.Info("번들된 OAuth client_secret.json 을 사용자 폴더에 배치했습니다.");
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"OAuth client_secret 배치 실패(최초 로그인 시 수동 배치가 필요할 수 있음): {ex.Message}");
+        }
     }
 
     /// <summary>Shows the consent dialog on first run; returns false when declined.</summary>

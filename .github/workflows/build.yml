@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: ["**"]
+    tags: ["v*"] # 버전 태그(v0.2.0 등)를 푸시하면 release-windows 가 GitHub Releases 에 게시
   pull_request:
 
 jobs:
@@ -36,29 +37,44 @@ jobs:
       - name: Build solution
         run: dotnet build SilentStream.sln -c Release
 
-  # Builds a downloadable self-contained Windows installer (Setup.exe) and uploads
-  # it as a workflow artifact. Self-contained => the test PC needs NO .NET runtime.
-  # Runs only after the Windows solution build passes.
-  installer-windows:
+  # Builds the Velopack release (Setup.exe + full/delta packages + release feed) and
+  # publishes it to GitHub Releases. The app's AppUpdateManager reads this feed every
+  # 6h and self-updates. Runs ONLY on a version tag (vX.Y.Z); regular pushes just build.
+  #
+  # Required repo secret: OAUTH_CLIENT_SECRET_JSON (the Google desktop OAuth client JSON).
+  # It is bundled into the package so a fresh install needs no manual secret copy.
+  release-windows:
     needs: full-windows
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
+    permissions:
+      contents: write # GitHub Release 생성 + 자산 업로드(기본 GITHUB_TOKEN)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
 
-      # 1) Publish the WPF host self-contained (bundles the .NET + ASP.NET Core runtime).
+      # 태그(v0.2.0)에서 패키지 버전을 추출한다.
+      - name: Resolve version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v', ''
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version: $v"
+
+      # 1) WPF 호스트를 self-contained 로 publish (대상 PC에 .NET/ASP.NET Core 런타임 불필요).
       - name: Publish app (self-contained, win-x64)
         run: >
           dotnet publish src/SilentStream.App/SilentStream.App.csproj
           -c Release -r win-x64 --self-contained true
           -p:PublishSingleFile=false
-          -o installer/publish
+          -p:Version=${{ steps.ver.outputs.version }}
+          -o publish
 
-      # 2) Fetch a static ffmpeg.exe (gitignored in the repo) into installer/ffmpeg/.
-      #    GPL build is fine for internal testing.
-      - name: Download FFmpeg
+      # 2) static ffmpeg.exe 를 publish/ffmpeg/ 에 동봉(FfmpegLocator 가 BaseDirectory\ffmpeg\ffmpeg.exe 탐색).
+      - name: Bundle FFmpeg
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -67,27 +83,52 @@ jobs:
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_tmp -Force
           $exe = Get-ChildItem -Path ffmpeg_tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
           if (-not $exe) { throw "ffmpeg.exe not found in archive" }
-          New-Item -ItemType Directory -Force -Path installer/ffmpeg | Out-Null
-          Copy-Item $exe.FullName -Destination installer/ffmpeg/ffmpeg.exe -Force
+          New-Item -ItemType Directory -Force -Path publish/ffmpeg | Out-Null
+          Copy-Item $exe.FullName -Destination publish/ffmpeg/ffmpeg.exe -Force
 
-      # 3) Install Inno Setup (provides ISCC.exe + bundled Korean.isl).
-      - name: Install Inno Setup
+      # 3) OAuth 데스크톱 클라이언트 시크릿을 동봉(앱이 최초 실행 시 %AppData% 로 1회 복사).
+      #    데스크톱 OAuth 시크릿은 사양상 기밀이 아니나, 리포 시크릿으로 주입해 git 추적은 피한다.
+      - name: Bundle OAuth client secret
         shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      # 4) Compile the installer. ISCC resolves [Files] Source paths relative to the
-      #    .iss directory (installer/), so publish/, ffmpeg/, output/ all line up.
-      - name: Build installer
-        shell: pwsh
+        env:
+          CLIENT_SECRET_JSON: ${{ secrets.OAUTH_CLIENT_SECRET_JSON }}
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc installer\SilentStream.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          if ([string]::IsNullOrWhiteSpace($env:CLIENT_SECRET_JSON)) {
+            throw "Repo secret OAUTH_CLIENT_SECRET_JSON is not set (Settings > Secrets and variables > Actions)."
+          }
+          Set-Content -Path publish/client_secret.json -Value $env:CLIENT_SECRET_JSON -Encoding utf8 -NoNewline
 
-      # 5) Upload the Setup.exe so it can be downloaded from the Actions run page.
-      - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: SilentStream-Setup
-          path: installer/output/SilentStream-Setup-*.exe
-          if-no-files-found: error
+      # 4) Velopack CLI(vpk) — 라이브러리(1.2.0)와 버전을 맞춘다.
+      - name: Install Velopack CLI
+        run: dotnet tool install -g vpk --version 1.2.0
+
+      # 5) 직전 릴리스를 ./Releases 로 내려받아 델타 업데이트의 베이스로 쓴다(최초 릴리스면 없음 → 무시).
+      - name: Download previous release (delta base)
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: vpk download github --repoUrl https://github.com/${{ github.repository }} --token $env:GITHUB_TOKEN
+
+      # 6) Velopack 패키지 생성: Setup.exe + 전체/델타 nupkg + releases.win.json (→ ./Releases).
+      - name: Pack with Velopack
+        run: >
+          vpk pack
+          --packId SilentStream
+          --packVersion ${{ steps.ver.outputs.version }}
+          --packDir publish
+          --mainExe SilentStream.exe
+          --packTitle SilentStream
+
+      # 7) GitHub Releases 에 게시(자산 업로드 + 릴리스 발행). 앱은 이 피드를 읽어 자동 업데이트한다.
+      - name: Publish to GitHub Releases
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          vpk upload github
+          --repoUrl https://github.com/${{ github.repository }}
+          --token $env:GITHUB_TOKEN
+          --publish
+          --releaseName "SilentStream ${{ steps.ver.outputs.version }}"
+          --tag ${{ github.ref_name }}

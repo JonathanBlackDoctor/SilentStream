@@ -9,6 +9,12 @@
     <RootNamespace>SilentStream.App</RootNamespace>
     <AssemblyName>SilentStream</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- Velopack 자동 업데이트: VelopackApp.Run()을 WPF 부팅보다 먼저 실행해야 하므로
+         커스텀 진입점(Program.Main)을 사용한다. App.xaml의 자동 생성 Main 대신 이걸 쓴다. -->
+    <StartupObject>SilentStream.App.Program</StartupObject>
+    <!-- 릴리스 버전(단일 진실 공급원). CI는 태그에서 Version 프로퍼티를 덮어쓰고
+         vpk pack 의 packVersion 에도 같은 값을 넘긴다. -->
+    <Version>0.1.0</Version>
     <!-- Allows compiling (not running) on Linux when the SDK ships WindowsDesktop
          (official MS SDK; Ubuntu's apt SDK cannot build WPF). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
@@ -18,8 +24,9 @@
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
     <!-- Microsoft.Win32.TaskScheduler wrapper (plan §5) -->
     <PackageReference Include="TaskScheduler" Version="2.12.2" />
-    <!-- Squirrel.Windows의 .NET 8 유지보수 포크 (plan §3.11 자동 업데이트) -->
-    <PackageReference Include="Clowd.Squirrel" Version="2.11.1" />
+    <!-- Velopack 자동 업데이트 (plan §3.11). Clowd.Squirrel의 유지보수 후속작 —
+         GitHub Releases 피드 + 델타 업데이트. 버전은 dotnet add package로 고정한다. -->
+    <PackageReference Include="Velopack" Version="1.2.0" />
   </ItemGroup>
 
   <!-- 임베디드 원격 제어 웹서버(Kestrel) — 확장계획서 §4.4/§10. 프레임워크 종속 배포 시
