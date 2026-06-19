@@ -286,24 +286,13 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             throw new InvalidOperationException("YouTube 인증에 실패했습니다.");
         }
 
-        // A watchdog restart (or a retry after a partial failure) creates a fresh broadcast, so
-        // complete the previous one first — otherwise it is orphaned in a non-complete state and
-        // the stream silently migrates to a new watch URL.
-        if (_session is not null)
-        {
-            using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                await _youtube.CompleteBroadcastAsync(_session.BroadcastId, completeCts.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                _log.Warn($"이전 브로드캐스트 완료 전이 실패(무시하고 계속): {ex.Message}");
-            }
-            _session = null;
-        }
-
-        _session = await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
+        // Reuse the existing broadcast across encoder restarts (watchdog/stall recovery). Creating
+        // a fresh broadcast on every attempt is what orphaned 7 broadcasts in the field test and
+        // silently migrated the stream to a new watch URL. EnableAutoStop=false keeps the broadcast
+        // alive across a brief feed drop, so the restarted encoder just reconnects to the same
+        // ingest key. A new broadcast is created only for a fresh session (none yet); the explicit
+        // StopAsync at end of session is the only place it is completed.
+        _session ??= await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
 
         var config = _configStore.Load();
         var recordingEnabled = config.Recording.Enabled;

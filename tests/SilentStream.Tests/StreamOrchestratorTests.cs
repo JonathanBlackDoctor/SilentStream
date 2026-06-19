@@ -179,6 +179,25 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Watchdog_restart_reuses_the_same_broadcast_no_orphans()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Equal(1, _youtube.CreateCalls);
+
+        _encoder.SimulateDeath();
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+
+        // The restart must reuse the existing broadcast, not spawn a new (orphan) one, and must
+        // not complete it mid-session — that was the field-test "7 orphan broadcasts" bug.
+        Assert.Equal(1, _youtube.CreateCalls);
+        Assert.Null(_youtube.CompletedBroadcastId);
+
+        await orchestrator.StopAsync();
+        Assert.Equal("bc-1", _youtube.CompletedBroadcastId); // completed only at shutdown
+    }
+
+    [Fact]
     public async Task Disabled_recording_streams_without_a_file()
     {
         var config = _configStore.Load();
