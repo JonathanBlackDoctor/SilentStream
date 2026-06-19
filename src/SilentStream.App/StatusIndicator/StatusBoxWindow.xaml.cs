@@ -7,7 +7,7 @@ using SilentStream.Core.Models;
 namespace SilentStream.App.StatusIndicator;
 
 /// <summary>
-/// The 9px status box (plan §3.2): top-left of the primary monitor, TopMost, static,
+/// The 6px status box (plan §3.2): top-left of the primary monitor, TopMost, static,
 /// click-through, hidden from Alt+Tab/taskbar via WS_EX_TRANSPARENT|LAYERED|TOOLWINDOW.
 /// 🟢 live / 🟡 connecting / 🔴 error-or-stopped.
 /// </summary>

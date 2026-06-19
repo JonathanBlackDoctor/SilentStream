@@ -86,6 +86,18 @@ jobs:
           New-Item -ItemType Directory -Force -Path publish/ffmpeg | Out-Null
           Copy-Item $exe.FullName -Destination publish/ffmpeg/ffmpeg.exe -Force
 
+      # 2b) cloudflared.exe 를 publish/cloudflared/ 에 동봉(CloudflaredManager 가
+      #     BaseDirectory\cloudflared\cloudflared.exe 탐색). remote.mode="cloudflare" 일 때만 사용 —
+      #     아웃바운드 터널이라 포트포워딩/방화벽 불필요. Apache-2.0(번들 합법). 재현성 위해 특정
+      #     릴리스 태그로 핀하는 것을 권장(여기선 ffmpeg와 동일하게 latest 사용).
+      - name: Bundle cloudflared
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path publish/cloudflared | Out-Null
+          $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $url -OutFile publish/cloudflared/cloudflared.exe
+
       # 3) OAuth 데스크톱 클라이언트 시크릿을 동봉(앱이 최초 실행 시 %AppData% 로 1회 복사).
       #    데스크톱 OAuth 시크릿은 사양상 기밀이 아니나, 리포 시크릿으로 주입해 git 추적은 피한다.
       - name: Bundle OAuth client secret

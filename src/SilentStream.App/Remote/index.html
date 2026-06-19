@@ -40,6 +40,17 @@
     #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#333a46;
              padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .3s; pointer-events:none; }
     #toast.show { opacity:1; }
+    .meter { height:9px; background:#0e1014; border-radius:5px; overflow:hidden; margin:5px 0; }
+    .meter > i { display:block; height:100%; width:0; background:var(--green); transition:width .08s linear; }
+    .src { border-bottom:1px solid var(--line); padding:9px 0; }
+    .src:last-child { border-bottom:none; }
+    .src .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .src .name { font-weight:600; }
+    .mutebtn { width:auto; margin:0; padding:6px 14px; background:#333a46; font-size:13px; }
+    .mutebtn.on { background:var(--red); }
+    input[type=range] { width:100%; margin-top:4px; accent-color:var(--accent); }
+    .warn { background:#5a2020; border:1px solid var(--red); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:14px; }
+    .preview { width:100%; display:block; border-radius:8px; background:#0e1014; min-height:120px; object-fit:contain; }
   </style>
 </head>
 <body>
@@ -67,6 +78,19 @@
         <button id="startBtn">라이브 시작</button>
         <button id="stopBtn" class="stop">중지</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>송출 미리보기</h2>
+      <img id="preview" class="preview" alt="미리보기 대기 중" />
+    </div>
+
+    <div class="card">
+      <h2>오디오</h2>
+      <div id="micWarn" class="warn hidden"></div>
+      <div id="srcList"></div>
+      <div class="row" style="margin-top:6px"><span class="k">마스터 출력</span></div>
+      <div class="meter"><i id="masterMeter"></i></div>
     </div>
 
     <div class="card">
@@ -112,6 +136,7 @@
     const WEEKDAY_KR = {Mon:"월",Tue:"화",Wed:"수",Thu:"목",Fri:"금",Sat:"토",Sun:"일"};
     let token = localStorage.getItem("ss_token") || "";
     let weekData = {}, activeDay = "Mon", ws = null;
+    let renderedSrcKey = "", audioReloading = false;
 
     const $ = id => document.getElementById(id);
     const toast = msg => { const t=$("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1800); };
@@ -150,6 +175,7 @@
       $("recFile").textContent = s.recording.file || "대기 중";
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
+      if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
       $("startBtn").disabled = s.state!=="Idle"; $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
       $("todayDate").textContent = s.today.date;
       $("todayBadge").textContent = s.today.hasOverride ? "오늘 덮어쓰기 적용 중" : "요일 기본값 사용 중";
@@ -196,11 +222,67 @@
     $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api("/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
     async function loadWeek(){ const r=await api("/api/schedule"); weekData=await r.json(); renderTabs(); renderWeek(); }
 
+    // ---- 오디오 (다중 채널 미터 + 증폭/음소거 원격 제어) ----
+    function setMeter(el, frac, peak){
+      if(!el) return;
+      el.style.width = Math.round((frac||0)*100)+"%";
+      el.style.background = peak>=0.95 ? "var(--red)" : peak>=0.8 ? "var(--yellow)" : "var(--green)";
+    }
+    function updateMicWarn(warn, silent){
+      const el=$("micWarn");
+      if(warn){ el.textContent="⚠ 마이크 신호 없음: "+((silent||[]).join(", "))+" — 연결/음소거를 확인하세요."; el.classList.remove("hidden"); }
+      else el.classList.add("hidden");
+    }
+    function renderAudio(d){
+      $("srcList").innerHTML = d.sources.map(s=>`
+        <div class="src" data-id="${s.id}">
+          <div class="top">
+            <span class="name">${s.name}</span>
+            <button class="mutebtn ${s.muted?'on':''}" data-mute="${s.id}">${s.muted?'음소거됨':'음소거'}</button>
+          </div>
+          <div class="meter"><i data-meter="${s.id}"></i></div>
+          <input type="range" min="0" max="4" step="0.05" value="${s.gain}" data-gain="${s.id}">
+        </div>`).join("");
+      $("srcList").querySelectorAll("[data-mute]").forEach(b=>b.onclick=async()=>{
+        const id=b.dataset.mute, on=!b.classList.contains("on");
+        try{ await api("/api/audio/mute",{method:"POST",body:JSON.stringify({id,muted:on})});
+          b.classList.toggle("on",on); b.textContent=on?"음소거됨":"음소거"; }catch(e){}
+      });
+      $("srcList").querySelectorAll("[data-gain]").forEach(sl=>sl.onchange=async()=>{
+        try{ await api("/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); }catch(e){}
+      });
+      updateMicWarn(d.micWarning, d.silent);
+      renderedSrcKey = d.sources.map(s=>s.id).join("|");
+    }
+    function renderLevels(m){
+      // The PC can add/remove a source mid-session; if the live ids no longer match the rendered
+      // rows, rebuild them so meters and mute/gain controls track the real mixer.
+      const key = (m.sources||[]).map(s=>s.id).join("|");
+      if (key !== renderedSrcKey && !audioReloading) { audioReloading = true; loadAudio().finally(()=>{ audioReloading = false; }); }
+      (m.sources||[]).forEach(s=> setMeter(document.querySelector(`[data-meter="${s.id}"]`), s.rms, s.peak));
+      setMeter($("masterMeter"), m.master.rms, m.master.peak);
+    }
+    async function loadAudio(){ try{ const r=await api("/api/audio"); renderAudio(await r.json()); }catch(e){} }
+
+    // 송출 미리보기: blob으로 받아 교체(204면 이전 프레임 유지, 깨진 이미지 방지)
+    async function refreshPreview(){
+      if(!token) return;
+      try{
+        const r = await fetch("/api/preview.jpg?token="+encodeURIComponent(token));
+        if(r.status !== 200) return;          // 204 = 아직 프레임 없음 → 이전 프레임 유지
+        const blob = await r.blob();
+        if(!blob.size) return;
+        const img = $("preview"), old = img.src;
+        img.src = URL.createObjectURL(blob);
+        if(old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+      }catch(e){}
+    }
+
     function connectWs(){
       try {
         const proto = location.protocol==="https:"?"wss":"ws";
         ws = new WebSocket(`${proto}://${location.host}/ws/status?token=${encodeURIComponent(token)}`);
-        ws.onmessage = e => renderStatus(JSON.parse(e.data));
+        ws.onmessage = e => { const m=JSON.parse(e.data); if(m.type==="levels") renderLevels(m); else renderStatus(m); };
         ws.onclose = () => { ws=null; setTimeout(()=>{ if(token) connectWs(); }, 4000); };
       } catch(e){ /* fall back to polling */ }
     }
@@ -208,9 +290,11 @@
 
     async function start(){
       showDash();
-      await pollOnce(); await loadToday(); await loadWeek();
+      await pollOnce(); await loadToday(); await loadWeek(); await loadAudio();
       connectWs();
+      refreshPreview();
       setInterval(()=>{ if(!ws || ws.readyState!==1) pollOnce(); }, 5000);
+      setInterval(refreshPreview, 2000);
     }
 
     if (token) start(); else showPair();

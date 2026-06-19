@@ -10,7 +10,13 @@ public enum RemoteBindMode
     Lan,
 
     /// <summary>Bind the Tailscale interface IP for use away from home (traffic encrypted).</summary>
-    Tailscale
+    Tailscale,
+
+    /// <summary>
+    /// Bind 127.0.0.1 only; a bundled cloudflared tunnel dials out to Cloudflare and exposes the
+    /// loopback server over HTTPS from anywhere — no router port-forwarding, no LAN/firewall exposure.
+    /// </summary>
+    Cloudflare
 }
 
 /// <summary>

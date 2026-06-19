@@ -114,6 +114,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             await _capture.StartAsync(token).ConfigureAwait(false);
             try
             {
+                // Apply the configured multi-source mixer layout (system + N mics, per-source
+                // gain/mute/gate) before capture so headless auto-start matches the UI (plan §3.4).
+                _audioMixer.ConfigureSources(AudioConfigMapper.ToSourceSettings(_configStore.Load().Audio));
                 await _audioMixer.StartAsync(token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -248,7 +251,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         {
             return true;
         }
-        if (!_configStore.Load().Recording.Enabled)
+        var config = _configStore.Load();
+        if (!config.Recording.Enabled)
         {
             return true; // recording disabled — nothing to bring up.
         }
@@ -256,13 +260,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         try
         {
             var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
-            await _encoder.StartAsync(new EncoderStartOptions(
-                RtmpUrl: string.Empty,
-                RecordingFilePath: recordingPath,
-                VideoBitrateKbps: BitrateMapper.GetVideoBitrateKbps(_capture.Height, _capture.Fps),
-                Width: _capture.Width,
-                Height: _capture.Height,
-                Fps: _capture.Fps), ct).ConfigureAwait(false);
+            await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), ct)
+                .ConfigureAwait(false);
             _log.Info("로컬 백업 녹화를 시작했습니다 (송출 연결과 독립).");
             return true;
         }
@@ -280,29 +279,102 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             throw new InvalidOperationException("YouTube 인증에 실패했습니다.");
         }
 
+        // A watchdog restart (or a retry after a partial failure) creates a fresh broadcast, so
+        // complete the previous one first — otherwise it is orphaned in a non-complete state and
+        // the stream silently migrates to a new watch URL.
+        if (_session is not null)
+        {
+            using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await _youtube.CompleteBroadcastAsync(_session.BroadcastId, completeCts.Token).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"이전 브로드캐스트 완료 전이 실패(무시하고 계속): {ex.Message}");
+            }
+            _session = null;
+        }
+
         _session = await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
 
-        var recordingEnabled = _configStore.Load().Recording.Enabled;
+        var config = _configStore.Load();
+        var recordingEnabled = config.Recording.Enabled;
         var recordingPath = recordingEnabled
             ? _recording.CreateSessionFilePath(_sessionStart)
             : string.Empty;
-
-        var width = _capture.Width;
-        var height = _capture.Height;
-        var fps = _capture.Fps;
 
         if (_encoder.IsRunning)
         {
             await _encoder.StopAsync().ConfigureAwait(false);
         }
 
-        await _encoder.StartAsync(new EncoderStartOptions(
-            RtmpUrl: $"{_session.RtmpUrl}/{_session.StreamKey}",
+        await _encoder.StartAsync(
+            BuildEncoderOptions($"{_session.RtmpUrl}/{_session.StreamKey}", recordingPath, config), ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Builds the encoder options from the live capture dimensions and the manual encoding config
+    /// (resolution/fps/bitrate overrides; "source"/0 = follow the capture). The output dims/fps are
+    /// only set when they differ from the capture, so the default path encodes 1:1.
+    /// </summary>
+    private EncoderStartOptions BuildEncoderOptions(string rtmpUrl, string recordingPath, AppConfig config)
+    {
+        var capWidth = _capture.Width;
+        var capHeight = _capture.Height;
+        var capFps = _capture.Fps;
+
+        var (outWidth, outHeight) = ParseResolution(config.Encoding.Resolution, capWidth, capHeight);
+        var outFps = ParseFps(config.Encoding.Fps, capFps);
+        var videoBitrate = config.Encoding.VideoBitrateKbps > 0
+            ? config.Encoding.VideoBitrateKbps
+            : BitrateMapper.GetVideoBitrateKbps(outHeight, outFps);
+        var audioBitrate = config.Encoding.AudioBitrateKbps > 0 ? config.Encoding.AudioBitrateKbps : 160;
+
+        return new EncoderStartOptions(
+            RtmpUrl: rtmpUrl,
             RecordingFilePath: recordingPath,
-            VideoBitrateKbps: BitrateMapper.GetVideoBitrateKbps(height, fps),
-            Width: width,
-            Height: height,
-            Fps: fps), ct).ConfigureAwait(false);
+            VideoBitrateKbps: videoBitrate,
+            Width: capWidth,
+            Height: capHeight,
+            Fps: capFps,
+            AudioBitrateKbps: audioBitrate,
+            AudioFilters: AudioConfigMapper.ToFilterSettings(config.Audio.Filters),
+            OutputWidth: outWidth == capWidth ? 0 : outWidth,
+            OutputHeight: outHeight == capHeight ? 0 : outHeight,
+            OutputFps: Math.Abs(outFps - capFps) < 0.01 ? 0 : outFps);
+    }
+
+    /// <summary>Parses "WxH" (else "source") into even encode dimensions, clamped to the capture.</summary>
+    private static (int Width, int Height) ParseResolution(string? resolution, int capWidth, int capHeight)
+    {
+        if (string.IsNullOrEmpty(resolution) || resolution.Equals("source", StringComparison.OrdinalIgnoreCase))
+        {
+            return (capWidth, capHeight);
+        }
+        var parts = resolution.Split('x');
+        if (parts.Length == 2 &&
+            int.TryParse(parts[0], out var w) && int.TryParse(parts[1], out var h) && w > 1 && h > 1)
+        {
+            // Clamp to the capture (never upscale — mirrors ParseFps) and force even dims.
+            var cw = Math.Min(w, capWidth);
+            var ch = Math.Min(h, capHeight);
+            return (cw - cw % 2, ch - ch % 2);
+        }
+        return (capWidth, capHeight);
+    }
+
+    /// <summary>Parses a numeric fps (else "source"), clamped to the capture rate (can't upsample).</summary>
+    private static double ParseFps(string? fps, double capFps)
+    {
+        if (string.IsNullOrEmpty(fps) || fps.Equals("source", StringComparison.OrdinalIgnoreCase))
+        {
+            return capFps;
+        }
+        return double.TryParse(fps, System.Globalization.CultureInfo.InvariantCulture, out var f) && f > 0
+            ? Math.Min(f, capFps)
+            : capFps;
     }
 
     /// <summary>

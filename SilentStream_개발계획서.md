@@ -96,11 +96,11 @@ public interface ILogService { /* NLog 래퍼 */ }
   - **B) Windows 작업 스케줄러**(`ONLOGON`/`ONSTART`, 로그인 전 실행 가능, 최고 권한)
 - 단일 인스턴스 보장(Mutex). 중복 실행 시 기존 인스턴스에 신호만 전달.
 
-### 3.2 상태 표시기 (9px 박스)
+### 3.2 상태 표시기 (6px 박스)
 | 항목 | 값 |
 |---|---|
 | 위치 | 주 모니터 좌측 상단 (0, 0) |
-| 크기 | 9 × 9 px |
+| 크기 | 6 × 6 px (2026-06-19 변경, 기존 9 × 9) |
 | 색상 | 🟢 정상 송출 / 🟡 연결 중 / 🔴 오류·중단 |
 | 동작 | 정적(애니메이션 없음), `TopMost`, 마우스 이벤트 통과 |
 
@@ -203,7 +203,7 @@ SilentStream.exe  (단일 프로세스, 백그라운드 호스트)
 │   ├── RecordingManager     ← 세션 파일/용량 한도/7일 보존
 │   └── YouTubeLiveService   ← YouTube Data API v3 (OAuth2)
 │
-├── StatusIndicator          ← 9px TopMost 투명 창 (클릭 통과)
+├── StatusIndicator          ← 6px TopMost 투명 창 (클릭 통과)
 ├── ControlUI                ← Ctrl+Shift+F12 (WPF, StatusOrchestrator 구독)
 │   ├── StatusPanel / PerformancePanel / AudioPanel / RecordingPanel / LogViewer / SettingsPanel
 ├── HotkeyManager            ← 전역 단축키
@@ -300,7 +300,7 @@ Live ──(stop/shutdown)──► Stopping → Idle
 - **AC**: 실제 채널에 Unlisted 라이브 생성 → streamKey로 송출 → 종료 시 complete 전이.
 
 ### Phase 4 — 표시기·단축키·제어 UI (2주) · *UI Agent* (Phase 2/3와 병렬 가능)
-- 9px StatusBox(클릭 통과/TopMost), 전역 단축키, ControlUI(성능·오디오·**녹화 패널**·로그 뷰어·설정).
+- 6px StatusBox(클릭 통과/TopMost), 전역 단축키, ControlUI(성능·오디오·**녹화 패널**·로그 뷰어·설정).
 - **AC**: 상태 색상이 StreamState와 동기화, 단축키 토글, 슬라이더/드롭다운이 실시간 반영, 녹화 패널에 현재 파일·용량·남은 디스크 표시.
 
 ### Phase 5 — 자동화·복원력 (1주) · *Infra/Media Agent*
@@ -336,7 +336,7 @@ Live ──(stop/shutdown)──► Stopping → Idle
 - [x] Phase 1 Config/Log/단일인스턴스 (DPAPI 암복호화 Windows 실검증)
 - [x] Phase 2 캡처/오디오/인코딩/tee+녹화 (캡처 2560×1440@75fps·시스템오디오·NVENC tee·RTMP차단독립 Windows 검증 / 마이크 믹싱은 입력장치 부재로 미검증)
 - [x] Phase 3 YouTube OAuth/Live (graceful 실패경로 검증, **실 Google 계정·채널 송출 검증 필요**)
-- [x] Phase 4 9px 박스/단축키/제어 UI (9px 박스 색상·제어창/녹화·설정 패널 렌더 **육안 검증 완료(2026-06-13)** + 로그뷰어 크래시 버그 수정(커밋 6acf46f). 전역 단축키 등록·단일 인스턴스 토글 검증)
+- [x] Phase 4 6px 박스/단축키/제어 UI (6px 박스 색상·제어창/녹화·설정 패널 렌더 **육안 검증 완료(2026-06-13, 당시 9×9 → 2026-06-19 6×6 축소)** + 로그뷰어 크래시 버그 수정(커밋 6acf46f). 전역 단축키 등록·단일 인스턴스 토글 검증)
 - [x] Phase 5 자동시작/재시도/종료 처리 (자동시작 레지스트리·warmup·백오프·**녹화 독립 시작**(§4.1 갭 수정)·mp4 정상 마감 검증, **재부팅 E2E 필요**)
 - [x] Phase 6 인스톨러/업데이트/E2E (인스톨러 `.exe` 빌드 검증, **클린설치/재부팅 E2E·Squirrel 피드 URL 필요**)
 - [x] 사용자 문서(설치·사용·문제해결) 작성 (`docs/USER_GUIDE.md`)

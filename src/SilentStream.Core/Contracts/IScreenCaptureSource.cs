@@ -3,13 +3,17 @@ using SilentStream.Core.Models;
 namespace SilentStream.Core.Contracts;
 
 /// <summary>
-/// Provides primary-monitor video frames (cursor included, no overlay) via DXGI Desktop
-/// Duplication, with auto re-init on capture failure. See plan §3.3.
+/// Provides monitor video frames (cursor included, no overlay) via DXGI Desktop Duplication,
+/// with auto re-init on capture failure. The captured monitor (and an optional crop region)
+/// is chosen via config; defaults to the primary monitor, full screen. See plan §3.3.
 /// </summary>
 public interface IScreenCaptureSource : IDisposable
 {
     /// <summary>True while frames are being produced.</summary>
     bool IsCapturing { get; }
+
+    /// <summary>Enumerates the connected monitors for the control-UI picker (OBS 대비 모니터 선택).</summary>
+    IReadOnlyList<MonitorInfo> GetMonitors();
 
     /// <summary>Capture width in pixels (valid after StartAsync).</summary>
     int Width { get; }

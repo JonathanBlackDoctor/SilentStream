@@ -46,15 +46,21 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly PeriodScheduler _scheduler;
     private readonly IUploadQueue _uploadQueue;
     private readonly IRecordingManager _recording;
+    private readonly IAudioMixer _audioMixer;
+    private readonly IPreviewProvider _preview;
     private readonly IConfigStore _configStore;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
-    private readonly List<WebSocket> _sockets = [];
+    private readonly List<SocketChannel> _sockets = [];
+    private readonly object _silentMicsGate = new();
+    private readonly Dictionary<string, string> _silentMics = new();
     private readonly string _html;
 
+    private readonly CloudflaredManager _cloudflared;
     private WebApplication? _app;
     private MetricsSnapshot _lastMetrics = MetricsSnapshot.Empty;
+    private int _levelTick;
 
     public RemoteControlServer(
         IStreamOrchestrator orchestrator,
@@ -62,6 +68,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         PeriodScheduler scheduler,
         IUploadQueue uploadQueue,
         IRecordingManager recording,
+        IAudioMixer audioMixer,
+        IPreviewProvider preview,
         IConfigStore configStore,
         ILogService log)
     {
@@ -70,8 +78,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _scheduler = scheduler;
         _uploadQueue = uploadQueue;
         _recording = recording;
+        _audioMixer = audioMixer;
+        _preview = preview;
         _configStore = configStore;
         _log = log;
+        _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
     }
 
@@ -80,6 +91,12 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     /// <summary>Raised when a new pairing PIN is generated (server start).</summary>
     public event Action<string>? PinChanged;
+
+    /// <summary>The Cloudflare-tunnel public URL phones use, once known (null unless mode=cloudflare).</summary>
+    public string? CurrentPublicUrl { get; private set; }
+
+    /// <summary>Raised when the Cloudflare tunnel reports its public URL.</summary>
+    public event Action<string>? PublicUrlChanged;
 
     public async Task StartAsync(RemoteBindMode mode, int port, CancellationToken ct)
     {
@@ -126,9 +143,46 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         _orchestrator.StateChanged += OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated += OnMetrics;
+        _audioMixer.LevelsUpdated += OnLevels;
+        _audioMixer.MicSignalChanged += OnMicSignal;
 
         await app.StartAsync(ct).ConfigureAwait(false);
         _app = app;
+
+        if (mode == RemoteBindMode.Cloudflare)
+        {
+            await StartCloudflareTunnelAsync(port, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Brings up the bundled cloudflared tunnel pointing at the loopback server and publishes its
+    /// public URL. A named tunnel (token + hostname in config) gives a stable URL; otherwise a quick
+    /// tunnel yields a random *.trycloudflare.com URL. Failure never blocks the live/recording path.
+    /// </summary>
+    private async Task StartCloudflareTunnelAsync(int port, CancellationToken ct)
+    {
+        var remote = _configStore.Load().Remote;
+        var token = string.IsNullOrWhiteSpace(remote.CloudflareTunnelToken) ? null : remote.CloudflareTunnelToken;
+        var hostname = string.IsNullOrWhiteSpace(remote.CloudflareHostname) ? null : remote.CloudflareHostname;
+        try
+        {
+            var publicUrl = await _cloudflared.StartAsync(token, port, hostname, ct).ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(publicUrl))
+            {
+                CurrentPublicUrl = publicUrl;
+                PublicUrlChanged?.Invoke(publicUrl);
+                _log.Info($"Cloudflare 터널 공개 주소: {publicUrl}  —  폰 브라우저로 접속 후 PIN [{CurrentPin}] 입력.");
+            }
+            else
+            {
+                _log.Info("Cloudflare 명명형 터널을 시작했습니다(공개 주소는 대시보드에 매핑한 호스트네임).");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Error("Cloudflare 터널 시작 실패(라이브/녹화에는 영향 없음)", ex);
+        }
     }
 
     public async Task StopAsync()
@@ -141,11 +195,16 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _app = null;
         _orchestrator.StateChanged -= OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated -= OnMetrics;
+        _audioMixer.LevelsUpdated -= OnLevels;
+        _audioMixer.MicSignalChanged -= OnMicSignal;
 
         lock (_socketsGate)
         {
             _sockets.Clear();
         }
+
+        await _cloudflared.StopAsync().ConfigureAwait(false);
+        CurrentPublicUrl = null;
 
         try
         {
@@ -214,9 +273,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             }
 
             var token = RemoteAuth.NewToken();
-            var config = _configStore.Load();
-            config.Remote.DeviceTokens.Add(RemoteAuth.HashToken(token));
-            _configStore.Save(config);
+            // Atomic append so a just-paired token can't be clobbered by a concurrent config save.
+            _configStore.Update(config => config.Remote.DeviceTokens.Add(RemoteAuth.HashToken(token)));
             _log.Info("새 기기가 페어링되었습니다(기기 토큰 발급).");
             await ctx.Response.WriteAsJsonAsync(new { token }).ConfigureAwait(false);
         });
@@ -272,6 +330,43 @@ public sealed class RemoteControlServer : IRemoteControlServer
             return Results.Json(new { ok = true }, Json);
         });
 
+        // ---- audio mixer (다중 채널 + 증폭 + 실시간 미터) ----
+        app.MapGet("/api/audio", () => Results.Json(BuildAudio(), Json));
+        app.MapPost("/api/audio/mute", async ctx =>
+        {
+            var body = await ReadJsonAsync<AudioMuteRequest>(ctx).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(body?.Id))
+            {
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            _audioMixer.SetMuted(body.Id, body.Muted);
+            PersistSourceChange(body.Id, s => s.Muted = body.Muted);
+            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+        });
+        app.MapPost("/api/audio/gain", async ctx =>
+        {
+            var body = await ReadJsonAsync<AudioGainRequest>(ctx).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(body?.Id))
+            {
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            var gain = Math.Clamp(body.Gain, 0, 4);
+            _audioMixer.SetGain(body.Id, gain);
+            PersistSourceChange(body.Id, s => s.Gain = gain);
+            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+        });
+
+        // 송출 미리보기 썸네일 (토큰은 쿼리스트링으로 — <img> 헤더 불가). 프레임 없으면 204.
+        app.MapGet("/api/preview.jpg", () =>
+        {
+            var jpeg = _preview.GetLatestJpegFrame();
+            return jpeg is null
+                ? Results.StatusCode(StatusCodes.Status204NoContent)
+                : Results.Bytes(jpeg, "image/jpeg");
+        });
+
         app.MapPost("/api/live/start", async () =>
         {
             await _orchestrator.StartAsync(CancellationToken.None).ConfigureAwait(false);
@@ -295,11 +390,12 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
 
         using var socket = await ctx.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
+        var channel = new SocketChannel(socket);
         lock (_socketsGate)
         {
-            _sockets.Add(socket);
+            _sockets.Add(channel);
         }
-        await SendStatusAsync(socket, ctx.RequestAborted).ConfigureAwait(false);
+        await SendStatusAsync(channel, ctx.RequestAborted).ConfigureAwait(false);
 
         try
         {
@@ -320,7 +416,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         {
             lock (_socketsGate)
             {
-                _sockets.Remove(socket);
+                _sockets.Remove(channel);
             }
         }
     }
@@ -335,45 +431,171 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private void OnStateOrMetricsChanged(object? sender, StreamState state) => BroadcastStatus();
 
-    private void BroadcastStatus()
+    // ---- audio levels + mic-signal push ----
+
+    private void OnLevels(object? sender, AudioLevels levels)
     {
-        List<WebSocket> sockets;
+        // Mixer emits ~16 Hz; halve it to ~8 Hz for the phone to keep the LAN/Tailscale link light.
+        if (Interlocked.Increment(ref _levelTick) % 2 != 0)
+        {
+            return;
+        }
+        BroadcastLevels(levels);
+    }
+
+    private void OnMicSignal(object? sender, MicSignalStatus status)
+    {
+        var name = _audioMixer.Sources.FirstOrDefault(s => s.Id == status.SourceId)?.Name ?? "마이크";
+        lock (_silentMicsGate)
+        {
+            if (status.SignalPresent)
+            {
+                _silentMics.Remove(status.SourceId);
+            }
+            else
+            {
+                _silentMics[status.SourceId] = name;
+            }
+        }
+        BroadcastStatus(); // refresh the warning banner promptly
+    }
+
+    private void BroadcastLevels(AudioLevels levels)
+    {
+        List<SocketChannel> channels;
         lock (_socketsGate)
         {
             if (_sockets.Count == 0)
             {
                 return;
             }
-            sockets = _sockets.ToList();
+            channels = _sockets.ToList();
         }
-        var payload = JsonSerializer.SerializeToUtf8Bytes(BuildStatus(), Json);
-        foreach (var socket in sockets)
+        var payload = JsonSerializer.SerializeToUtf8Bytes(BuildLevels(levels), Json);
+        foreach (var channel in channels)
         {
-            _ = SendRawAsync(socket, payload);
+            _ = SendRawAsync(channel, payload);
         }
     }
 
-    private async Task SendStatusAsync(WebSocket socket, CancellationToken ct)
+    private object BuildLevels(AudioLevels levels)
     {
-        var payload = JsonSerializer.SerializeToUtf8Bytes(BuildStatus(), Json);
-        await SendRawAsync(socket, payload, ct).ConfigureAwait(false);
+        var names = _audioMixer.Sources.ToDictionary(s => s.Id, s => s.Name);
+        return new
+        {
+            type = "levels",
+            master = new { rms = ToFraction(levels.MasterRmsDb), peak = ToFraction(levels.MasterPeakDb) },
+            sources = levels.Sources.Select(l => new
+            {
+                id = l.Id,
+                name = names.TryGetValue(l.Id, out var n) ? n : l.Id,
+                rms = ToFraction(l.RmsDb),
+                peak = ToFraction(l.PeakDb)
+            })
+        };
     }
 
-    private async Task SendRawAsync(WebSocket socket, byte[] payload, CancellationToken ct = default)
+    private object BuildAudio()
     {
+        var levels = _audioMixer.CurrentLevels.Sources.ToDictionary(l => l.Id);
+        string[] silent;
+        lock (_silentMicsGate)
+        {
+            silent = _silentMics.Values.ToArray();
+        }
+        return new
+        {
+            micWarning = silent.Length > 0,
+            silent,
+            sources = _audioMixer.Sources.Select(s =>
+            {
+                levels.TryGetValue(s.Id, out var l);
+                return new
+                {
+                    id = s.Id,
+                    name = s.Name,
+                    kind = s.Kind == AudioSourceKind.System ? "system" : "mic",
+                    gain = s.Gain,
+                    muted = s.Muted,
+                    gate = s.GateEnabled,
+                    rms = l is null ? 0 : ToFraction(l.RmsDb),
+                    peak = l is null ? 0 : ToFraction(l.PeakDb)
+                };
+            })
+        };
+    }
+
+    private void PersistSourceChange(string id, Action<AudioSourceConfig> mutate) =>
+        _configStore.Update(config =>
+        {
+            var source = config.Audio.Sources.FirstOrDefault(
+                s => AudioConfigMapper.SourceId(s.Kind, s.DeviceId) == id);
+            if (source is not null)
+            {
+                mutate(source);
+            }
+        });
+
+    private static double ToFraction(double db)
+    {
+        const double floor = -60;
+        return db <= floor ? 0 : Math.Clamp((db - floor) / -floor, 0, 1);
+    }
+
+    private void BroadcastStatus()
+    {
+        List<SocketChannel> channels;
+        lock (_socketsGate)
+        {
+            if (_sockets.Count == 0)
+            {
+                return;
+            }
+            channels = _sockets.ToList();
+        }
+        var payload = JsonSerializer.SerializeToUtf8Bytes(BuildStatus(), Json);
+        foreach (var channel in channels)
+        {
+            _ = SendRawAsync(channel, payload);
+        }
+    }
+
+    private async Task SendStatusAsync(SocketChannel channel, CancellationToken ct)
+    {
+        var payload = JsonSerializer.SerializeToUtf8Bytes(BuildStatus(), Json);
+        await SendRawAsync(channel, payload, ct).ConfigureAwait(false);
+    }
+
+    private async Task SendRawAsync(SocketChannel channel, byte[] payload, CancellationToken ct = default)
+    {
+        // Serialize writes per socket: concurrent SendAsync on one WebSocket (status + levels
+        // frames from different producer threads) throws InvalidOperationException and aborts it.
         try
         {
-            if (socket.State == WebSocketState.Open)
+            await channel.SendLock.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
+        {
+            return;
+        }
+        try
+        {
+            if (channel.Socket.State == WebSocketState.Open)
             {
-                await socket.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await channel.Socket.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
             }
         }
-        catch (Exception ex) when (ex is WebSocketException or ObjectDisposedException or OperationCanceledException)
+        catch (Exception ex) when (
+            ex is WebSocketException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
         {
             lock (_socketsGate)
             {
-                _sockets.Remove(socket);
+                _sockets.Remove(channel);
             }
+        }
+        finally
+        {
+            channel.SendLock.Release();
         }
     }
 
@@ -385,12 +607,22 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var recording = _recording.GetStatus();
         var jobs = _uploadQueue.Snapshot();
         var today = DateOnly.FromDateTime(DateTime.Now);
+        string[] silentMics;
+        lock (_silentMicsGate)
+        {
+            silentMics = _silentMics.Values.ToArray();
+        }
 
         return new
         {
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
+            audio = new
+            {
+                micWarning = silentMics.Length > 0,
+                silent = silentMics
+            },
             metrics = new
             {
                 bitrateKbps = _lastMetrics.UploadBitrateKbps,
@@ -475,8 +707,13 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     // ---- network / firewall ----
 
-    private string? ResolveBindAddress(RemoteBindMode mode) =>
-        mode == RemoteBindMode.Tailscale ? FindTailscaleIp() : "0.0.0.0";
+    private string? ResolveBindAddress(RemoteBindMode mode) => mode switch
+    {
+        RemoteBindMode.Tailscale => FindTailscaleIp(),
+        // Cloudflare exposes the loopback server through the tunnel — never bind it to the LAN.
+        RemoteBindMode.Cloudflare => "127.0.0.1",
+        _ => "0.0.0.0"
+    };
 
     private static string? FindTailscaleIp()
     {
@@ -581,4 +818,16 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private sealed record PairRequest(string? Pin);
 
     private sealed record PeriodDto(int No, string Start, string End);
+
+    private sealed record AudioMuteRequest(string? Id, bool Muted);
+
+    private sealed record AudioGainRequest(string? Id, double Gain);
+
+    /// <summary>A connected WebSocket plus a 1-permit gate that serialises sends to it.</summary>
+    private sealed class SocketChannel(WebSocket socket)
+    {
+        public WebSocket Socket { get; } = socket;
+
+        public SemaphoreSlim SendLock { get; } = new(1, 1);
+    }
 }

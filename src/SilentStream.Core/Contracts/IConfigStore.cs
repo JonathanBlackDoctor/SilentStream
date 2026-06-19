@@ -13,4 +13,10 @@ public interface IConfigStore
 
     /// <summary>Persists the config atomically.</summary>
     void Save(AppConfig config);
+
+    /// <summary>
+    /// Atomically load → mutate → save under a single lock, so concurrent editors (control
+    /// window UI thread + remote-control Kestrel threads) cannot lose each other's updates.
+    /// </summary>
+    void Update(Action<AppConfig> mutate);
 }

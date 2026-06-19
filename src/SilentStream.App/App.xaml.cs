@@ -3,6 +3,7 @@ using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using SilentStream.App.ControlUI;
 using SilentStream.App.Hotkeys;
+using SilentStream.App.Preview;
 using SilentStream.App.Remote;
 using SilentStream.App.StatusIndicator;
 using SilentStream.App.Updates;
@@ -17,7 +18,7 @@ namespace SilentStream.App;
 /// <summary>
 /// Background WPF host: builds the DI container (Core contracts + Windows media
 /// implementations), shows the one-time consent dialog, then runs headless with the
-/// 9px status box and the hotkey-toggled control window. The automated start
+/// 6px status box and the hotkey-toggled control window. The automated start
 /// sequence (mutex/warmup/auto-stream) is wired in <see cref="StartupSequence"/>.
 /// </summary>
 public partial class App : Application
@@ -39,6 +40,8 @@ public partial class App : Application
         // Swap the Phase-0 stubs for the real Windows capture/audio implementations.
         collection.AddSingleton<IScreenCaptureSource, DxgiScreenCaptureSource>();
         collection.AddSingleton<IAudioMixer, WasapiAudioMixer>();
+        // 송출 미리보기: 캡처 프레임을 저레이트 JPEG 썸네일로 제공(제어창 + 폰).
+        collection.AddSingleton<IPreviewProvider, FramePreviewService>();
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());
@@ -58,7 +61,7 @@ public partial class App : Application
             return;
         }
 
-        // 9px status box (always visible, click-through).
+        // 6px status box (always visible, click-through).
         _statusBox = new StatusBoxWindow();
         _statusBox.Show();
         var orchestrator = _services.GetRequiredService<IStreamOrchestrator>();
@@ -79,6 +82,12 @@ public partial class App : Application
         if (remoteServer.CurrentPin is not null)
         {
             viewModel.SetRemotePin(remoteServer.CurrentPin);
+        }
+        // 외부 접속용 Cloudflare 터널 공개 주소(준비되면 도착, PIN보다 몇 초 늦을 수 있음).
+        remoteServer.PublicUrlChanged += url => viewModel.SetRemoteUrl(url);
+        if (remoteServer.CurrentPublicUrl is not null)
+        {
+            viewModel.SetRemoteUrl(remoteServer.CurrentPublicUrl);
         }
 
         _updateManager = new AppUpdateManager(log);

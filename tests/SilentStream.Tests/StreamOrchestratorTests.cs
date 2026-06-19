@@ -265,6 +265,8 @@ public class StreamOrchestratorTests : IDisposable
         public int Height => 1080;
         public double Fps => 60;
 
+        public IReadOnlyList<MonitorInfo> GetMonitors() => [];
+
 #pragma warning disable CS0067
         public event EventHandler<VideoFrame>? FrameCaptured;
 #pragma warning restore CS0067
@@ -288,15 +290,23 @@ public class StreamOrchestratorTests : IDisposable
     {
         public bool Started;
         public bool FailOnStart;
-        public double SystemVolume { get; set; } = 1.0;
-        public double MicVolume { get; set; } = 1.0;
-        public string? MicDeviceId { get; set; }
+
+        public IReadOnlyList<AudioSourceSettings> Sources { get; private set; } = [];
+        public AudioLevels CurrentLevels => AudioLevels.Empty;
 
 #pragma warning disable CS0067
+        public event EventHandler<AudioLevels>? LevelsUpdated;
+        public event EventHandler<MicSignalStatus>? MicSignalChanged;
         public event EventHandler<AudioBuffer>? SamplesAvailable;
 #pragma warning restore CS0067
 
         public IReadOnlyList<AudioDeviceInfo> GetMicrophoneDevices() => [];
+
+        public void ConfigureSources(IReadOnlyList<AudioSourceSettings> sources) => Sources = sources;
+
+        public void SetGain(string sourceId, double gain) { }
+
+        public void SetMuted(string sourceId, bool muted) { }
 
         public Task StartAsync(CancellationToken ct)
         {

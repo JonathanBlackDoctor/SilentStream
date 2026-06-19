@@ -74,6 +74,7 @@ public static class StartupSequence
         {
             "lan" => RemoteBindMode.Lan,
             "tailscale" => RemoteBindMode.Tailscale,
+            "cloudflare" => RemoteBindMode.Cloudflare,
             _ => RemoteBindMode.Off
         };
 

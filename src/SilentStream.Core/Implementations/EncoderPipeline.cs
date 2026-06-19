@@ -68,7 +68,11 @@ public sealed class EncoderPipeline : IEncoderPipeline
             options.VideoBitrateKbps, options.AudioBitrateKbps,
             options.RtmpUrl, options.RecordingFilePath,
             OperatingSystem.IsWindows() ? @"\\.\pipe\" + AudioPipeName : "/tmp/" + AudioPipeName,
-            ResourceLimit: config.Encoding.ResourceLimit);
+            ResourceLimit: config.Encoding.ResourceLimit,
+            AudioFilters: options.AudioFilters,
+            OutputWidth: options.OutputWidth,
+            OutputHeight: options.OutputHeight,
+            OutputFps: options.OutputFps);
 
         var args = FfmpegArgumentsBuilder.Build(spec);
         _log.Info($"FFmpeg 기동: {encoder.ToFfmpegName()}, {options.Width}x{options.Height}@{options.Fps}fps, " +

@@ -13,6 +13,8 @@ public sealed class ScreenCaptureSource : IScreenCaptureSource
     public int Height => 1080;
     public double Fps => 30;
 
+    public IReadOnlyList<MonitorInfo> GetMonitors() => Array.Empty<MonitorInfo>();
+
 #pragma warning disable CS0067 // part of the fixed contract; implemented in Phase 2
     public event EventHandler<VideoFrame>? FrameCaptured;
 #pragma warning restore CS0067

@@ -1,7 +1,7 @@
 namespace SilentStream.Core.Models;
 
 /// <summary>
-/// Lifecycle states of the streaming pipeline. Drives the 9px status box colour
+/// Lifecycle states of the streaming pipeline. Drives the 6px status box colour
 /// (Warmup/ConnectingYouTube/Retrying => 🟡/🔴, Live => 🟢) and the control UI badge.
 /// See plan §4.1 (StreamState 상태머신).
 /// </summary>

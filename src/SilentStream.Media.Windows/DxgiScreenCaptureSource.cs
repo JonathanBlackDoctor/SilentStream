@@ -12,13 +12,15 @@ using Resource = SharpDX.DXGI.Resource;
 namespace SilentStream.Media.Windows;
 
 /// <summary>
-/// Primary-monitor capture via DXGI Desktop Duplication (plan §3.3): full screen,
-/// mouse cursor included, auto re-initialisation when access is lost (fullscreen
-/// exclusive apps, resolution changes). Frames are delivered as BGRA buffers.
+/// Monitor capture via DXGI Desktop Duplication (plan §3.3): the selected monitor (config
+/// capture.monitorIndex; default = primary), optionally cropped to a region, mouse cursor
+/// included, with auto re-initialisation when access is lost (fullscreen exclusive apps,
+/// resolution changes). Frames are delivered as BGRA buffers (OBS 대비 모니터/영역 선택).
 /// </summary>
 public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
 {
     private readonly ILogService _log;
+    private readonly IConfigStore _configStore;
 
     // YouTube live ingest only accepts standard frame rates (1440p ≤ 60fps); a monitor's
     // native refresh (e.g. 75Hz) is rejected and the connection is aborted (-10053). 30fps
@@ -32,13 +34,24 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
     private CancellationTokenSource? _cts;
     private byte[]? _frameBuffer;
 
+    // The full monitor dimensions (staging size) and the crop offset into it. Width/Height are
+    // the emitted (possibly cropped) frame size.
+    private int _monitorWidth;
+    private int _monitorHeight;
+    private int _cropX;
+    private int _cropY;
+
     // Last known cursor shape, drawn manually: Desktop Duplication does not composite it.
     private byte[]? _cursorShape;
     private OutputDuplicatePointerShapeInformation _cursorInfo;
     private SharpDX.Mathematics.Interop.RawPoint _cursorPosition;
     private bool _cursorVisible;
 
-    public DxgiScreenCaptureSource(ILogService log) => _log = log;
+    public DxgiScreenCaptureSource(ILogService log, IConfigStore configStore)
+    {
+        _log = log;
+        _configStore = configStore;
+    }
 
     public bool IsCapturing => _captureLoop is { IsCompleted: false };
 
@@ -47,6 +60,25 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
     public double Fps { get; private set; } = 30;
 
     public event EventHandler<VideoFrame>? FrameCaptured;
+
+    public IReadOnlyList<MonitorInfo> GetMonitors()
+    {
+        var monitors = new List<MonitorInfo>();
+        try
+        {
+            using var factory = new Factory1();
+            var index = 0;
+            foreach (var (_, _, name, width, height, primary) in EnumerateAttachedOutputs(factory))
+            {
+                monitors.Add(new MonitorInfo(index++, name, width, height, primary));
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"모니터 목록 조회 실패: {ex.Message}");
+        }
+        return monitors;
+    }
 
     public Task StartAsync(CancellationToken ct)
     {
@@ -60,7 +92,8 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
         _captureLoop = Task.Factory.StartNew(
             () => CaptureLoop(_cts.Token), _cts.Token,
             TaskCreationOptions.LongRunning, TaskScheduler.Default);
-        _log.Info($"화면 캡처 시작: 주 모니터 {Width}x{Height}");
+        _log.Info($"화면 캡처 시작: {Width}x{Height} (모니터 {_monitorWidth}x{_monitorHeight}" +
+                  (Width == _monitorWidth && Height == _monitorHeight ? ")" : $", 영역 {_cropX},{_cropY})"));
         return Task.CompletedTask;
     }
 
@@ -83,23 +116,36 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
 
     private void Initialize()
     {
+        var capture = _configStore.Load().Capture;
+
         using var factory = new Factory1();
-        using var adapter = factory.GetAdapter1(0);
+        var outputs = EnumerateAttachedOutputs(factory);
+        if (outputs.Count == 0)
+        {
+            throw new InvalidOperationException("캡처 가능한 모니터를 찾지 못했습니다.");
+        }
+
+        var index = Math.Clamp(capture.MonitorIndex, 0, outputs.Count - 1);
+        var (adapterIndex, outputIndex, deviceName, _, _, _) = outputs[index];
+
+        using var adapter = factory.GetAdapter1(adapterIndex);
         _device = new Device(adapter, DeviceCreationFlags.BgraSupport, FeatureLevel.Level_11_0);
 
-        using var output = adapter.GetOutput(0); // primary monitor
+        using var output = adapter.GetOutput(outputIndex);
         using var output1 = output.QueryInterface<Output1>();
 
         var bounds = output.Description.DesktopBounds;
-        Width = bounds.Right - bounds.Left;
-        Height = bounds.Bottom - bounds.Top;
-        Fps = Math.Min(GetPrimaryRefreshRate(), MaxStreamFps);
+        _monitorWidth = bounds.Right - bounds.Left;
+        _monitorHeight = bounds.Bottom - bounds.Top;
+
+        ApplyRegion(capture);
+        Fps = Math.Min(GetRefreshRate(deviceName), MaxStreamFps);
 
         _duplication = output1.DuplicateOutput(_device);
         _stagingTexture = new Texture2D(_device, new Texture2DDescription
         {
-            Width = Width,
-            Height = Height,
+            Width = _monitorWidth,
+            Height = _monitorHeight,
             MipLevels = 1,
             ArraySize = 1,
             Format = Format.B8G8R8A8_UNorm,
@@ -110,6 +156,32 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
             OptionFlags = ResourceOptionFlags.None
         });
         _frameBuffer = new byte[Width * Height * 4];
+    }
+
+    /// <summary>
+    /// Resolves the emitted frame size from the optional crop region, clamped inside the monitor
+    /// and rounded to even dimensions (required by yuv420p). No region → the whole monitor.
+    /// </summary>
+    private void ApplyRegion(CaptureConfig capture)
+    {
+        var region = new CaptureRegion(capture.RegionX, capture.RegionY, capture.RegionWidth, capture.RegionHeight);
+        if (region.IsEmpty)
+        {
+            _cropX = 0;
+            _cropY = 0;
+            Width = _monitorWidth;
+            Height = _monitorHeight;
+        }
+        else
+        {
+            _cropX = Math.Clamp(region.X, 0, Math.Max(0, _monitorWidth - 2));
+            _cropY = Math.Clamp(region.Y, 0, Math.Max(0, _monitorHeight - 2));
+            Width = Math.Clamp(region.Width, 2, _monitorWidth - _cropX);
+            Height = Math.Clamp(region.Height, 2, _monitorHeight - _cropY);
+        }
+
+        Width -= Width % 2;
+        Height -= Height % 2;
     }
 
     private void CaptureLoop(CancellationToken ct)
@@ -141,8 +213,11 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
                 {
                     Initialize();
                 }
-                catch (SharpDXException initEx)
+                catch (Exception initEx)
                 {
+                    // Any re-init failure (incl. InvalidOperationException when outputs momentarily
+                    // vanish during a display-topology change) must NOT escape the loop and kill the
+                    // capture task — log and retry on the next iteration instead.
                     _log.Error("캡처 재초기화 실패 — 1초 후 재시도", initEx);
                     Thread.Sleep(1000);
                 }
@@ -222,14 +297,19 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
     private void CopyToBuffer(DataBox map)
     {
         var rowBytes = Width * 4;
-        if (map.RowPitch == rowBytes)
+        var fullFrame = _cropX == 0 && _cropY == 0 && Width == _monitorWidth && Height == _monitorHeight;
+        if (fullFrame && map.RowPitch == rowBytes)
         {
             Utilities.Read(map.DataPointer, _frameBuffer, 0, _frameBuffer!.Length);
             return;
         }
+
+        // Crop (or row-pitch padding): copy the region row by row from the staging surface.
+        var srcColumnByteOffset = _cropX * 4;
         for (var y = 0; y < Height; y++)
         {
-            Utilities.Read(map.DataPointer + y * map.RowPitch, _frameBuffer, y * rowBytes, rowBytes);
+            var srcRow = map.DataPointer + ((_cropY + y) * map.RowPitch + srcColumnByteOffset);
+            Utilities.Read(srcRow, _frameBuffer, y * rowBytes, rowBytes);
         }
     }
 
@@ -258,7 +338,8 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
 
     /// <summary>
     /// Blends the cached cursor shape into the frame buffer (32bpp color cursors with
-    /// alpha; masked/monochrome shapes are drawn opaque as an approximation).
+    /// alpha; masked/monochrome shapes are drawn opaque as an approximation). Cursor coordinates
+    /// are monitor-relative, so the crop offset is subtracted to land in the emitted frame.
     /// </summary>
     private void DrawCursor()
     {
@@ -273,31 +354,44 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
             return; // Monochrome XOR cursors are rare on modern Windows; skip.
         }
 
+        // For Color cursors the 4th byte is straight alpha. For MaskedColor it is an AND/XOR mask
+        // flag, NOT alpha, so blending it produces garbage — draw those opaque (the documented
+        // approximation) instead.
+        var isColorCursor = _cursorInfo.Type == (int)OutputDuplicatePointerShapeType.Color;
         var cursorWidth = _cursorInfo.Width;
         var cursorHeight = _cursorInfo.Height;
         for (var cy = 0; cy < cursorHeight; cy++)
         {
-            var screenY = _cursorPosition.Y + cy;
-            if (screenY < 0 || screenY >= Height)
+            var outY = _cursorPosition.Y + cy - _cropY;
+            if (outY < 0 || outY >= Height)
             {
                 continue;
             }
             for (var cx = 0; cx < cursorWidth; cx++)
             {
-                var screenX = _cursorPosition.X + cx;
-                if (screenX < 0 || screenX >= Width)
+                var outX = _cursorPosition.X + cx - _cropX;
+                if (outX < 0 || outX >= Width)
                 {
                     continue;
                 }
 
                 var src = (cy * _cursorInfo.Pitch) + cx * 4;
+                var dst = (outY * Width + outX) * 4;
+
+                if (!isColorCursor)
+                {
+                    // MaskedColor: opaque copy of the colour bytes.
+                    _frameBuffer[dst] = shape[src];
+                    _frameBuffer[dst + 1] = shape[src + 1];
+                    _frameBuffer[dst + 2] = shape[src + 2];
+                    continue;
+                }
+
                 var alpha = shape[src + 3];
                 if (alpha == 0)
                 {
                     continue;
                 }
-
-                var dst = (screenY * Width + screenX) * 4;
                 if (alpha == 255)
                 {
                     _frameBuffer[dst] = shape[src];
@@ -315,12 +409,61 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
         }
     }
 
-    /// <summary>Primary-monitor refresh rate via EnumDisplaySettings (plan §3.3: 주사율 따름).</summary>
-    private static double GetPrimaryRefreshRate()
+    /// <summary>
+    /// Enumerates desktop-attached outputs across all adapters in a stable order so the config
+    /// monitor index, the UI picker and capture all agree. Returns adapter/output indices plus
+    /// the display name, size and primary flag.
+    /// </summary>
+    private static List<(int AdapterIndex, int OutputIndex, string Name, int Width, int Height, bool Primary)>
+        EnumerateAttachedOutputs(Factory1 factory)
+    {
+        var result = new List<(int, int, string, int, int, bool)>();
+        var adapterCount = factory.GetAdapterCount1();
+        for (var a = 0; a < adapterCount; a++)
+        {
+            Adapter1? adapter = null;
+            try
+            {
+                adapter = factory.GetAdapter1(a);
+                var outputCount = adapter.GetOutputCount();
+                for (var o = 0; o < outputCount; o++)
+                {
+                    try
+                    {
+                        using var output = adapter.GetOutput(o);
+                        var desc = output.Description;
+                        if (!desc.IsAttachedToDesktop)
+                        {
+                            continue;
+                        }
+                        var b = desc.DesktopBounds;
+                        var primary = b.Left == 0 && b.Top == 0;
+                        result.Add((a, o, desc.DeviceName, b.Right - b.Left, b.Bottom - b.Top, primary));
+                    }
+                    catch (SharpDXException)
+                    {
+                        // skip an output that cannot be queried
+                    }
+                }
+            }
+            catch (SharpDXException)
+            {
+                // skip an adapter that cannot be enumerated (e.g. a virtual render-only device)
+            }
+            finally
+            {
+                adapter?.Dispose();
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Refresh rate of the given display via EnumDisplaySettings (plan §3.3: 주사율 따름).</summary>
+    private static double GetRefreshRate(string? deviceName)
     {
         var devMode = new Devmode { dmSize = (short)System.Runtime.InteropServices.Marshal.SizeOf<Devmode>() };
         const int enumCurrentSettings = -1;
-        if (EnumDisplaySettings(null, enumCurrentSettings, ref devMode) && devMode.dmDisplayFrequency > 1)
+        if (EnumDisplaySettings(deviceName, enumCurrentSettings, ref devMode) && devMode.dmDisplayFrequency > 1)
         {
             return devMode.dmDisplayFrequency;
         }

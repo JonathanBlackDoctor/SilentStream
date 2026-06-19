@@ -4,27 +4,40 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Data;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Hotkeys;
+using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
 using SilentStream.Core.Models;
 
 namespace SilentStream.App.ControlUI;
 
 /// <summary>
-/// ViewModel behind the control UI (plan §3.8): state badge, start/stop, performance,
-/// audio volumes + mic picker, resource limit, recording panel, log viewer, settings.
-/// Couples to other modules through Core/Contracts interfaces only.
+/// ViewModel behind the control UI (plan §3.8): state badge, start/stop, performance, the
+/// multi-source audio mixer (per-source gain/mute/gate + realtime meters), master audio filters,
+/// mic-silence warning, capture monitor/region, resource limit, recording panel, log viewer,
+/// settings. Couples to other modules through Core/Contracts interfaces only.
 /// </summary>
 public sealed class MainViewModel : INotifyPropertyChanged
 {
     private readonly IStreamOrchestrator _orchestrator;
     private readonly IAudioMixer _audioMixer;
+    private readonly IScreenCaptureSource _capture;
+    private readonly IPreviewProvider _preview;
     private readonly IRecordingManager _recordingManager;
     private readonly IConfigStore _configStore;
     private readonly ILogService _log;
 
     private CancellationTokenSource? _startCts;
+    private readonly HashSet<string> _silentMics = [];
+    private bool _loadingAudio;
+
+    // Coalesces config writes from gain-slider drags (which fire dozens of ticks) so we don't
+    // do a synchronous load+save per tick on the UI thread.
+    private readonly DispatcherTimer _persistDebounce = new() { Interval = TimeSpan.FromMilliseconds(600) };
 
     // Guards LogLines so it can be fed from background logging threads while WPF's
     // virtualizing ListBox reads it on the UI thread (BindingOperations.EnableCollectionSynchronization).
@@ -33,33 +46,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public MainViewModel(
         IStreamOrchestrator orchestrator,
         IAudioMixer audioMixer,
+        IScreenCaptureSource capture,
+        IPreviewProvider preview,
         IRecordingManager recordingManager,
         IConfigStore configStore,
         ILogService log)
     {
         _orchestrator = orchestrator;
         _audioMixer = audioMixer;
+        _capture = capture;
+        _preview = preview;
         _recordingManager = recordingManager;
         _configStore = configStore;
         _log = log;
 
         var config = _configStore.Load();
-        _systemVolume = config.Audio.SystemVolume;
-        _micVolume = config.Audio.MicVolume;
         _selectedResourceLimit = config.Encoding.ResourceLimit;
+        _resolution = config.Encoding.Resolution;
+        _fps = config.Encoding.Fps;
+        _videoBitrateKbps = config.Encoding.VideoBitrateKbps;
+        _audioBitrateKbps = config.Encoding.AudioBitrateKbps;
         _hotkeyText = config.Hotkey;
         _autostartMethod = config.Autostart;
         _recordingFolder = config.Recording.Folder;
         _maxSizeGb = config.Recording.MaxSizeGb;
         _retentionDays = config.Recording.RetentionDays;
 
+        // ---- audio master filters (apply next session) ----
+        _noiseSuppressionEnabled = config.Audio.Filters.NoiseSuppressionEnabled;
+        _noiseSuppressionDb = config.Audio.Filters.NoiseSuppressionDb;
+        _compressorEnabled = config.Audio.Filters.CompressorEnabled;
+        _limiterEnabled = config.Audio.Filters.LimiterEnabled;
+        _masterGainDb = config.Audio.Filters.MasterGainDb;
+
+        // ---- capture monitor / region ----
+        _regionX = config.Capture.RegionX;
+        _regionY = config.Capture.RegionY;
+        _regionWidth = config.Capture.RegionWidth;
+        _regionHeight = config.Capture.RegionHeight;
+
         StartCommand = new RelayCommand(Start, () => _orchestrator.State == StreamState.Idle);
         StopCommand = new RelayCommand(Stop, () => _orchestrator.State is not (StreamState.Idle or StreamState.Stopping));
         SaveSettingsCommand = new RelayCommand(SaveSettings);
         RefreshDevicesCommand = new RelayCommand(RefreshDevices);
+        AddMicCommand = new RelayCommand(AddMic);
+        _persistDebounce.Tick += (_, _) => PersistAudioSources();
 
         _orchestrator.StateChanged += (_, state) => OnUi(() => ApplyState(state));
         _orchestrator.MetricsUpdated += (_, metrics) => OnUi(() => ApplyMetrics(metrics));
+        _audioMixer.LevelsUpdated += (_, levels) => OnUi(() => ApplyLevels(levels));
+        _audioMixer.MicSignalChanged += (_, status) => OnUi(() => ApplyMicSignal(status));
+        _preview.FrameUpdated += () => OnUi(UpdatePreview);
 
         // Let WPF synchronise on _logSync so log lines appended from background
         // threads don't desync the virtualizing ListBox's item generator.
@@ -89,6 +126,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         });
 
         RefreshDevices();
+        LoadAudioSources(config);
+        LoadMonitors(config);
         RefreshRecordingStatus();
         ApplyState(_orchestrator.State);
     }
@@ -115,50 +154,113 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _gpuText = "-";
     public string GpuText { get => _gpuText; private set => Set(ref _gpuText, value); }
 
-    // ---- 오디오 ----
-    private double _systemVolume;
-    public double SystemVolume
-    {
-        get => _systemVolume;
-        set
-        {
-            if (Set(ref _systemVolume, value))
-            {
-                _audioMixer.SystemVolume = value;
-                PersistAudio();
-            }
-        }
-    }
-
-    private double _micVolume;
-    public double MicVolume
-    {
-        get => _micVolume;
-        set
-        {
-            if (Set(ref _micVolume, value))
-            {
-                _audioMixer.MicVolume = value;
-                PersistAudio();
-            }
-        }
-    }
-
+    // ---- 오디오 믹서 (다중 소스) ----
+    public ObservableCollection<AudioSourceViewModel> AudioSources { get; } = [];
     public ObservableCollection<AudioDeviceInfo> MicDevices { get; } = [];
 
-    private AudioDeviceInfo? _selectedMicDevice;
-    public AudioDeviceInfo? SelectedMicDevice
+    private double _masterMeterRms;
+    public double MasterMeterRms { get => _masterMeterRms; private set => Set(ref _masterMeterRms, value); }
+
+    private double _masterMeterPeak;
+    public double MasterMeterPeak { get => _masterMeterPeak; private set => Set(ref _masterMeterPeak, value); }
+
+    private string _masterMeterBrush = "#2ECC40";
+    public string MasterMeterBrush { get => _masterMeterBrush; private set => Set(ref _masterMeterBrush, value); }
+
+    private bool _micWarningVisible;
+    public bool MicWarningVisible { get => _micWarningVisible; private set => Set(ref _micWarningVisible, value); }
+
+    private string _micWarningText = "";
+    public string MicWarningText { get => _micWarningText; private set => Set(ref _micWarningText, value); }
+
+    // ---- 오디오 마스터 필터 (다음 세션부터 적용) ----
+    private bool _noiseSuppressionEnabled;
+    public bool NoiseSuppressionEnabled
     {
-        get => _selectedMicDevice;
+        get => _noiseSuppressionEnabled;
+        set { if (Set(ref _noiseSuppressionEnabled, value)) PersistFilters(); }
+    }
+
+    private int _noiseSuppressionDb;
+    public int NoiseSuppressionDb
+    {
+        get => _noiseSuppressionDb;
+        set { if (Set(ref _noiseSuppressionDb, value)) PersistFilters(); }
+    }
+
+    private bool _compressorEnabled;
+    public bool CompressorEnabled
+    {
+        get => _compressorEnabled;
+        set { if (Set(ref _compressorEnabled, value)) PersistFilters(); }
+    }
+
+    private bool _limiterEnabled;
+    public bool LimiterEnabled
+    {
+        get => _limiterEnabled;
+        set { if (Set(ref _limiterEnabled, value)) PersistFilters(); }
+    }
+
+    private double _masterGainDb;
+    public double MasterGainDb
+    {
+        get => _masterGainDb;
+        set { if (Set(ref _masterGainDb, value)) { Raise(nameof(MasterGainText)); PersistFilters(); } }
+    }
+
+    public string MasterGainText => $"{_masterGainDb:+0.0;-0.0;0.0} dB";
+
+    // ---- 캡처 모니터 / 영역 ----
+    public ObservableCollection<MonitorInfo> Monitors { get; } = [];
+
+    private MonitorInfo? _selectedMonitor;
+    public MonitorInfo? SelectedMonitor
+    {
+        get => _selectedMonitor;
         set
         {
-            if (Set(ref _selectedMicDevice, value) && value is not null)
+            if (Set(ref _selectedMonitor, value) && value is not null && !_loadingAudio)
             {
-                _audioMixer.MicDeviceId = value.Id;
-                PersistAudio();
+                _configStore.Update(config => config.Capture.MonitorIndex = value.Index);
+                _log.Info($"캡처 모니터 변경: {value.Name} ({value.Width}x{value.Height}) — 다음 세션부터 적용");
             }
         }
     }
+
+    private int _regionX;
+    public int RegionX { get => _regionX; set => Set(ref _regionX, value); }
+
+    private int _regionY;
+    public int RegionY { get => _regionY; set => Set(ref _regionY, value); }
+
+    private int _regionWidth;
+    public int RegionWidth { get => _regionWidth; set => Set(ref _regionWidth, value); }
+
+    private int _regionHeight;
+    public int RegionHeight { get => _regionHeight; set => Set(ref _regionHeight, value); }
+
+    // ---- 송출 미리보기 ----
+    private ImageSource? _previewImage;
+    public ImageSource? PreviewImage { get => _previewImage; private set => Set(ref _previewImage, value); }
+
+    // ---- 인코딩 (다음 세션부터 적용) ----
+    public string[] ResolutionOptions { get; } = ["source", "1920x1080", "1280x720", "854x480"];
+
+    private string _resolution;
+    public string Resolution { get => _resolution; set => Set(ref _resolution, value); }
+
+    public string[] FpsOptions { get; } = ["source", "30", "24", "15"];
+
+    private string _fps;
+    public string Fps { get => _fps; set => Set(ref _fps, value); }
+
+    private int _videoBitrateKbps;
+    /// <summary>Manual video bitrate (kbps); 0 = auto.</summary>
+    public int VideoBitrateKbps { get => _videoBitrateKbps; set => Set(ref _videoBitrateKbps, value); }
+
+    private int _audioBitrateKbps;
+    public int AudioBitrateKbps { get => _audioBitrateKbps; set => Set(ref _audioBitrateKbps, value); }
 
     // ---- 자원 제한 ----
     public string[] ResourceLimits { get; } = ["25", "50", "75", "none"];
@@ -171,9 +273,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             if (Set(ref _selectedResourceLimit, value))
             {
-                var config = _configStore.Load();
-                config.Encoding.ResourceLimit = value;
-                _configStore.Save(config);
+                _configStore.Update(config => config.Encoding.ResourceLimit = value);
                 _log.Info($"자원 사용 제한 변경: {value} (다음 세션부터 적용, 근사 상한)");
             }
         }
@@ -203,6 +303,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         RemotePinText = $"PIN: {pin}";
     });
 
+    private string _remoteUrlText = "";
+    public string RemoteUrlText { get => _remoteUrlText; private set => Set(ref _remoteUrlText, value); }
+
+    /// <summary>Called by App when the Cloudflare tunnel reports the public phone URL (mode=cloudflare).</summary>
+    public void SetRemoteUrl(string url) => OnUi(() =>
+    {
+        RemoteStatusText = "폰 브라우저로 아래 주소를 열고 PIN을 입력해 페어링하세요.";
+        RemoteUrlText = $"주소: {url}";
+    });
+
     // ---- 로그 뷰어 ----
     public ObservableCollection<string> LogLines { get; } = [];
 
@@ -228,6 +338,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public RelayCommand StopCommand { get; }
     public RelayCommand SaveSettingsCommand { get; }
     public RelayCommand RefreshDevicesCommand { get; }
+    public RelayCommand AddMicCommand { get; }
 
     /// <summary>Raised when the saved hotkey changes so App can re-register it.</summary>
     public event Action<string>? HotkeyChanged;
@@ -244,41 +355,201 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _ = _orchestrator.StopAsync();
     }
 
-    private void SaveSettings()
+    // ---- audio mixer wiring ----
+
+    private void LoadAudioSources(AppConfig config)
     {
-        if (!HotkeyGesture.TryParse(HotkeyText, out var gesture))
+        _loadingAudio = true;
+        AudioSources.Clear();
+        foreach (var settings in AudioConfigMapper.ToSourceSettings(config.Audio))
         {
-            _log.Warn($"단축키 형식이 올바르지 않아 저장하지 않았습니다: \"{HotkeyText}\"");
+            AudioSources.Add(CreateSourceVm(settings));
+        }
+        _loadingAudio = false;
+    }
+
+    private AudioSourceViewModel CreateSourceVm(AudioSourceSettings settings) =>
+        new(settings, MicDevices, OnSourceChanged, RemoveSource);
+
+    private void OnSourceChanged(AudioSourceViewModel vm, AudioChangeKind kind)
+    {
+        if (_loadingAudio)
+        {
+            return;
+        }
+        switch (kind)
+        {
+            case AudioChangeKind.Gain:
+                _audioMixer.SetGain(vm.Id, vm.Gain);
+                SchedulePersist(); // debounce: a slider drag fires many ticks
+                break;
+            case AudioChangeKind.Mute:
+                _audioMixer.SetMuted(vm.Id, vm.Muted);
+                PersistAudioSources();
+                break;
+            case AudioChangeKind.Structural:
+                _audioMixer.ConfigureSources(BuildSourceSettings());
+                ReconcileSilentMics();
+                PersistAudioSources();
+                break;
+        }
+    }
+
+    private void SchedulePersist()
+    {
+        _persistDebounce.Stop();
+        _persistDebounce.Start();
+    }
+
+    private void AddMic()
+    {
+        var used = AudioSources.Where(s => s.IsMic).Select(s => s.DeviceId).ToHashSet();
+        var device = MicDevices.FirstOrDefault(d => !used.Contains(d.Id));
+        var settings = new AudioSourceSettings(
+            AudioConfigMapper.SourceId("mic", device?.Id),
+            AudioSourceKind.Microphone, device?.Id, device?.Name ?? "마이크");
+        AudioSources.Add(CreateSourceVm(settings));
+        _audioMixer.ConfigureSources(BuildSourceSettings());
+        PersistAudioSources();
+        _log.Info($"오디오 소스 추가: {settings.Name}");
+    }
+
+    private void RemoveSource(AudioSourceViewModel vm)
+    {
+        if (vm.IsSystem || !AudioSources.Remove(vm))
+        {
+            return;
+        }
+        _audioMixer.ConfigureSources(BuildSourceSettings());
+        ReconcileSilentMics();
+        PersistAudioSources();
+        _log.Info($"오디오 소스 제거: {vm.Name}");
+    }
+
+    private IReadOnlyList<AudioSourceSettings> BuildSourceSettings() =>
+        AudioSources.Select(s => s.ToSettings()).ToList();
+
+    private void PersistAudioSources()
+    {
+        _persistDebounce.Stop();
+        var snapshot = AudioSources.Select(s => AudioConfigMapper.ToConfig(s.ToSettings())).ToList();
+        _configStore.Update(config => config.Audio.Sources = snapshot);
+    }
+
+    private void PersistFilters()
+    {
+        if (_loadingAudio)
+        {
+            return;
+        }
+        _configStore.Update(config =>
+        {
+            config.Audio.Filters.NoiseSuppressionEnabled = _noiseSuppressionEnabled;
+            config.Audio.Filters.NoiseSuppressionDb = _noiseSuppressionDb;
+            config.Audio.Filters.CompressorEnabled = _compressorEnabled;
+            config.Audio.Filters.LimiterEnabled = _limiterEnabled;
+            config.Audio.Filters.MasterGainDb = _masterGainDb;
+        });
+        _log.Info("오디오 마스터 필터 변경 — 다음 세션부터 적용됩니다.");
+    }
+
+    private void ApplyLevels(AudioLevels levels)
+    {
+        foreach (var level in levels.Sources)
+        {
+            // small list (system + a few mics): linear scan is fine.
+            foreach (var vm in AudioSources)
+            {
+                if (vm.Id == level.Id)
+                {
+                    vm.UpdateLevel(level.PeakDb, level.RmsDb);
+                    break;
+                }
+            }
+        }
+        MasterMeterRms = ToFraction(levels.MasterRmsDb);
+        MasterMeterPeak = ToFraction(levels.MasterPeakDb);
+        MasterMeterBrush = levels.MasterPeakDb >= -3 ? "#E74C3C"
+            : levels.MasterPeakDb >= -12 ? "#F1C40F" : "#2ECC40";
+    }
+
+    private void UpdatePreview()
+    {
+        var jpeg = _preview.GetLatestJpegFrame();
+        if (jpeg is null || jpeg.Length == 0)
+        {
+            return;
+        }
+        var image = new BitmapImage();
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.StreamSource = new MemoryStream(jpeg);
+        image.EndInit();
+        image.Freeze();
+        PreviewImage = image;
+    }
+
+    private void ApplyMicSignal(MicSignalStatus status)
+    {
+        if (status.SignalPresent)
+        {
+            _silentMics.Remove(status.SourceId);
+        }
+        else
+        {
+            _silentMics.Add(status.SourceId);
+        }
+        UpdateMicWarning();
+    }
+
+    /// <summary>Drops warnings for sources that no longer exist (device changed/removed).</summary>
+    private void ReconcileSilentMics()
+    {
+        _silentMics.RemoveWhere(id => AudioSources.All(s => s.Id != id));
+        UpdateMicWarning();
+    }
+
+    private void UpdateMicWarning()
+    {
+        if (_silentMics.Count == 0)
+        {
+            MicWarningVisible = false;
+            MicWarningText = "";
             return;
         }
 
-        var config = _configStore.Load();
-        config.Hotkey = gesture!.Display;
-        config.Autostart = AutostartMethod;
-        config.Recording.Folder = RecordingFolder;
-        config.Recording.MaxSizeGb = MaxSizeGb;
-        config.Recording.RetentionDays = RetentionDays;
-        _configStore.Save(config);
-
-        HotkeyText = gesture.Display;
-        HotkeyChanged?.Invoke(gesture.Display);
-        _log.Info("설정이 저장되었습니다.");
-        RefreshRecordingStatus();
+        var names = _silentMics
+            .Select(id => AudioSources.FirstOrDefault(s => s.Id == id)?.Name ?? "마이크")
+            .ToList();
+        MicWarningText = $"⚠ 마이크 신호 없음: {string.Join(", ", names)} — 연결/음소거를 확인하세요.";
+        MicWarningVisible = true;
     }
 
     private void RefreshDevices()
     {
         MicDevices.Clear();
-        var configuredId = _configStore.Load().Audio.MicDeviceId;
         foreach (var device in _audioMixer.GetMicrophoneDevices())
         {
             MicDevices.Add(device);
-            if (device.Id == configuredId)
-            {
-                _selectedMicDevice = device;
-                Raise(nameof(SelectedMicDevice));
-            }
         }
+        foreach (var vm in AudioSources)
+        {
+            vm.RefreshDeviceSelection();
+        }
+    }
+
+    private void LoadMonitors(AppConfig config)
+    {
+        _loadingAudio = true;
+        Monitors.Clear();
+        foreach (var monitor in _capture.GetMonitors())
+        {
+            Monitors.Add(monitor);
+        }
+        _selectedMonitor = Monitors.FirstOrDefault(m => m.Index == config.Capture.MonitorIndex)
+                           ?? Monitors.FirstOrDefault();
+        Raise(nameof(SelectedMonitor));
+        _loadingAudio = false;
     }
 
     public void RefreshRecordingStatus()
@@ -315,13 +586,43 @@ public sealed class MainViewModel : INotifyPropertyChanged
         GpuText = metrics.GpuPercent >= 0 ? $"{metrics.GpuPercent:F0}%" : "-";
     }
 
-    private void PersistAudio()
+    private void SaveSettings()
     {
-        var config = _configStore.Load();
-        config.Audio.SystemVolume = _systemVolume;
-        config.Audio.MicVolume = _micVolume;
-        config.Audio.MicDeviceId = _selectedMicDevice?.Id ?? config.Audio.MicDeviceId;
-        _configStore.Save(config);
+        if (!HotkeyGesture.TryParse(HotkeyText, out var gesture))
+        {
+            _log.Warn($"단축키 형식이 올바르지 않아 저장하지 않았습니다: \"{HotkeyText}\"");
+            return;
+        }
+
+        var hotkeyDisplay = gesture!.Display;
+        _configStore.Update(config =>
+        {
+            config.Hotkey = hotkeyDisplay;
+            config.Autostart = AutostartMethod;
+            config.Recording.Folder = RecordingFolder;
+            config.Recording.MaxSizeGb = MaxSizeGb;
+            config.Recording.RetentionDays = RetentionDays;
+            config.Capture.MonitorIndex = SelectedMonitor?.Index ?? config.Capture.MonitorIndex;
+            config.Capture.RegionX = RegionX;
+            config.Capture.RegionY = RegionY;
+            config.Capture.RegionWidth = RegionWidth;
+            config.Capture.RegionHeight = RegionHeight;
+            config.Encoding.Resolution = Resolution;
+            config.Encoding.Fps = Fps;
+            config.Encoding.VideoBitrateKbps = VideoBitrateKbps;
+            config.Encoding.AudioBitrateKbps = AudioBitrateKbps;
+        });
+
+        HotkeyText = hotkeyDisplay;
+        HotkeyChanged?.Invoke(hotkeyDisplay);
+        _log.Info("설정이 저장되었습니다. (캡처 모니터/영역은 다음 세션부터 적용)");
+        RefreshRecordingStatus();
+    }
+
+    private static double ToFraction(double db)
+    {
+        const double floor = -60;
+        return db <= floor ? 0 : Math.Clamp((db - floor) / -floor, 0, 1);
     }
 
     private static string FormatBytes(long bytes) => bytes switch

@@ -1,4 +1,5 @@
 using System.Globalization;
+using SilentStream.Core.Models;
 
 namespace SilentStream.Core.Media;
 
@@ -17,6 +18,10 @@ namespace SilentStream.Core.Media;
 /// <param name="SampleRate">PCM sample rate.</param>
 /// <param name="Channels">PCM channel count.</param>
 /// <param name="ResourceLimit">"25" | "50" | "75" | "none" (plan §3.5).</param>
+/// <param name="AudioFilters">Master-bus filters (afftdn/acompressor/alimiter/volume); null = none.</param>
+/// <param name="OutputWidth">Encode/scale target width; 0 = same as <paramref name="Width"/> (no scale).</param>
+/// <param name="OutputHeight">Encode/scale target height; 0 = same as <paramref name="Height"/>.</param>
+/// <param name="OutputFps">Output frame rate; 0 = same as <paramref name="Fps"/> (no frame drop).</param>
 public sealed record EncoderSessionSpec(
     int Width,
     int Height,
@@ -29,7 +34,24 @@ public sealed record EncoderSessionSpec(
     string AudioPipeName,
     int SampleRate = 48000,
     int Channels = 2,
-    string ResourceLimit = "none");
+    string ResourceLimit = "none",
+    AudioFilterSettings? AudioFilters = null,
+    int OutputWidth = 0,
+    int OutputHeight = 0,
+    double OutputFps = 0)
+{
+    /// <summary>Effective encode width (output override or input).</summary>
+    public int EffectiveWidth => OutputWidth > 0 ? OutputWidth : Width;
+
+    /// <summary>Effective encode height (output override or input).</summary>
+    public int EffectiveHeight => OutputHeight > 0 ? OutputHeight : Height;
+
+    /// <summary>Effective output frame rate (override or input).</summary>
+    public double EffectiveFps => OutputFps > 0 ? OutputFps : Fps;
+
+    /// <summary>True when the frames must be rescaled before encoding.</summary>
+    public bool NeedsScale => EffectiveWidth != Width || EffectiveHeight != Height;
+}
 
 /// <summary>
 /// Builds the FFmpeg command line: raw BGRA video on stdin + PCM audio from a named
@@ -51,19 +73,38 @@ public static class FfmpegArgumentsBuilder
             throw new ArgumentException("At least one of RtmpUrl/RecordingFilePath is required.", nameof(spec));
         }
 
-        var fps = spec.Fps.ToString(CultureInfo.InvariantCulture);
-        var gop = (int)Math.Round(spec.Fps * 2); // 2s keyframe interval (YouTube recommendation)
+        var inputFps = spec.Fps.ToString(CultureInfo.InvariantCulture);
+        var gop = (int)Math.Round(spec.EffectiveFps * 2); // 2s keyframe interval (YouTube recommendation)
 
         var args = new List<string>
         {
             "-hide_banner", "-loglevel warning", "-stats_period 2",
             // input 0: raw BGRA frames pushed by the capture source via stdin
             "-f rawvideo", "-pix_fmt bgra",
-            $"-s {spec.Width}x{spec.Height}", $"-framerate {fps}",
+            $"-s {spec.Width}x{spec.Height}", $"-framerate {inputFps}",
             "-i pipe:0",
             // input 1: mixed PCM from the audio mixer via named pipe
             "-f s16le", $"-ar {spec.SampleRate}", $"-ac {spec.Channels}",
-            $"-i \"{spec.AudioPipeName}\"",
+            $"-i \"{spec.AudioPipeName}\""
+        };
+
+        // Optional downscale + output frame-rate reduction (manual resolution/fps options). Emitted
+        // only when they differ from the captured input, so the default (source) path is unchanged.
+        if (spec.NeedsScale)
+        {
+            // Preserve aspect (downscale to fit) then pad to the exact target with black bars, so a
+            // mismatched monitor/region aspect letterboxes instead of stretching.
+            var w = spec.EffectiveWidth;
+            var h = spec.EffectiveHeight;
+            args.Add($"-vf \"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2\"");
+        }
+        if (Math.Abs(spec.EffectiveFps - spec.Fps) > 0.01)
+        {
+            args.Add($"-r {spec.EffectiveFps.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        args.AddRange(new[]
+        {
             // video encode
             $"-c:v {spec.Encoder.ToFfmpegName()}",
             $"-b:v {spec.VideoBitrateKbps}k",
@@ -71,9 +112,19 @@ public static class FfmpegArgumentsBuilder
             $"-bufsize {spec.VideoBitrateKbps * 2}k",
             $"-g {gop}",
             "-pix_fmt yuv420p"
-        };
+        });
 
         args.AddRange(GetEncoderTuning(spec.Encoder, spec.ResourceLimit, processorCount));
+
+        // Master-bus audio post-processing (denoise/compressor/limiter/gain). Applied here, at
+        // session start, so it survives the tee fan-out; realtime per-source gain/mute/gate live
+        // in the WASAPI mixer instead (plan §3.4). Emitted only when something is enabled, so the
+        // default (no filters) leaves the command line byte-for-byte unchanged.
+        var audioFilter = BuildAudioFilterChain(spec.AudioFilters);
+        if (audioFilter.Length > 0)
+        {
+            args.Add($"-af \"{audioFilter}\"");
+        }
 
         args.Add($"-c:a aac -b:a {spec.AudioBitrateKbps}k");
 
@@ -105,6 +156,44 @@ public static class FfmpegArgumentsBuilder
         }
 
         return string.Join(' ', args);
+    }
+
+    /// <summary>
+    /// Composes the FFmpeg <c>-af</c> filter chain from the master-bus settings: spectral
+    /// denoise (afftdn) → compressor (acompressor) → brick-wall limiter (alimiter) → make-up
+    /// gain (volume). Returns an empty string when nothing is enabled. No spaces are emitted so
+    /// the chain is a single shell token even before the surrounding quotes.
+    /// </summary>
+    internal static string BuildAudioFilterChain(AudioFilterSettings? filters)
+    {
+        if (filters is null || !filters.HasAny)
+        {
+            return string.Empty;
+        }
+
+        var chain = new List<string>();
+        if (filters.NoiseSuppressionEnabled)
+        {
+            var nr = Math.Clamp(filters.NoiseSuppressionDb, 1, 97);
+            chain.Add($"afftdn=nr={nr.ToString(CultureInfo.InvariantCulture)}:nf=-25");
+        }
+        if (filters.CompressorEnabled)
+        {
+            // Gentle speech compression: ~3:1 above -18 dBFS with fast-ish attack/release.
+            chain.Add("acompressor=threshold=-18dB:ratio=3:attack=20:release=250");
+        }
+        if (filters.LimiterEnabled)
+        {
+            // Brick-wall just below full scale to stop clipping on peaks.
+            chain.Add("alimiter=limit=0.95");
+        }
+        if (Math.Abs(filters.MasterGainDb) > 0.01)
+        {
+            var db = filters.MasterGainDb.ToString("0.##", CultureInfo.InvariantCulture);
+            chain.Add($"volume={db}dB");
+        }
+
+        return string.Join(',', chain);
     }
 
     /// <summary>
