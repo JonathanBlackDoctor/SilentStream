@@ -229,10 +229,18 @@ public sealed class RemoteConfig
     /// <summary>
     /// Cloudflare named-tunnel token (used when Mode="cloudflare"). The tunnel dials outbound to the
     /// Cloudflare edge and serves the loopback server over HTTPS, so no port-forwarding is needed.
-    /// Sensitive — it lives only in %AppData%\SilentStream\config.json (never committed); guard it
-    /// like a password. Empty = run an ephemeral quick tunnel instead (random *.trycloudflare.com URL).
+    /// Sensitive — paste the plaintext token here ONCE; on the next start the app encrypts it into
+    /// <see cref="CloudflareTunnelTokenEnc"/> (DPAPI) and wipes this field, so it is never left at rest
+    /// in plaintext. Empty = run an ephemeral quick tunnel instead (random *.trycloudflare.com URL).
     /// </summary>
     public string CloudflareTunnelToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// DPAPI-encrypted Cloudflare named-tunnel token (base64, CurrentUser scope). Written by the app
+    /// after migrating a pasted <see cref="CloudflareTunnelToken"/>; this is the at-rest form actually
+    /// used. Empty until a token is configured. Mirrors <see cref="YouTubeConfig.RefreshTokenEnc"/>.
+    /// </summary>
+    public string CloudflareTunnelTokenEnc { get; set; } = string.Empty;
 
     /// <summary>
     /// Public hostname mapped to this tunnel in the Cloudflare dashboard (e.g.

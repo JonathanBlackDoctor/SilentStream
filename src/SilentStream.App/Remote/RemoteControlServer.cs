@@ -49,6 +49,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IAudioMixer _audioMixer;
     private readonly IPreviewProvider _preview;
     private readonly IConfigStore _configStore;
+    private readonly ITokenProtector _tokenProtector;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -73,6 +74,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IAudioMixer audioMixer,
         IPreviewProvider preview,
         IConfigStore configStore,
+        ITokenProtector tokenProtector,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -83,6 +85,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _audioMixer = audioMixer;
         _preview = preview;
         _configStore = configStore;
+        _tokenProtector = tokenProtector;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -164,7 +167,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private async Task StartCloudflareTunnelAsync(int port, CancellationToken ct)
     {
         var remote = _configStore.Load().Remote;
-        var token = string.IsNullOrWhiteSpace(remote.CloudflareTunnelToken) ? null : remote.CloudflareTunnelToken;
+        var token = ResolveCloudflareToken(remote);
         var hostname = string.IsNullOrWhiteSpace(remote.CloudflareHostname) ? null : remote.CloudflareHostname;
         try
         {
@@ -184,6 +187,53 @@ public sealed class RemoteControlServer : IRemoteControlServer
         {
             _log.Error("Cloudflare 터널 시작 실패(라이브/녹화에는 영향 없음)", ex);
         }
+    }
+
+    /// <summary>
+    /// Resolves the plaintext named-tunnel token for cloudflared, keeping it encrypted at rest.
+    /// A freshly pasted <see cref="RemoteConfig.CloudflareTunnelToken"/> is DPAPI-encrypted into
+    /// <see cref="RemoteConfig.CloudflareTunnelTokenEnc"/> and the plaintext field is wiped on disk;
+    /// thereafter the encrypted form is decrypted for use. Returns null (quick tunnel) when no token
+    /// is configured or a crypto step fails — the tunnel start path treats that as non-fatal.
+    /// </summary>
+    private string? ResolveCloudflareToken(RemoteConfig remote)
+    {
+        // Freshly pasted plaintext: encrypt at rest, then wipe the plaintext copy from config.json.
+        if (!string.IsNullOrWhiteSpace(remote.CloudflareTunnelToken))
+        {
+            var plain = remote.CloudflareTunnelToken;
+            try
+            {
+                var enc = _tokenProtector.Protect(plain);
+                _configStore.Update(c =>
+                {
+                    c.Remote.CloudflareTunnelTokenEnc = enc;
+                    c.Remote.CloudflareTunnelToken = string.Empty;
+                });
+                _log.Info("Cloudflare 터널 토큰을 DPAPI로 암호화 저장했습니다(평문 제거).");
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Cloudflare 터널 토큰 암호화 실패 — 이번 실행은 평문 토큰으로 진행합니다.", ex);
+            }
+            return plain;
+        }
+
+        // Already encrypted at rest: decrypt for use.
+        if (!string.IsNullOrWhiteSpace(remote.CloudflareTunnelTokenEnc))
+        {
+            try
+            {
+                return _tokenProtector.Unprotect(remote.CloudflareTunnelTokenEnc);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("Cloudflare 터널 토큰 복호화 실패 — 명명형 토큰 없이 진행합니다.", ex);
+                return null;
+            }
+        }
+
+        return null;
     }
 
     public async Task StopAsync()
