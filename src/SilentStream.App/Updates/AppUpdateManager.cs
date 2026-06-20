@@ -12,7 +12,7 @@ namespace SilentStream.App.Updates;
 public sealed class AppUpdateManager(ILogService log) : IDisposable
 {
     // GitHub Releases 피드(공개 리포라 토큰 불필요). CI의 `vpk upload github` 가 게시하는 릴리스를 읽는다.
-    private const string RepoUrl = "https://github.com/JonathanBlackDoctor/obs-alternative";
+    private const string RepoUrl = "https://github.com/JonathanBlackDoctor/SilentStream";
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
     private CancellationTokenSource? _cts;
