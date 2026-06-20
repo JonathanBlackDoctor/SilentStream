@@ -42,3 +42,7 @@ installer/ffmpeg/
 installer/output/
 # OAuth 데스크톱 시크릿(설치본에 번들, 커밋 금지)
 installer/secrets/
+
+# Velopack 빌드 산출물 (vpk pack / CI release-windows; ffmpeg·cloudflared·secret 번들 포함, 커밋 금지)
+publish/
+Releases/
