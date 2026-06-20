@@ -18,6 +18,12 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
     private CancellationTokenSource? _cts;
     private string? _stagedVersion; // 이미 내려받아 적용 예약한 버전 — 중복 다운로드/대기 프로세스 방지.
 
+    /// <summary>
+    /// 새 버전을 내려받아 다음 종료/재시작 때 적용되도록 예약한 직후 발생(인자 = 적용 예정 버전, 예 "0.3.0").
+    /// 제어창 상태바가 "재시작 시 적용" 안내를 띄우는 데 쓴다. UI 스레드 마샬링은 구독자(App→ViewModel)가 담당.
+    /// </summary>
+    public event Action<string>? UpdateStaged;
+
     public void Start()
     {
         _cts = new CancellationTokenSource();
@@ -67,6 +73,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
             manager.WaitExitThenApplyUpdates(update, silent: true, restart: false);
             _stagedVersion = version;
             log.Info($"업데이트 다운로드 완료: v{version} — PC를 끄거나 앱을 재시작하면 적용됩니다.");
+            UpdateStaged?.Invoke(version);
         }
         catch (Exception ex)
         {

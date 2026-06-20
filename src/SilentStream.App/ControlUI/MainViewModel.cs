@@ -313,6 +313,29 @@ public sealed class MainViewModel : INotifyPropertyChanged
         RemoteUrlText = $"주소: {url}";
     });
 
+    // ---- 버전 / 자동 업데이트 상태 ----
+    private string _versionText = "";
+    /// <summary>현재 실행 중인 버전(예 "v0.2.0"). 제어창 제목·하단 상태바에 표시.</summary>
+    public string VersionText { get => _versionText; private set => Set(ref _versionText, value); }
+
+    private string _updateStatusText = "";
+    /// <summary>내려받아 적용 대기 중인 업데이트 안내(없으면 빈 문자열).</summary>
+    public string UpdateStatusText { get => _updateStatusText; private set => Set(ref _updateStatusText, value); }
+
+    private bool _updateAvailable;
+    /// <summary>적용 대기 중인 업데이트가 있는지 — 상태바의 업데이트 안내 표시 여부를 제어.</summary>
+    public bool UpdateAvailable { get => _updateAvailable; private set => Set(ref _updateAvailable, value); }
+
+    /// <summary>App가 시작 시 현재 실행 버전을 전달한다(제어창 제목/상태바 표시용).</summary>
+    public void SetVersion(string version) => OnUi(() => VersionText = $"v{version}");
+
+    /// <summary>업데이트가 내려받아져 다음 재시작 때 적용 예약되면 App(→AppUpdateManager)가 호출한다.</summary>
+    public void SetStagedUpdate(string version) => OnUi(() =>
+    {
+        UpdateStatusText = $"⬆ v{version} 다운로드됨 — 재시작 시 적용";
+        UpdateAvailable = true;
+    });
+
     // ---- 로그 뷰어 ----
     public ObservableCollection<string> LogLines { get; } = [];
 

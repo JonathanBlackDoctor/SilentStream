@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using SilentStream.App.ControlUI;
@@ -70,6 +71,9 @@ public partial class App : Application
 
         // Hotkey-toggled control window.
         var viewModel = _services.GetRequiredService<MainViewModel>();
+        // 제어창 생성 전에 현재 버전을 넣어 제목이 첫 바인딩부터 올바르게 표시되도록 한다.
+        var version = GetAppVersion();
+        viewModel.SetVersion(version);
         _controlWindow = new ControlWindow(viewModel);
         _hotkeyManager = new HotkeyManager(log);
         _hotkeyManager.HotkeyPressed += () => _controlWindow.Toggle();
@@ -91,11 +95,33 @@ public partial class App : Application
         }
 
         _updateManager = new AppUpdateManager(log);
+        // 새 버전을 내려받아 적용 예약하면 제어창 상태바에 "재시작 시 적용"을 띄운다.
+        _updateManager.UpdateStaged += staged => viewModel.SetStagedUpdate(staged);
         _updateManager.Start();
 
-        log.Info("SilentStream 시작 완료 (백그라운드 대기)");
+        log.Info($"SilentStream v{version} 시작 완료 (백그라운드 대기)");
 
         _ = StartupSequence.RunAsync(_services, this);
+    }
+
+    /// <summary>
+    /// 현재 실행 중인 버전 문자열을 Velopack 릴리스(피드) 버전과 글자 그대로 일치하게 돌려준다(예 "0.2.0").
+    /// InformationalVersion을 쓰는 이유: AssemblyVersion(4부 숫자)은 "0.2.0-beta.1" 같은 SemVer 사전배포
+    /// 라벨을 못 담아 Velopack이 주는 스테이징 업데이트 문자열과 어긋난다. SDK가 git 빌드에서 덧붙이는
+    /// "+&lt;커밋해시&gt;" 빌드 메타데이터는 잘라낸다. CI는 릴리스 태그에서 <c>-p:Version=</c>으로 이 값을 채우고,
+    /// 개발 빌드는 csproj 기본값(현재 0.1.0)을 쓴다. Velopack이 업데이트를 적용하면 교체된 exe 값이 그대로 반영된다.
+    /// </summary>
+    private static string GetAppVersion()
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(info))
+        {
+            var plus = info.IndexOf('+'); // "0.2.0+abc123" → "0.2.0" (빌드 메타데이터 제거)
+            return plus >= 0 ? info[..plus] : info;
+        }
+        var v = asm.GetName().Version; // InformationalVersion 특성이 없는 빌드 대비 폴백
+        return v is null ? "dev" : $"{v.Major}.{v.Minor}.{v.Build}";
     }
 
     /// <summary>
