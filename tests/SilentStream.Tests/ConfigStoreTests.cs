@@ -74,6 +74,27 @@ public class ConfigStoreTests : IDisposable
     }
 
     [Fact]
+    public void Default_cloudflare_protocol_is_http2()
+    {
+        var config = new ConfigStore(ConfigPath).Load();
+
+        // http2 (TCP/443) is the default so UDP-blocked networks still reach the tunnel (2nd field test).
+        Assert.Equal("http2", config.Remote.CloudflareProtocol);
+    }
+
+    [Fact]
+    public void Blank_cloudflare_protocol_is_normalized_to_http2_on_load()
+    {
+        // A config written before the field existed leaves it blank; it must not pass an empty
+        // --protocol. An explicit "quic" is preserved.
+        File.WriteAllText(ConfigPath, """{ "version": 4, "remote": { "mode": "cloudflare", "cloudflareProtocol": "" } }""");
+        Assert.Equal("http2", new ConfigStore(ConfigPath).Load().Remote.CloudflareProtocol);
+
+        File.WriteAllText(ConfigPath, """{ "version": 4, "remote": { "mode": "cloudflare", "cloudflareProtocol": "quic" } }""");
+        Assert.Equal("quic", new ConfigStore(ConfigPath).Load().Remote.CloudflareProtocol);
+    }
+
+    [Fact]
     public void Corrupt_file_is_backed_up_and_defaults_returned()
     {
         File.WriteAllText(ConfigPath, "{ not json !!!");

@@ -169,9 +169,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var remote = _configStore.Load().Remote;
         var token = ResolveCloudflareToken(remote);
         var hostname = string.IsNullOrWhiteSpace(remote.CloudflareHostname) ? null : remote.CloudflareHostname;
+        _log.Info($"Cloudflare 터널을 시작합니다(전송 프로토콜: {remote.CloudflareProtocol}).");
         try
         {
-            var publicUrl = await _cloudflared.StartAsync(token, port, hostname, ct).ConfigureAwait(false);
+            var publicUrl = await _cloudflared
+                .StartAsync(token, port, hostname, remote.CloudflareProtocol, ct).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(publicUrl))
             {
                 CurrentPublicUrl = publicUrl;

@@ -108,6 +108,14 @@ public sealed class ConfigStore : IConfigStore
         config.Periods ??= new PeriodsConfig();
         config.Remote ??= new RemoteConfig();
 
+        // A file written before the CloudflareProtocol field existed (or one that nulls/blanks it)
+        // must not pass an empty --protocol; default to http2 so UDP-blocked networks still reach
+        // the tunnel (2nd field test). An explicit "quic"/"auto" is preserved.
+        if (string.IsNullOrWhiteSpace(config.Remote.CloudflareProtocol))
+        {
+            config.Remote.CloudflareProtocol = "http2";
+        }
+
         // v3 migration: multi-source audio mixer + capture monitor/region. Guard explicit nulls,
         // then build the source list from the legacy single-mic volume fields if it is empty so a
         // v2 file (or a fresh default) yields "system loopback + default microphone".

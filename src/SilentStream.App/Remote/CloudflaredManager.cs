@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.RegularExpressions;
 using SilentStream.Core.Contracts;
+using SilentStream.Core.Remote;
 
 namespace SilentStream.App.Remote;
 
@@ -36,9 +37,12 @@ public sealed class CloudflaredManager : IDisposable
     /// <paramref name="token"/> it runs the configured named tunnel (<c>tunnel run --token</c>) and
     /// returns <c>https://{hostname}</c> when a hostname is given (else null). With no token it runs
     /// a quick tunnel (<c>--url http://localhost:{port}</c>) and returns the *.trycloudflare.com URL
-    /// parsed from stderr (throwing on timeout / early exit).
+    /// parsed from stderr (throwing on timeout / early exit). <paramref name="protocol"/>
+    /// ("http2"/"quic"/"auto"; blank = cloudflared default) selects the edge transport — http2
+    /// (TCP/443) survives the UDP-blocked networks that broke QUIC in the 2nd field test.
     /// </summary>
-    public async Task<string?> StartAsync(string? token, int localPort, string? hostname, CancellationToken ct)
+    public async Task<string?> StartAsync(
+        string? token, int localPort, string? hostname, string? protocol, CancellationToken ct)
     {
         if (IsRunning)
         {
@@ -47,9 +51,7 @@ public sealed class CloudflaredManager : IDisposable
 
         _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var hasToken = !string.IsNullOrWhiteSpace(token);
-        var args = hasToken
-            ? $"tunnel --no-autoupdate run --token {token}"
-            : $"tunnel --no-autoupdate --url http://localhost:{localPort}";
+        var args = CloudflaredArgs.Build(token, localPort, protocol);
 
         // Only quick tunnels learn their URL from stderr; a named tunnel's URL is its hostname.
         _quickUrlTcs = hasToken

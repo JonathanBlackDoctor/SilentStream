@@ -266,4 +266,13 @@ public sealed class RemoteConfig
     /// URL. Optional; leave empty if you only run a quick tunnel.
     /// </summary>
     public string CloudflareHostname { get; set; } = string.Empty;
+
+    /// <summary>
+    /// cloudflared edge transport: "http2" (default), "quic", or "auto". QUIC needs outbound
+    /// UDP/7844, which many managed/school networks block — the 2nd field test saw cloudflared fail
+    /// with "failed to dial to edge with quic" and no automatic fallback, so the phone could not
+    /// reach the tunnel until it was forced onto http2. http2 uses TCP/443 and works wherever HTTPS
+    /// does, so it is the default for unattended reliability. Blank is treated as "http2" at load.
+    /// </summary>
+    public string CloudflareProtocol { get; set; } = "http2";
 }
