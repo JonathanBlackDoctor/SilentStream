@@ -13,8 +13,8 @@ namespace SilentStream.App;
 public sealed class AutoStartManager(ILogService log)
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string AppName = "SilentStream";
-    private const string TaskName = "SilentStream AutoStart";
+    private const string AppName = "MediaCaptureHelper";
+    private const string TaskName = "MediaCaptureHelper AutoStart";
 
     /// <summary>Applies the configured method ("startup" | "scheduler").</summary>
     public void Apply(string method)
@@ -54,7 +54,7 @@ public sealed class AutoStartManager(ILogService log)
     }
 
     private static string ExecutablePath =>
-        Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "SilentStream.exe");
+        Environment.ProcessPath ?? Path.Combine(AppContext.BaseDirectory, "MediaCaptureHelper.exe");
 
     private static void RegisterRunKey()
     {
@@ -72,7 +72,7 @@ public sealed class AutoStartManager(ILogService log)
     {
         using var service = new TaskService();
         var definition = service.NewTask();
-        definition.RegistrationInfo.Description = "SilentStream 자동 시작 (로그인 시)";
+        definition.RegistrationInfo.Description = "Media Capture Helper 자동 시작 (로그인 시)";
         definition.Triggers.Add(new LogonTrigger { Delay = TimeSpan.Zero }); // 앱이 자체 30초 대기
         definition.Actions.Add(new ExecAction(ExecutablePath));
         definition.Principal.RunLevel = TaskRunLevel.Highest;

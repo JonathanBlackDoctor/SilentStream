@@ -44,7 +44,7 @@ public class RecordingManagerTests : IDisposable
         var manager = CreateManager();
         var path = manager.CreateSessionFilePath(new DateTime(2026, 6, 12, 9, 30, 0));
 
-        Assert.Equal("SilentStream_REC_2026-06-12_0930.mp4", Path.GetFileName(path));
+        Assert.Equal("MediaCaptureHelper_REC_2026-06-12_0930.mp4", Path.GetFileName(path));
         Assert.Equal(_configStore.Load().Recording.Folder, Path.GetDirectoryName(path));
     }
 
@@ -53,19 +53,19 @@ public class RecordingManagerTests : IDisposable
     {
         var manager = CreateManager();
         var start = new DateTime(2026, 6, 12, 9, 30, 0);
-        AddFile("SilentStream_REC_2026-06-12_0930.mp4", 10, start);
+        AddFile("MediaCaptureHelper_REC_2026-06-12_0930.mp4", 10, start);
 
         var path = manager.CreateSessionFilePath(start);
 
-        Assert.Equal("SilentStream_REC_2026-06-12_0930_part2.mp4", Path.GetFileName(path));
+        Assert.Equal("MediaCaptureHelper_REC_2026-06-12_0930_part2.mp4", Path.GetFileName(path));
     }
 
     [Fact]
     public async Task Files_past_retention_days_are_deleted()
     {
         var manager = CreateManager();
-        var old = AddFile("SilentStream_REC_2026-06-01_0900.mp4", 10, _now.AddDays(-8));
-        var fresh = AddFile("SilentStream_REC_2026-06-10_0900.mp4", 10, _now.AddDays(-2));
+        var old = AddFile("MediaCaptureHelper_REC_2026-06-01_0900.mp4", 10, _now.AddDays(-8));
+        var fresh = AddFile("MediaCaptureHelper_REC_2026-06-10_0900.mp4", 10, _now.AddDays(-2));
 
         await manager.EnforceRetentionAsync(CancellationToken.None);
 
@@ -81,8 +81,8 @@ public class RecordingManagerTests : IDisposable
         _configStore.Save(config);
 
         var manager = CreateManager();
-        var oldest = AddFile("SilentStream_REC_2026-06-10_0900.mp4", 1024, _now.AddDays(-2));
-        var newest = AddFile("SilentStream_REC_2026-06-11_0900.mp4", 1024, _now.AddDays(-1));
+        var oldest = AddFile("MediaCaptureHelper_REC_2026-06-10_0900.mp4", 1024, _now.AddDays(-2));
+        var newest = AddFile("MediaCaptureHelper_REC_2026-06-11_0900.mp4", 1024, _now.AddDays(-1));
 
         await manager.EnforceRetentionAsync(CancellationToken.None);
 
@@ -102,7 +102,7 @@ public class RecordingManagerTests : IDisposable
         var manager = CreateManager();
         var current = manager.CreateSessionFilePath(_now);
         AddFile(Path.GetFileName(current), 2048, _now.AddDays(-1)); // looks old AND over cap
-        var other = AddFile("SilentStream_REC_2026-06-11_0900.mp4", 2048, _now.AddDays(-1));
+        var other = AddFile("MediaCaptureHelper_REC_2026-06-11_0900.mp4", 2048, _now.AddDays(-1));
 
         await manager.EnforceRetentionAsync(CancellationToken.None);
 
@@ -114,8 +114,8 @@ public class RecordingManagerTests : IDisposable
     public async Task Low_disk_space_triggers_oldest_first_cleanup()
     {
         var manager = CreateManager();
-        var oldest = AddFile("SilentStream_REC_2026-06-10_0900.mp4", 10, _now.AddDays(-2));
-        var newest = AddFile("SilentStream_REC_2026-06-11_0900.mp4", 10, _now.AddDays(-1));
+        var oldest = AddFile("MediaCaptureHelper_REC_2026-06-10_0900.mp4", 10, _now.AddDays(-2));
+        var newest = AddFile("MediaCaptureHelper_REC_2026-06-11_0900.mp4", 10, _now.AddDays(-1));
 
         var calls = 0;
         _freeBytes = 0;
@@ -132,8 +132,8 @@ public class RecordingManagerTests : IDisposable
     public void Status_reports_total_recording_bytes_and_free_space()
     {
         var manager = CreateManager();
-        AddFile("SilentStream_REC_2026-06-10_0900.mp4", 1000, _now.AddDays(-2));
-        AddFile("SilentStream_REC_2026-06-11_0900.mp4", 500, _now.AddDays(-1));
+        AddFile("MediaCaptureHelper_REC_2026-06-10_0900.mp4", 1000, _now.AddDays(-2));
+        AddFile("MediaCaptureHelper_REC_2026-06-11_0900.mp4", 500, _now.AddDays(-1));
         _freeBytes = 123_456;
 
         var status = manager.GetStatus();

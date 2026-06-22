@@ -126,11 +126,12 @@ jobs:
       - name: Pack with Velopack
         run: >
           vpk pack
-          --packId SilentStream
+          --packId MediaCaptureHelper
           --packVersion ${{ steps.ver.outputs.version }}
           --packDir publish
-          --mainExe SilentStream.exe
-          --packTitle SilentStream
+          --mainExe MediaCaptureHelper.exe
+          --packTitle "Media Capture Helper"
+          --packAuthors "Media Capture Helper"
 
       # 7) GitHub Releases 에 게시(자산 업로드 + 릴리스 발행). 앱은 이 피드를 읽어 자동 업데이트한다.
       - name: Publish to GitHub Releases
@@ -142,5 +143,5 @@ jobs:
           --repoUrl https://github.com/${{ github.repository }}
           --token $env:GITHUB_TOKEN
           --publish
-          --releaseName "SilentStream ${{ steps.ver.outputs.version }}"
+          --releaseName "Media Capture Helper ${{ steps.ver.outputs.version }}"
           --tag ${{ github.ref_name }}

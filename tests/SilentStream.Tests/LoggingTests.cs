@@ -19,7 +19,7 @@ public class LoggingTests : IDisposable
         log.Error("오류 테스트", new InvalidOperationException("boom"));
         LogConfigurator.Flush();
 
-        var file = Path.Combine(_dir, $"SilentStream_{DateTime.Now:yyyy-MM-dd}.log");
+        var file = Path.Combine(_dir, $"MediaCaptureHelper_{DateTime.Now:yyyy-MM-dd}.log");
         Assert.True(File.Exists(file));
         var content = File.ReadAllText(file);
         Assert.Contains("스트림 시작 테스트", content);

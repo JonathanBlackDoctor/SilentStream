@@ -5,7 +5,7 @@ using NLog.Targets;
 namespace SilentStream.Core.Logging;
 
 /// <summary>
-/// Programmatic NLog setup: daily file %AppData%\SilentStream\logs\SilentStream_yyyy-MM-dd.log
+/// Programmatic NLog setup: daily file %AppData%\MediaCaptureHelper\logs\MediaCaptureHelper_yyyy-MM-dd.log
 /// with a 180-day archive/cleanup policy (plan §3.9).
 /// </summary>
 public static class LogConfigurator
@@ -19,7 +19,7 @@ public static class LogConfigurator
 
         var file = new FileTarget("file")
         {
-            FileName = Path.Combine(dir, "SilentStream_${shortdate}.log"),
+            FileName = Path.Combine(dir, "MediaCaptureHelper_${shortdate}.log"),
             Layout = "${longdate} [${level:uppercase=true}] ${message}${onexception:inner= | ${exception:format=tostring}}",
             ArchiveEvery = FileArchivePeriod.Day,
             MaxArchiveDays = ArchiveDays,

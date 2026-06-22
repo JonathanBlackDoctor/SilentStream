@@ -289,7 +289,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _firewallPort = null;
         try
         {
-            RunNetsh($"advfirewall firewall delete rule name=\"SilentStream Remote {port}\"");
+            RunNetsh($"advfirewall firewall delete rule name=\"MediaCaptureHelper Remote {port}\"");
             _log.Info($"원격 방화벽 인바운드 규칙을 제거했습니다(TCP {port}).");
         }
         catch (Exception ex)
@@ -863,7 +863,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private void TryConfigureFirewall(int port)
     {
-        var ruleName = $"SilentStream Remote {port}";
+        var ruleName = $"MediaCaptureHelper Remote {port}";
         try
         {
             // Replace any stale rule, then add a fresh inbound TCP allow (best-effort; needs admin).
@@ -912,7 +912,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             .FirstOrDefault(n => n.EndsWith("index.html", StringComparison.OrdinalIgnoreCase));
         if (name is null)
         {
-            return "<html><body><h1>SilentStream 원격</h1><p>UI 리소스를 찾지 못했습니다.</p></body></html>";
+            return "<html><body><h1>Media Capture Helper 원격</h1><p>UI 리소스를 찾지 못했습니다.</p></body></html>";
         }
         using var stream = assembly.GetManifestResourceStream(name)!;
         using var reader = new StreamReader(stream, Encoding.UTF8);

@@ -22,11 +22,11 @@ public class FfmpegArgumentsBuilderTests
 {
     private static EncoderSessionSpec Spec(
         string? rtmp = "rtmp://a.rtmp.youtube.com/live2/key",
-        string? file = @"C:\Users\me\Videos\SilentStream\SilentStream_REC_2026-06-12_0930.mp4",
+        string? file = @"C:\Users\me\Videos\MediaCaptureHelper\MediaCaptureHelper_REC_2026-06-12_0930.mp4",
         GpuEncoder encoder = GpuEncoder.Nvenc,
         string resourceLimit = "none") =>
         new(1920, 1080, 30, encoder, 6000, 160, rtmp, file,
-            @"\\.\pipe\silentstream_audio", ResourceLimit: resourceLimit);
+            @"\\.\pipe\mediacapturehelper_audio", ResourceLimit: resourceLimit);
 
     [Fact]
     public void Tee_output_carries_rtmp_with_onfail_ignore_and_fragmented_mp4()
@@ -40,7 +40,7 @@ public class FfmpegArgumentsBuilderTests
         Assert.Contains("[f=mp4:movflags=+frag_keyframe+empty_moov]", args);
         // Recording must not die with RTMP: file output sits after the | separator.
         Assert.Matches(@"onfail=ignore\].*\|\[f=mp4", args);
-        Assert.Contains("SilentStream_REC_2026-06-12_0930.mp4", args);
+        Assert.Contains("MediaCaptureHelper_REC_2026-06-12_0930.mp4", args);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class FfmpegArgumentsBuilderTests
         Assert.Contains("-s 1920x1080", args);
         Assert.Contains("-i pipe:0", args);
         Assert.Contains("-f s16le", args);
-        Assert.Contains(@"\\.\pipe\silentstream_audio", args);
+        Assert.Contains(@"\\.\pipe\mediacapturehelper_audio", args);
         Assert.Contains("-c:v h264_nvenc", args);
         Assert.Contains("-b:v 6000k", args);
         Assert.Contains("-c:a aac -b:a 160k", args);
@@ -89,7 +89,7 @@ public class FfmpegArgumentsBuilderTests
     public void Backslashes_in_recording_path_are_normalized_for_tee()
     {
         var args = FfmpegArgumentsBuilder.Build(Spec(), processorCount: 8);
-        Assert.Contains("C:/Users/me/Videos/SilentStream/", args);
+        Assert.Contains("C:/Users/me/Videos/MediaCaptureHelper/", args);
     }
 
     [Fact]

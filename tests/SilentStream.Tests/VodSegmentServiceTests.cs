@@ -24,7 +24,7 @@ public class VodSegmentServiceTests : IDisposable
 
     private string MakeSessionFile()
     {
-        var path = Path.Combine(_dir, "SilentStream_REC_2026-06-14_0859.mp4");
+        var path = Path.Combine(_dir, "MediaCaptureHelper_REC_2026-06-14_0859.mp4");
         File.WriteAllBytes(path, new byte[1024]);
         return path;
     }

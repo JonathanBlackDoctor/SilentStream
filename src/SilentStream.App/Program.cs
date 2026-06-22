@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using Velopack;
 
@@ -21,6 +22,10 @@ public static class Program
             // *FastCallback 후크는 DI 컨테이너 밖에서 짧게 돌고 즉시 종료된다.
             .OnBeforeUninstallFastCallback(_ => CleanupOnUninstall())
             .Run();
+
+        // 리브랜드(SilentStream → Media Capture Helper) 후 기존 설치본의 %AppData% 데이터를 1회 이전한다.
+        // Velopack 후크 호출은 위 .Run() 안에서 종료되므로 이 줄은 정상 실행 경로에서만 도달한다.
+        AppPaths.MigrateLegacyAppDataIfNeeded();
 
         var app = new App();
         app.InitializeComponent();
@@ -46,7 +51,7 @@ public static class Program
             Process.Start(new ProcessStartInfo
             {
                 FileName = "netsh",
-                Arguments = "advfirewall firewall delete rule name=\"SilentStream Remote 8787\"",
+                Arguments = "advfirewall firewall delete rule name=\"MediaCaptureHelper Remote 8787\"",
                 UseShellExecute = false,
                 CreateNoWindow = true
             })?.WaitForExit(10_000);

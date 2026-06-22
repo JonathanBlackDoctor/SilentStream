@@ -5,13 +5,13 @@ namespace SilentStream.Core.Implementations;
 
 /// <summary>
 /// Local backup recording bookkeeping (plan §3.6): one file per session named
-/// SilentStream_REC_yyyy-MM-dd_HHmm.mp4 in the configured folder, a capacity cap with
+/// MediaCaptureHelper_REC_yyyy-MM-dd_HHmm.mp4 in the configured folder, a capacity cap with
 /// oldest-first deletion, a 7-day retention window, and a min-free-space threshold.
 /// The actual bytes are written by the encoder's tee output; this class only manages files.
 /// </summary>
 public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
 {
-    private const string FilePrefix = "SilentStream_REC_";
+    private const string FilePrefix = "MediaCaptureHelper_REC_";
     private const string FilePattern = FilePrefix + "*.mp4";
 
     private readonly IConfigStore _configStore;

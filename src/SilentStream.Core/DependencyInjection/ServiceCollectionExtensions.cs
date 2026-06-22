@@ -6,7 +6,7 @@ using SilentStream.Core.Media;
 namespace SilentStream.Core.DependencyInjection;
 
 /// <summary>
-/// Composition root for the SilentStream core services. Every module is bound to its
+/// Composition root for the Media Capture Helper core services. Every module is bound to its
 /// <c>Core/Contracts</c> interface only — see plan §2.2 (모듈 간 계약). Phase 0 registers
 /// the stub implementations; later phases swap in the real ones behind the same interfaces.
 /// </summary>

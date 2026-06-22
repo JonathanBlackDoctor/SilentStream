@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <Product>SilentStream</Product>
-    <Company>SilentStream</Company>
+    <Product>Media Capture Helper</Product>
+    <Company>Media Capture Helper</Company>
   </PropertyGroup>
 </Project>

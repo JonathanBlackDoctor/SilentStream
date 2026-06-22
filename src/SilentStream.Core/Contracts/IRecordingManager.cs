@@ -9,7 +9,7 @@ namespace SilentStream.Core.Contracts;
 public interface IRecordingManager
 {
     /// <summary>
-    /// Builds the session file path (e.g. SilentStream_REC_2026-06-12_0930.mp4) inside the
+    /// Builds the session file path (e.g. MediaCaptureHelper_REC_2026-06-12_0930.mp4) inside the
     /// configured folder, based on the local session start time (plan §3.6 file naming).
     /// </summary>
     string CreateSessionFilePath(DateTime sessionStartLocal);

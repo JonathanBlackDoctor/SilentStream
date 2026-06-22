@@ -1,7 +1,7 @@
 <Window x:Class="SilentStream.App.ControlUI.ControlWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="{Binding VersionText, StringFormat='SilentStream 제어판 — {0}'}"
+        Title="{Binding VersionText, StringFormat='Media Capture Helper 제어판 — {0}'}"
         Width="880" Height="720"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BgBrush}"

@@ -5,7 +5,7 @@
          Kept off the net8.0-windows TFM so it builds and unit-tests on Linux CI too. -->
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>SilentStream.Core</RootNamespace>
-    <AssemblyName>SilentStream.Core</AssemblyName>
+    <AssemblyName>MediaCaptureHelper.Core</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>

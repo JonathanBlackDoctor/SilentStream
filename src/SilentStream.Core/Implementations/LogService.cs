@@ -11,7 +11,7 @@ namespace SilentStream.Core.Implementations;
 /// </summary>
 public sealed class LogService : ILogService
 {
-    private static readonly Logger Log = LogManager.GetLogger("SilentStream");
+    private static readonly Logger Log = LogManager.GetLogger("MediaCaptureHelper");
 
     public void Debug(string message)
     {

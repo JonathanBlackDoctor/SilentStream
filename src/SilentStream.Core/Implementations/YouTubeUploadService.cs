@@ -107,7 +107,7 @@ public sealed class YouTubeUploadService(
         _service = new YouTubeService(new BaseClientService.Initializer
         {
             HttpClientInitializer = credential,
-            ApplicationName = "SilentStream"
+            ApplicationName = "Media Capture Helper"
         });
         return _service;
     }

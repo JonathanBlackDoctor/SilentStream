@@ -16,7 +16,7 @@ namespace SilentStream.Core.Implementations;
 /// </summary>
 public sealed class EncoderPipeline : IEncoderPipeline
 {
-    private const string AudioPipeName = "silentstream_audio";
+    private const string AudioPipeName = "mediacapturehelper_audio";
 
     private readonly IScreenCaptureSource _capture;
     private readonly IAudioMixer _audioMixer;

@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace SilentStream.Core.Models;
 
 /// <summary>
-/// Root application configuration persisted to %AppData%\SilentStream\config.json.
+/// Root application configuration persisted to %AppData%\MediaCaptureHelper\config.json.
 /// Mirrors the schema in plan §6. OAuth tokens are DPAPI-encrypted (Phase 1).
 /// </summary>
 public sealed class AppConfig
@@ -182,7 +182,7 @@ public sealed class RecordingConfig
 {
     public bool Enabled { get; set; } = true;
 
-    /// <summary>Target folder. Default %USERPROFILE%\Videos\SilentStream (resolved at runtime).</summary>
+    /// <summary>Target folder. Default %USERPROFILE%\Videos\MediaCaptureHelper (resolved at runtime).</summary>
     public string Folder { get; set; } = string.Empty;
 
     /// <summary>Capacity cap in GB; oldest files deleted when exceeded (plan §3.6).</summary>
@@ -262,7 +262,7 @@ public sealed class RemoteConfig
 
     /// <summary>
     /// Public hostname mapped to this tunnel in the Cloudflare dashboard (e.g.
-    /// "silentstream.example.com"). Display only — shown in the control window so you know the phone
+    /// "remote.example.com"). Display only — shown in the control window so you know the phone
     /// URL. Optional; leave empty if you only run a quick tunnel.
     /// </summary>
     public string CloudflareHostname { get; set; } = string.Empty;

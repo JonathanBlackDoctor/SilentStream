@@ -1,4 +1,4 @@
-# SilentStream 사용자 안내서
+# Media Capture Helper 사용자 안내서
 
 OBS 없이 **PC를 켜면 자동으로 YouTube 라이브 송출 + 로컬 백업 녹화**가 시작되는
 백그라운드 프로그램입니다. (Windows 10/11 x64 전용)
@@ -8,12 +8,12 @@ OBS 없이 **PC를 켜면 자동으로 YouTube 라이브 송출 + 로컬 백업 
 
 ## 1. 설치
 
-1. `SilentStream-Setup-x.y.z.exe` 실행.
+1. `MediaCaptureHelper-Setup-x.y.z.exe` 실행.
 2. EULA(사용 동의) 확인 → 동의.
 3. **자동 시작 방식** 선택:
    - **시작 프로그램(권장)** — 로그인 후 실행.
    - **작업 스케줄러** — 최고 권한, 로그인 직후 실행.
-4. **녹화 폴더** 선택 (기본: `내 비디오\SilentStream`, 용량 큰 드라이브 권장).
+4. **녹화 폴더** 선택 (기본: `내 비디오\MediaCaptureHelper`, 용량 큰 드라이브 권장).
 5. 최초 실행 시 화면·오디오 캡처 동의 화면이 1회 표시됩니다.
 
 ### YouTube 연결 (최초 1회)
@@ -57,15 +57,15 @@ OBS 없이 **PC를 켜면 자동으로 YouTube 라이브 송출 + 로컬 백업 
 | 증상 | 확인 사항 |
 |---|---|
 | 박스가 계속 🟡 | 인터넷 연결, YouTube 라이브 스트리밍 활성화 여부 |
-| 박스가 계속 🔴 | `%AppData%\SilentStream\logs\` 최신 로그 확인. 자동으로 무한 재시도합니다 |
-| 브라우저 로그인 안 뜸 | `%AppData%\SilentStream\client_secret.json` 존재 확인 |
+| 박스가 계속 🔴 | `%AppData%\MediaCaptureHelper\logs\` 최신 로그 확인. 자동으로 무한 재시도합니다 |
+| 브라우저 로그인 안 뜸 | `%AppData%\MediaCaptureHelper\client_secret.json` 존재 확인 |
 | 마이크 소리 없음 | 제어판 → 오디오 → 장치 선택, 볼륨 슬라이더 확인. 마이크가 없어도 시스템 소리는 송출됩니다 |
 | 녹화만 되고 송출 안 됨 | 정상 동작입니다(네트워크 문제 시). 복구되면 자동 재연결 |
 | 게임 전체화면에서 검은 화면 | 자동 재초기화를 기다리거나 창 모드(테두리 없는 전체화면) 사용 |
 | 단축키가 안 먹힘 | 다른 프로그램과 충돌 — 설정에서 다른 조합으로 변경 |
 
-- 로그: `%AppData%\SilentStream\logs\SilentStream_날짜.log` (180일 보관)
-- 설정: `%AppData%\SilentStream\config.json`
+- 로그: `%AppData%\MediaCaptureHelper\logs\MediaCaptureHelper_날짜.log` (180일 보관)
+- 설정: `%AppData%\MediaCaptureHelper\config.json`
 
 ## 6. 교시 자동 분할 VOD 업로드
 
@@ -138,5 +138,5 @@ OBS 없이 **PC를 켜면 자동으로 YouTube 라이브 송출 + 로컬 백업 
 
 ## 9. 제거
 
-제어판 → 앱 → SilentStream 제거. 자동 시작 등록·원격 방화벽 규칙은 함께 해제되며,
+제어판 → 앱 → Media Capture Helper 제거. 자동 시작 등록·원격 방화벽 규칙은 함께 해제되며,
 **녹화 파일과 설정은 삭제되지 않습니다** (직접 삭제 가능).

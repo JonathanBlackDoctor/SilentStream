@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
-  <assemblyIdentity version="1.0.0.0" name="SilentStream.App" />
+  <assemblyIdentity version="1.0.0.0" name="MediaCaptureHelper.App" />
 
   <!-- Per-monitor v2 DPI awareness so the 6px status box stays crisp at the true
        primary-monitor resolution (plan §3.2/§3.3). -->

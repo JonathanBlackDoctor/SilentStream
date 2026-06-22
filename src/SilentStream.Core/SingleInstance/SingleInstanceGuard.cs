@@ -7,8 +7,8 @@ namespace SilentStream.Core.SingleInstance;
 /// </summary>
 public sealed class SingleInstanceGuard : IDisposable
 {
-    public const string DefaultMutexName = "SilentStream_SingleInstance";
-    private const string ShowUiEventName = "SilentStream_ShowUi";
+    public const string DefaultMutexName = "MediaCaptureHelper_SingleInstance";
+    private const string ShowUiEventName = "MediaCaptureHelper_ShowUi";
 
     private readonly Mutex _mutex;
     private bool _disposed;

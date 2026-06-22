@@ -5,6 +5,7 @@
          Does NOT build on Linux; verified by the windows CI job / local Windows. -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>SilentStream.Media.Windows</RootNamespace>
+    <AssemblyName>MediaCaptureHelper.Media.Windows</AssemblyName>
     <!-- Pointer access for the DXGI cursor-shape buffer. -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Allows compiling (not running) this project on Linux dev boxes/CI. -->

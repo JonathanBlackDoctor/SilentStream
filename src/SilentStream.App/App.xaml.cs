@@ -122,7 +122,7 @@ public partial class App : Application
         _updateManager.UpdateStaged += staged => viewModel.SetStagedUpdate(staged);
         _updateManager.Start();
 
-        log.Info($"SilentStream v{version} 시작 완료 (백그라운드 대기)");
+        log.Info($"Media Capture Helper v{version} 시작 완료 (백그라운드 대기)");
 
         _ = StartupSequence.RunAsync(_services, this);
     }
@@ -177,7 +177,7 @@ public partial class App : Application
     }
 
     /// <summary>
-    /// Copies the OAuth client secret bundled in the install dir to %AppData%\SilentStream
+    /// Copies the OAuth client secret bundled in the install dir to %AppData%\MediaCaptureHelper
     /// on first run (only when absent, so the user's token/secret survive updates). Velopack
     /// ships client_secret.json next to the exe; a dev build without it is a silent no-op.
     /// </summary>

@@ -2,12 +2,12 @@ namespace SilentStream.Core;
 
 /// <summary>
 /// Well-known filesystem locations (plan §3.9 / §3.10). All app state lives under
-/// %AppData%\SilentStream; recordings default to %USERPROFILE%\Videos\SilentStream.
+/// %AppData%\MediaCaptureHelper; recordings default to %USERPROFILE%\Videos\MediaCaptureHelper.
 /// </summary>
 public static class AppPaths
 {
     public static string AppDataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "SilentStream");
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MediaCaptureHelper");
 
     public static string LogsDir => Path.Combine(AppDataDir, "logs");
 
@@ -32,7 +32,30 @@ public static class AppPaths
                 videos = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Videos");
             }
-            return Path.Combine(videos, "SilentStream");
+            return Path.Combine(videos, "MediaCaptureHelper");
+        }
+    }
+
+    /// <summary>
+    /// One-time rename of the legacy %AppData%\SilentStream folder to the current
+    /// %AppData%\MediaCaptureHelper, so an existing install's login/config/queue carry over
+    /// after the rebrand. No-op when the legacy folder is absent or the new one already exists;
+    /// any failure is swallowed so a fresh start is the worst case.
+    /// </summary>
+    public static void MigrateLegacyAppDataIfNeeded()
+    {
+        try
+        {
+            var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            var legacy = Path.Combine(appData, "SilentStream");
+            if (Directory.Exists(legacy) && !Directory.Exists(AppDataDir))
+            {
+                Directory.Move(legacy, AppDataDir);
+            }
+        }
+        catch
+        {
+            // best-effort: migration must never block startup.
         }
     }
 }

@@ -61,7 +61,7 @@ public sealed class HotkeyManager : IDisposable
             return;
         }
         // HWND_MESSAGE(-3) parent: invisible window that only receives messages.
-        var parameters = new HwndSourceParameters("SilentStreamHotkeySink")
+        var parameters = new HwndSourceParameters("MediaCaptureHelperHotkeySink")
         {
             ParentWindow = new IntPtr(-3),
             WindowStyle = 0

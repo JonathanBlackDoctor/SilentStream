@@ -51,7 +51,7 @@ public sealed class YouTubeLiveService(
             _service = new YouTubeService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,
-                ApplicationName = "SilentStream"
+                ApplicationName = "Media Capture Helper"
             });
             log.Info("YouTube 인증 완료");
             return true;

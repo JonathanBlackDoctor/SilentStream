@@ -5,7 +5,7 @@ using SilentStream.Core.Models;
 namespace SilentStream.Core.Implementations;
 
 /// <summary>
-/// JSON-file config persistence (%AppData%\SilentStream\config.json, plan §3.10/§6).
+/// JSON-file config persistence (%AppData%\MediaCaptureHelper\config.json, plan §3.10/§6).
 /// Saves atomically (temp file + move). A corrupt file is backed up and replaced with
 /// defaults so a bad write can never brick the auto-start path.
 /// </summary>
