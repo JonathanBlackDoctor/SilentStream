@@ -94,7 +94,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(4, config.Version); // schema v4 (첫 실행 전체 마이크 시드)
+        Assert.Equal(5, config.Version); // schema v5 (호실명 라벨)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

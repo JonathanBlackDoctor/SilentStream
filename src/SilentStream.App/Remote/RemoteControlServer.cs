@@ -65,6 +65,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private MetricsSnapshot _lastMetrics = MetricsSnapshot.Empty;
     private int _levelTick;
 
+    // Room label (호실명) cached at server start so the phone can show which PC it controls without a
+    // config file read on every status push. It changes only when the operator edits settings (rare),
+    // so reflecting it on the next app start is acceptable.
+    private string _roomName = string.Empty;
+
     public RemoteControlServer(
         IStreamOrchestrator orchestrator,
         IPeriodScheduleStore scheduleStore,
@@ -128,6 +133,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
 
         RotatePin();
+        _roomName = _configStore.Load().DeviceName ?? string.Empty;
 
         var url = $"http://{bindIp}:{port}";
         var displayHost = mode == RemoteBindMode.Lan ? FirstLanIpv4() ?? bindIp : bindIp;
@@ -716,6 +722,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
+            room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
+
             audio = new
             {
                 micWarning = silentMics.Length > 0,

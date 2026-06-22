@@ -68,6 +68,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _audioBitrateKbps = config.Encoding.AudioBitrateKbps;
         _hotkeyText = config.Hotkey;
         _autostartMethod = config.Autostart;
+        _roomName = config.DeviceName ?? string.Empty;
         _showStatusBox = config.ShowStatusBox;
         _recordingFolder = config.Recording.Folder;
         _maxSizeGb = config.Recording.MaxSizeGb;
@@ -371,6 +372,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _recordingFolder;
     public string RecordingFolder { get => _recordingFolder; set => Set(ref _recordingFolder, value); }
 
+    private string _roomName;
+    /// <summary>
+    /// Per-device room label (호실명). Saved to <see cref="AppConfig.DeviceName"/> by [설정 저장] and
+    /// stamped onto live/VOD titles via the {호실} token from the next broadcast/period on.
+    /// </summary>
+    public string RoomName { get => _roomName; set => Set(ref _roomName, value); }
+
     private int _maxSizeGb;
     public int MaxSizeGb { get => _maxSizeGb; set => Set(ref _maxSizeGb, value); }
 
@@ -645,6 +653,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             config.Hotkey = hotkeyDisplay;
             config.Autostart = AutostartMethod;
+            config.DeviceName = (RoomName ?? string.Empty).Trim();
             config.Recording.Folder = RecordingFolder;
             config.Recording.MaxSizeGb = MaxSizeGb;
             config.Recording.RetentionDays = RetentionDays;

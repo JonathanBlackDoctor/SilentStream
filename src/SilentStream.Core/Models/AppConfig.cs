@@ -12,10 +12,11 @@ public sealed class AppConfig
     /// Schema version. v1 = base plan §6; v2 adds the period-VOD + remote sections
     /// (확장계획서 §6); v3 adds the multi-source audio mixer (sources + master filters) and
     /// capture monitor/region selection; v4 adds the first-run "seed every real microphone"
-    /// step (see <see cref="AudioConfig.MicsSeeded"/>). Missing keys deserialize to their
-    /// defaults, so an older file loads cleanly and is migrated on the next save.
+    /// step (see <see cref="AudioConfig.MicsSeeded"/>); v5 adds the per-device room label
+    /// (<see cref="DeviceName"/>) for multi-PC single-channel deployments. Missing keys
+    /// deserialize to their defaults, so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -43,6 +44,16 @@ public sealed class AppConfig
     public string Autostart { get; set; } = "startup";
 
     /// <summary>
+    /// Per-device room label (호실명, e.g. "201호") stamped onto live + VOD titles through the
+    /// {호실} template token, so several PCs streaming to one shared channel stay distinguishable
+    /// (e.g. "[201호] 1교시 - 2026-06-23"). Empty = no label: the "[{호실}] " prefix collapses to
+    /// nothing rather than rendering "[] 라이브". Schema v5. Seeded from the machine name on a
+    /// brand-new install only (ConfigStore.Load's no-file branch); an existing config is never
+    /// silently stamped. Single source of truth for both title paths — do NOT duplicate per section.
+    /// </summary>
+    public string DeviceName { get; set; } = string.Empty;
+
+    /// <summary>
     /// Whether the 6px broadcast-status box (plan §3.2) is shown at the top-left of the primary
     /// monitor. Defaults to false (hidden) — the control window's state badge already conveys the
     /// stream state. Toggle it from the control window's settings. A file written before this key
@@ -62,8 +73,12 @@ public sealed class YouTubeConfig
     /// <summary>Broadcast privacy. Plan fixes this to "unlisted".</summary>
     public string Privacy { get; set; } = "unlisted";
 
-    /// <summary>Title template; {0:...}/format tokens applied at session start.</summary>
-    public string TitleTemplate { get; set; } = "라이브 - {yyyy-MM-dd HH:mm}";
+    /// <summary>
+    /// Title template; date tokens ({yyyy-MM-dd HH:mm}) plus the optional {호실} room token are
+    /// applied at session start. The leading "[{호실}] " collapses to nothing when no room name is
+    /// set, so a fresh install with an empty 호실명 still reads "라이브 - …" exactly as before.
+    /// </summary>
+    public string TitleTemplate { get; set; } = "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}";
 }
 
 public sealed class EncodingConfig
@@ -208,8 +223,12 @@ public sealed class PeriodsConfig
     /// <summary>Per-date overrides, keyed "yyyy-MM-dd" (D5: 그날 통째 덮어쓰기).</summary>
     public Dictionary<string, List<PeriodEntry>> Overrides { get; set; } = new();
 
-    /// <summary>Title template for uploaded period VODs. {교시}/{교시:00} + date tokens (D6).</summary>
-    public string TitleTemplate { get; set; } = "{교시}교시 - {yyyy-MM-dd}";
+    /// <summary>
+    /// Title template for uploaded period VODs. {교시}/{교시:00} + date tokens (D6) plus the
+    /// optional {호실} room token (D12). The leading "[{호실}] " collapses when no room name is set,
+    /// so an empty 호실명 still reads "{교시}교시 - …" exactly as before.
+    /// </summary>
+    public string TitleTemplate { get; set; } = "[{호실}] {교시}교시 - {yyyy-MM-dd}";
 
     /// <summary>VOD privacy; plan fixes this to "unlisted" (D4).</summary>
     public string VodPrivacy { get; set; } = "unlisted";

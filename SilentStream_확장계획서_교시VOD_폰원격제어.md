@@ -35,6 +35,7 @@
 | D9 | OAuth 스코프 | 현재 `YouTubeService.Scope.Youtube`(전체)로 `videos.insert` 포함 → **재로그인 불필요** |
 | D10 | 업로드 타이밍(구 U1) | **즉시 + 업링크 대역 제한**(`immediate-throttled`). 업링크가 좁으면 `after-hours`로 전환 가능 |
 | D11 | 원격 인증(구 U2) | **PIN 페어링 + 기기 토큰**. 집 밖은 Tailscale(트래픽 암호화) 권장 |
+| D12 | 멀티 PC·1채널 호실명 분류 | 여러 PC가 **한 채널**에 송출할 때 PC별 **호실명**(`config.deviceName`, 호실명)을 라이브·VOD 제목의 `{호실}` 토큰으로 치환 → `[201호] 1교시 - 2026-06-23`. 빈 값이면 `[{호실}] ` 접두사 자동 생략. 기본 템플릿에만 접두사 포함(마이그레이션은 기존 커스텀 템플릿 미변경). 호스트명 자동 시드는 **신규 설치에 한함**(기존 설정 미각인). 채널 공유는 **브랜드 계정 + 호실별 매니저 권한**, API 할당량은 Cloud 프로젝트 단위 공유라 PC별 프로젝트 분리/증설 권장 |
 
 ### 1.1 기본값으로 확정 (2026-06-18)
 초기 "미확정"으로 두었던 U1·U2를 권장 기본값으로 **확정**했다(위 D10·D11). 학교 업링크 환경/보안 요구가
@@ -243,8 +244,17 @@ public static string Expand(string template, DateTime timestamp, int periodNumbe
 
 > 기존 키는 유지하고 **추가만** 한다. 마이그레이션: 누락 시 기본값 채움(`version` 올림).
 
+> v5(D12): 최상위 `deviceName`(호실명) 추가. 라이브·VOD 제목의 `{호실}` 토큰을 치환한다. 신규 설치에서만
+> 호스트명으로 시드되고, 기존 파일은 빈 값으로 남는다(호스트명 미각인). 기본 `titleTemplate`에 `[{호실}] ` 접두사 포함.
+
 ```json
 {
+  "version": 5,
+  "deviceName": "201호",
+  "youtube": {
+    "titleTemplate": "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}",
+    "privacy": "unlisted"
+  },
   "periods": {
     "weekdayDefaults": {
       "Mon": [ { "no": 1, "start": "09:00:00", "end": "09:50:00" },
@@ -254,7 +264,7 @@ public static string Expand(string template, DateTime timestamp, int periodNumbe
     "overrides": {
       "2026-06-15": [ { "no": 1, "start": "09:00:00", "end": "09:30:00" } ]
     },
-    "titleTemplate": "{교시}교시 - {yyyy-MM-dd}",
+    "titleTemplate": "[{호실}] {교시}교시 - {yyyy-MM-dd}",
     "vodPrivacy": "unlisted",
     "uploadTiming": "immediate-throttled"
   },

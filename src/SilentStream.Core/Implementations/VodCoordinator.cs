@@ -71,8 +71,10 @@ public sealed class VodCoordinator
                 return;
             }
 
-            var periods = _configStore.Load().Periods;
-            var title = TitleTemplater.Expand(periods.TitleTemplate, boundary.StartLocal, boundary.PeriodNumber);
+            var config = _configStore.Load();
+            var periods = config.Periods;
+            var title = TitleTemplater.Expand(
+                periods.TitleTemplate, boundary.StartLocal, boundary.PeriodNumber, config.DeviceName);
             _queue.Enqueue(new UploadJob(
                 _idFactory(), path, title, boundary.Date, boundary.PeriodNumber,
                 UploadJobStatus.Pending, 0, null));

@@ -89,4 +89,24 @@ public class PeriodTitleTemplaterTests
     {
         Assert.Equal("2026 수업", TitleTemplater.Expand("{yyyy} 수업", new DateTime(2026, 6, 14), 5));
     }
+
+    [Fact]
+    public void Room_period_and_date_tokens_combine()
+    {
+        var result = TitleTemplater.Expand(
+            "[{호실}] {교시}교시 - {yyyy-MM-dd}", new DateTime(2026, 6, 23), 1, "201호");
+
+        Assert.Equal("[201호] 1교시 - 2026-06-23", result);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(null)]
+    public void Empty_room_collapses_in_period_overload(string? roomName)
+    {
+        var result = TitleTemplater.Expand(
+            "[{호실}] {교시}교시 - {yyyy-MM-dd}", new DateTime(2026, 6, 23), 1, roomName);
+
+        Assert.Equal("1교시 - 2026-06-23", result);
+    }
 }

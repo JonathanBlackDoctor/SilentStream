@@ -31,6 +31,45 @@ public class TitleTemplaterTests
 
         Assert.Equal("2026년 06월 방송", result);
     }
+
+    [Fact]
+    public void Room_token_is_substituted_when_name_present()
+    {
+        var result = TitleTemplater.Expand(
+            "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}", new DateTime(2026, 6, 23, 9, 30, 0), "201호");
+
+        Assert.Equal("[201호] 라이브 - 2026-06-23 09:30", result);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void Empty_room_collapses_bracketed_prefix(string? roomName)
+    {
+        // No 호실명: the "[{호실}] " prefix must vanish entirely (not render "[] 라이브").
+        var result = TitleTemplater.Expand(
+            "[{호실}] 라이브 - {yyyy-MM-dd}", new DateTime(2026, 6, 23), roomName);
+
+        Assert.Equal("라이브 - 2026-06-23", result);
+    }
+
+    [Fact]
+    public void Bare_room_token_with_empty_name_leaves_no_leading_space()
+    {
+        var result = TitleTemplater.Expand("{호실} 라이브", new DateTime(2026, 6, 23), "");
+
+        Assert.Equal("라이브", result);
+    }
+
+    [Fact]
+    public void Braces_in_room_name_cannot_inject_a_token()
+    {
+        // A name containing "{...}" must not smuggle a date/period token into the second pass.
+        var result = TitleTemplater.Expand("[{호실}] 라이브", new DateTime(2026, 6, 23), "2{yyyy}호");
+
+        Assert.Equal("[2yyyy호] 라이브", result);
+    }
 }
 
 public class EncryptedTokenDataStoreTests : IDisposable

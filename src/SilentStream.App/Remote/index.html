@@ -69,7 +69,7 @@
   <!-- 대시보드 -->
   <section id="dash" class="hidden">
     <div class="card">
-      <h2>상태</h2>
+      <h2>상태 <span id="roomName" style="text-transform:none;color:var(--accent)"></span></h2>
       <div class="row"><span class="k">송출</span><span id="badge" class="badge">-</span></div>
       <div class="row"><span class="k">업로드</span><span id="bitrate">- kbps</span></div>
       <div class="row"><span class="k">FPS</span><span id="fps">-</span></div>
@@ -169,6 +169,8 @@
       const colors={Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted"};
       const badge=$("badge"); badge.textContent=s.badge; badge.style.background="var("+(colors[s.state]||"--muted")+")";
       badge.style.color = (s.state==="Warmup"||s.state==="ConnectingYouTube") ? "#000" : "#fff";
+      const rn=$("roomName"); if(rn) rn.textContent = s.room ? ("· "+s.room) : "";
+      document.title = s.room ? (s.room+" · Media Capture Helper 원격") : "Media Capture Helper 원격";
       $("bitrate").textContent = Math.round(s.metrics.bitrateKbps)+" kbps";
       $("fps").textContent = Math.round(s.metrics.fps)+" fps";
       $("cpugpu").textContent = Math.round(s.metrics.cpu)+"% / "+(s.metrics.gpu>=0?Math.round(s.metrics.gpu)+"%":"-");

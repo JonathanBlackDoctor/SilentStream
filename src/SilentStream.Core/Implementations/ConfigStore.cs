@@ -32,7 +32,14 @@ public sealed class ConfigStore : IConfigStore
         {
             if (!File.Exists(_configFile))
             {
-                return WithRuntimeDefaults(AppConfig.CreateDefault());
+                // True fresh install: seed the room label (호실명) from the machine name so each PC
+                // starts distinguishable in a shared-channel deployment; the operator renames it in
+                // settings. Done ONLY here — never in CreateDefault() — so the corrupt-file fallback
+                // below (which also calls CreateDefault) can never silently stamp a hostname onto a
+                // machine whose config merely failed to parse.
+                var fresh = AppConfig.CreateDefault();
+                fresh.DeviceName = Environment.MachineName;
+                return WithRuntimeDefaults(fresh);
             }
 
             try
@@ -148,6 +155,15 @@ public sealed class ConfigStore : IConfigStore
         {
             config.Audio.MicsSeeded = true;
             config.Version = 4;
+        }
+
+        // v5 migration: per-device room label (호실명) for multi-PC single-channel deployments.
+        // Additive only — DeviceName defaults to "" and an existing file keeps it empty, so a running
+        // deployment is never silently stamped with a hostname. Only a brand-new install seeds the
+        // machine name, and that happens in Load's no-file branch (not here, not in CreateDefault).
+        if (config.Version < 5)
+        {
+            config.Version = 5;
         }
         return config;
     }

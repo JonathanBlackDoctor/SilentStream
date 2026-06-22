@@ -259,7 +259,13 @@
                             <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,8"
                                        Text="기본값은 꺼짐이며, 이 항목은 [설정 저장] 없이 즉시 적용됩니다." />
 
-                            <TextBlock Text="제어판 단축키" />
+                            <TextBlock Text="호실명 (라이브·VOD 제목 표시)" />
+                            <TextBox Text="{Binding RoomName, Mode=TwoWay}"
+                                     ToolTip="이 PC의 호실명(예: 201호). 라이브/교시 VOD 제목 앞에 [201호] 형태로 붙어 여러 PC가 한 채널에 송출해도 제목으로 구분됩니다. 비워두면 표시되지 않습니다. [설정 저장] 후 다음 방송/교시부터 적용됩니다." />
+                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,0"
+                                       Text="여러 PC가 한 채널에 송출할 때 제목을 호실별로 구분합니다. 비워두면 접두사가 생략됩니다." />
+
+                            <TextBlock Text="제어판 단축키" Margin="0,8,0,0" />
                             <TextBox Text="{Binding HotkeyText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
 
                             <TextBlock Text="자동 시작 방식" Margin="0,8,0,0" />

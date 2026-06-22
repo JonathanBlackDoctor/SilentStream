@@ -16,10 +16,26 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(4, config.Version); // schema v4 (첫 실행 전체 마이크 시드)
+        Assert.Equal(5, config.Version); // schema v5 (호실명 라벨)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
+        // A true fresh install (no config file) seeds the room label from the machine name so each
+        // PC starts distinguishable; the operator renames it to the 호실명 in settings.
+        Assert.Equal(Environment.MachineName, config.DeviceName);
+    }
+
+    [Fact]
+    public void Existing_file_is_not_stamped_with_a_hostname_on_migration()
+    {
+        // A pre-v5 file (e.g. an already-deployed PC) must keep DeviceName empty — only a brand-new
+        // install seeds the hostname. Bumping merely advances the version.
+        File.WriteAllText(ConfigPath, """{ "version": 4 }""");
+
+        var loaded = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(5, loaded.Version);
+        Assert.Equal(string.Empty, loaded.DeviceName);
     }
 
     [Fact]
@@ -39,6 +55,7 @@ public class ConfigStoreTests : IDisposable
         config.Recording.RetentionDays = 3;
         config.Hotkey = "Ctrl+Alt+F9";
         config.Autostart = "scheduler";
+        config.DeviceName = "201호";
         config.ShowStatusBox = true;
 
         store.Save(config);
@@ -56,6 +73,7 @@ public class ConfigStoreTests : IDisposable
         Assert.Equal(3, loaded.Recording.RetentionDays);
         Assert.Equal("Ctrl+Alt+F9", loaded.Hotkey);
         Assert.Equal("scheduler", loaded.Autostart);
+        Assert.Equal("201호", loaded.DeviceName);
         Assert.True(loaded.ShowStatusBox);
     }
 
@@ -102,8 +120,11 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(4, config.Version); // defaults are schema v4
+        Assert.Equal(5, config.Version); // defaults are schema v5
         Assert.True(File.Exists(ConfigPath + ".bak"));
+        // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
+        // label stays empty rather than being silently stamped with this machine's hostname.
+        Assert.Equal(string.Empty, config.DeviceName);
     }
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
