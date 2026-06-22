@@ -153,8 +153,68 @@ public class StreamOrchestratorTests : IDisposable
         await orchestrator.StartAsync(CancellationToken.None);
         Assert.Single(_encoder.StartCalls);
 
-        // Process stays alive (IsRunning == true) but stops emitting progress: a stalled feed.
+        // Process stays alive (IsRunning == true) but stops emitting progress AND the recording
+        // file is not growing (FakeRecording default length stays 0): a genuinely stalled feed.
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+
+        Assert.True(_encoder.StartCalls.Count >= 2);
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Watchdog_leaves_a_quiet_but_still_recording_encoder_alone()
+    {
+        // C2 hardening: a static screen + silent audio starve ffmpeg's progress line, but the
+        // encoder keeps muxing frames to the local file. A growing recording file must veto the
+        // stall restart so a healthy pipeline is not churned into a ~30s restart loop.
+        _recording.GrowOnSample = true;
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Single(_encoder.StartCalls);
+
+        _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // progress line quiet…
+        await Task.Delay(300); // …for many watchdog intervals (25ms each)
+
+        Assert.True(_recording.ActiveRecordingLength > 0); // the watchdog actually sampled the file
+        Assert.Single(_encoder.StartCalls); // …and recording is advancing, so no restart
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Watchdog_with_recording_disabled_restarts_a_stalled_feed_on_the_stats_signal_alone()
+    {
+        // Recording-off sessions have no file (GetActiveRecordingLength stays 0), so the stall
+        // restart must fall back to the ffmpeg progress line alone — the original behaviour. Pinned
+        // against the actual Recording.Enabled=false flag, not just the fake's default length.
+        var config = _configStore.Load();
+        config.Recording.Enabled = false;
+        _configStore.Save(config);
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Single(_encoder.StartCalls);
+
+        _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // no file signal → stats decide
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+
+        Assert.True(_encoder.StartCalls.Count >= 2);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Watchdog_restarts_when_both_the_feed_and_the_recording_file_freeze()
+    {
+        // A real hang: the encoder was recording fine, then both signals die — no ffmpeg progress
+        // AND the file stops growing. With no live signal left, the watchdog must rebuild.
+        _recording.GrowOnSample = true;
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Single(_encoder.StartCalls);
+
+        _recording.GrowOnSample = false; // recording file frozen
+        _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // and the feed is quiet
         await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
 
         Assert.True(_encoder.StartCalls.Count >= 2);
@@ -301,12 +361,23 @@ public class StreamOrchestratorTests : IDisposable
     {
         public int RetentionRuns;
         public bool ThrowOnSweep; // throws on periodic sweeps (not the boot sweep)
+        public long ActiveRecordingLength; // current recording-file size the watchdog samples
+        public bool GrowOnSample; // simulate ffmpeg writing: grows on each sample (keyed to sampling, not wall-clock)
         private int _files;
 
         public string CreateSessionFilePath(DateTime sessionStartLocal) =>
             $"/rec/SilentStream_REC_{sessionStartLocal:yyyy-MM-dd_HHmm}{(++_files > 1 ? $"_part{_files}" : "")}.mp4";
 
         public RecordingStatus GetStatus() => RecordingStatus.Empty;
+
+        public long GetActiveRecordingLength()
+        {
+            if (GrowOnSample)
+            {
+                ActiveRecordingLength += 1_000_000;
+            }
+            return ActiveRecordingLength;
+        }
 
         public Task EnforceRetentionAsync(CancellationToken ct)
         {

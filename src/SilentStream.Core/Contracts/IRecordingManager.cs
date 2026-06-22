@@ -18,6 +18,15 @@ public interface IRecordingManager
     RecordingStatus GetStatus();
 
     /// <summary>
+    /// Length in bytes of the file the encoder is currently writing (0 when recording is idle,
+    /// disabled, or the file does not exist yet). The watchdog samples this as a second, independent
+    /// liveness signal: a growing file proves the encoder is still muxing frames even when ffmpeg's
+    /// progress line has gone quiet (a static screen + silent audio starve the stats cadence), so a
+    /// healthy-but-quiet pipeline is not churned into a restart loop (plan §4.4).
+    /// </summary>
+    long GetActiveRecordingLength();
+
+    /// <summary>
     /// Enforces retention: deletes files past the retention window, then oldest-first until
     /// under the capacity cap / above the min-free-space threshold.
     /// </summary>

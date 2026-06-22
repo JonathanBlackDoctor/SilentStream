@@ -22,8 +22,10 @@ public sealed record StreamOrchestratorOptions
 
     /// <summary>
     /// Max time the encoder may run without emitting an ffmpeg progress line before the watchdog
-    /// treats the feed as stalled and rebuilds the pipeline (process alive but no longer streaming,
-    /// e.g. RTMP slave failure / pipe EOF). Must exceed the ffmpeg stats cadence.
+    /// treats the feed as stalled (process alive but no longer encoding, e.g. capture/pipe EOF or a
+    /// wedged ffmpeg). A stall only rebuilds the pipeline when the local recording file has also
+    /// stopped growing (see SuperviseAsync). Must exceed the ffmpeg stats cadence. Note: an RTMP-only
+    /// slave failure keeps progress flowing (onfail=ignore), so it is the encoder's concern, not this.
     /// </summary>
     public TimeSpan StallTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -375,11 +377,17 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
     /// <summary>
     /// Watchdog + housekeeping loop (plan §4.4): restarts a dead encoder (same-session
-    /// part file via CreateSessionFilePath) and sweeps recording retention hourly.
+    /// part file via CreateSessionFilePath) and sweeps recording retention hourly. A stalled
+    /// feed (process alive, no ffmpeg progress) only triggers a restart when the local recording
+    /// file has <em>also</em> stopped growing, so a static-screen + silent-audio session that merely
+    /// quietens ffmpeg's stats line is not churned into a ~30s restart loop. Recording-off sessions
+    /// have no file signal and fall back to the stats line alone (original behaviour).
     /// </summary>
     private async Task SuperviseAsync(CancellationToken ct)
     {
         var lastSweep = DateTime.UtcNow;
+        var lastRecordingLength = -1L;
+        var lastRecordingGrowthAt = DateTime.UtcNow;
         while (!ct.IsCancellationRequested)
         {
             // The whole body is guarded: an unhandled fault here must never silently kill the
@@ -388,12 +396,40 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 await Task.Delay(_options.WatchdogInterval, ct).ConfigureAwait(false);
 
-                if (State == StreamState.Live && (!_encoder.IsRunning ||
-                        _encoder.TimeSinceProgress > _options.StallTimeout))
+                // Second liveness signal: is the local recording file still growing? A file that
+                // keeps growing proves the encoder is muxing frames even when its progress line has
+                // gone quiet. 0 length (recording off / not started yet) yields no signal → stats decide.
+                var recordingLength = _recording.GetActiveRecordingLength();
+                if (recordingLength > lastRecordingLength)
                 {
-                    var reason = !_encoder.IsRunning ? "인코더 프로세스 사망" : "인코더 피드 정지(스톨)";
-                    _log.Warn($"{reason} 감지 — 파이프라인을 재구성합니다.");
-                    await ConnectUntilLiveAsync(ct).ConfigureAwait(false);
+                    lastRecordingGrowthAt = DateTime.UtcNow;
+                }
+                lastRecordingLength = recordingLength;
+                var recordingAdvancing = recordingLength > 0 &&
+                    DateTime.UtcNow - lastRecordingGrowthAt <= _options.StallTimeout;
+
+                if (State == StreamState.Live)
+                {
+                    string? restartReason = null;
+                    if (!_encoder.IsRunning)
+                    {
+                        restartReason = "인코더 프로세스 사망"; // process gone → restart immediately
+                    }
+                    else if (_encoder.TimeSinceProgress > _options.StallTimeout && !recordingAdvancing)
+                    {
+                        restartReason = "인코더 피드 정지(스톨)"; // feed quiet AND recording frozen → real stall
+                    }
+
+                    if (restartReason is not null)
+                    {
+                        _log.Warn($"{restartReason} 감지 — 파이프라인을 재구성합니다.");
+                        await ConnectUntilLiveAsync(ct).ConfigureAwait(false);
+                        // Re-baseline: the new _part file restarts near 0 bytes and the encoder's
+                        // progress clock is reset by StartAsync, so the next ticks see a fresh feed and
+                        // a small file without either signal falsely re-tripping the stall branch.
+                        lastRecordingLength = -1L;
+                        lastRecordingGrowthAt = DateTime.UtcNow;
+                    }
                 }
 
                 if (DateTime.UtcNow - lastSweep >= _options.RetentionInterval)

@@ -82,6 +82,9 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
         return new RecordingStatus(_currentFilePath, total, SafeFreeBytes(config.Folder));
     }
 
+    /// <inheritdoc />
+    public long GetActiveRecordingLength() => CurrentFileLength();
+
     public Task EnforceRetentionAsync(CancellationToken ct)
     {
         var config = _configStore.Load().Recording;
@@ -138,11 +141,22 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
 
     private long CurrentFileLength()
     {
-        if (_currentFilePath is null || !File.Exists(_currentFilePath))
+        var path = _currentFilePath; // snapshot: the connect thread may swap it mid-read
+        if (path is null)
         {
             return 0;
         }
-        return new FileInfo(_currentFilePath).Length;
+        try
+        {
+            return File.Exists(path) ? new FileInfo(path).Length : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // A transient stat failure (file deleted/locked between the checks) must not abort the
+            // watchdog tick that samples this — degrade to "no signal" (0) so the stats line alone
+            // decides, exactly as a recording-off session does. Retention's use is best-effort too.
+            return 0;
+        }
     }
 
     private void Delete(FileInfo file, string reason)
