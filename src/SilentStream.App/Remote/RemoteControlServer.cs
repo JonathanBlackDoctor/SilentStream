@@ -131,7 +131,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         var url = $"http://{bindIp}:{port}";
         var displayHost = mode == RemoteBindMode.Lan ? FirstLanIpv4() ?? bindIp : bindIp;
-        _log.Info($"원격 제어 서버 시작: {url}  —  폰 브라우저로 http://{displayHost}:{port} 접속 후 PIN [{CurrentPin}] 입력.");
+        _log.Info($"원격 제어 서버 시작: {url}  —  폰 브라우저로 http://{displayHost}:{port} 접속 후 제어창에 표시된 PIN을 입력하세요.");
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -178,7 +178,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             {
                 CurrentPublicUrl = publicUrl;
                 PublicUrlChanged?.Invoke(publicUrl);
-                _log.Info($"Cloudflare 터널 공개 주소: {publicUrl}  —  폰 브라우저로 접속 후 PIN [{CurrentPin}] 입력.");
+                _log.Info($"Cloudflare 터널 공개 주소: {publicUrl}  —  폰 브라우저로 접속 후 제어창에 표시된 PIN을 입력하세요.");
             }
             else
             {
