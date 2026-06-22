@@ -11,10 +11,11 @@ public sealed class AppConfig
     /// <summary>
     /// Schema version. v1 = base plan §6; v2 adds the period-VOD + remote sections
     /// (확장계획서 §6); v3 adds the multi-source audio mixer (sources + master filters) and
-    /// capture monitor/region selection. Missing keys deserialize to their defaults, so an
-    /// older file loads cleanly and is migrated on the next save.
+    /// capture monitor/region selection; v4 adds the first-run "seed every real microphone"
+    /// step (see <see cref="AudioConfig.MicsSeeded"/>). Missing keys deserialize to their
+    /// defaults, so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -40,6 +41,14 @@ public sealed class AppConfig
 
     /// <summary>Auto-start mechanism: "startup" (registry Run) or "scheduler" (Task Scheduler).</summary>
     public string Autostart { get; set; } = "startup";
+
+    /// <summary>
+    /// Whether the 6px broadcast-status box (plan §3.2) is shown at the top-left of the primary
+    /// monitor. Defaults to false (hidden) — the control window's state badge already conveys the
+    /// stream state. Toggle it from the control window's settings. A file written before this key
+    /// existed deserializes to false, matching the new hidden-by-default behaviour.
+    /// </summary>
+    public bool ShowStatusBox { get; set; }
 
     /// <summary>Returns a fresh config populated with the documented defaults.</summary>
     public static AppConfig CreateDefault() => new();
@@ -98,6 +107,15 @@ public sealed class AudioConfig
     /// ConfigStore migrates the legacy fields into this list on load.
     /// </summary>
     public List<AudioSourceConfig> Sources { get; set; } = new();
+
+    /// <summary>
+    /// True once the first-run seeding (schema v4) has populated <see cref="Sources"/> with the
+    /// system loopback plus every real microphone present at install time. Guards that one-time
+    /// step so microphones the user later removes are not re-added on the next launch. A
+    /// pre-existing config (v1-v3) is treated as already seeded — only a brand-new install expands
+    /// to all mics. Default false; set true by ConfigStore migration or the first-run seeder.
+    /// </summary>
+    public bool MicsSeeded { get; set; }
 
     /// <summary>Master-bus post-processing (denoise/compressor/limiter/gain), applied next session.</summary>
     public AudioFiltersConfig Filters { get; set; } = new();

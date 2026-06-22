@@ -131,6 +131,16 @@ public sealed class ConfigStore : IConfigStore
         {
             config.Version = 3;
         }
+
+        // v4 migration: the first-run "seed every real microphone" step (App layer) keys off
+        // Audio.MicsSeeded. A pre-existing config (loaded from a file written by v1-v3) already
+        // reflects the user's chosen mics, so mark it seeded — only a brand-new install (Version
+        // already 4 from CreateDefault, flag still false) should auto-expand to all microphones.
+        if (config.Version < 4)
+        {
+            config.Audio.MicsSeeded = true;
+            config.Version = 4;
+        }
         return config;
     }
 }

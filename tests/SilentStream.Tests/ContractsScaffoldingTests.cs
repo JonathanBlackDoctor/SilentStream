@@ -94,7 +94,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(3, config.Version); // schema v3 (멀티소스 오디오 믹서 + 캡처 모니터/영역)
+        Assert.Equal(4, config.Version); // schema v4 (첫 실행 전체 마이크 시드)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

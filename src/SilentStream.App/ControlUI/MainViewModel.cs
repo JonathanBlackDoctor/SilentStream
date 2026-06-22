@@ -68,6 +68,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _audioBitrateKbps = config.Encoding.AudioBitrateKbps;
         _hotkeyText = config.Hotkey;
         _autostartMethod = config.Autostart;
+        _showStatusBox = config.ShowStatusBox;
         _recordingFolder = config.Recording.Folder;
         _maxSizeGb = config.Recording.MaxSizeGb;
         _retentionDays = config.Recording.RetentionDays;
@@ -348,6 +349,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private string _autostartMethod;
     public string AutostartMethod { get => _autostartMethod; set => Set(ref _autostartMethod, value); }
 
+    private bool _showStatusBox;
+    /// <summary>
+    /// Whether the 6px broadcast-status box is shown at the screen's top-left corner. Applies
+    /// immediately (no [설정 저장] needed): persists to config and tells App to show/hide the window.
+    /// </summary>
+    public bool ShowStatusBox
+    {
+        get => _showStatusBox;
+        set
+        {
+            if (Set(ref _showStatusBox, value))
+            {
+                _configStore.Update(config => config.ShowStatusBox = value);
+                StatusBoxVisibilityChanged?.Invoke(value);
+                _log.Info(value ? "방송 상태 박스를 표시합니다." : "방송 상태 박스를 숨깁니다.");
+            }
+        }
+    }
+
     private string _recordingFolder;
     public string RecordingFolder { get => _recordingFolder; set => Set(ref _recordingFolder, value); }
 
@@ -365,6 +385,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>Raised when the saved hotkey changes so App can re-register it.</summary>
     public event Action<string>? HotkeyChanged;
+
+    /// <summary>Raised when the status-box toggle changes so App can show/hide the box window.</summary>
+    public event Action<bool>? StatusBoxVisibilityChanged;
 
     private void Start()
     {

@@ -253,6 +253,12 @@
 
                     <GroupBox Header="설정" Margin="0,8,0,0">
                         <StackPanel Margin="6">
+                            <CheckBox Content="방송 상태 박스 표시 (좌상단 6px)"
+                                      IsChecked="{Binding ShowStatusBox, Mode=TwoWay}"
+                                      ToolTip="화면 좌상단 모서리의 방송 상태 표시 박스(🟢 라이브 / 🟡 연결 중 / 🔴 오류·중지)를 켜고 끕니다." />
+                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,8"
+                                       Text="기본값은 꺼짐이며, 이 항목은 [설정 저장] 없이 즉시 적용됩니다." />
+
                             <TextBlock Text="제어판 단축키" />
                             <TextBox Text="{Binding HotkeyText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
 

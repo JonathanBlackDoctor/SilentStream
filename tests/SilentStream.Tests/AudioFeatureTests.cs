@@ -136,6 +136,87 @@ public class AudioConfigMapperTests
         Assert.Equal(-2, filters.MasterGainDb);
         Assert.True(filters.HasAny);
     }
+
+    [Fact]
+    public void SeedMicrophoneSources_adds_all_real_mics_and_excludes_loopback()
+    {
+        var audio = new AudioConfig(); // fresh: MicsSeeded=false, empty Sources
+        var devices = new List<AudioDeviceInfo>
+        {
+            new("mA", "USB Microphone", false),
+            new("mB", "Headset Microphone", false),
+            new("sx", "스테레오 믹스", true) // loopback monitor — excluded
+        };
+
+        var changed = AudioConfigMapper.SeedMicrophoneSources(audio, devices);
+
+        Assert.True(changed);
+        Assert.True(audio.MicsSeeded);
+        Assert.Equal(3, audio.Sources.Count); // system + 2 real mics, no loopback
+        Assert.Single(audio.Sources, s => s.Kind == "system");
+        Assert.Equal(new[] { "mA", "mB" },
+            audio.Sources.Where(s => s.Kind == "mic").Select(s => s.DeviceId).ToArray());
+        Assert.DoesNotContain(audio.Sources, s => s.DeviceId == "sx");
+        // 2개 이상이면 유휴 마이크 히스 억제를 위해 게이트 ON
+        Assert.All(audio.Sources.Where(s => s.Kind == "mic"), s => Assert.True(s.GateEnabled));
+    }
+
+    [Fact]
+    public void SeedMicrophoneSources_single_mic_leaves_gate_off()
+    {
+        var audio = new AudioConfig();
+
+        AudioConfigMapper.SeedMicrophoneSources(audio, [new AudioDeviceInfo("only", "Microphone", false)]);
+
+        var mic = Assert.Single(audio.Sources, s => s.Kind == "mic");
+        Assert.Equal("only", mic.DeviceId);
+        Assert.False(mic.GateEnabled); // 마이크가 하나뿐이면 게이트로 음성이 잘릴 위험 회피
+    }
+
+    [Fact]
+    public void SeedMicrophoneSources_falls_back_to_default_mic_when_no_real_mic()
+    {
+        var audio = new AudioConfig();
+
+        // only a loopback device present → no real mic
+        AudioConfigMapper.SeedMicrophoneSources(audio, [new AudioDeviceInfo("sx", "Stereo Mix", true)]);
+
+        Assert.Equal(2, audio.Sources.Count); // system + single default-device mic
+        var mic = Assert.Single(audio.Sources, s => s.Kind == "mic");
+        Assert.Null(mic.DeviceId); // null = system default capture endpoint
+        Assert.False(mic.GateEnabled);
+    }
+
+    [Fact]
+    public void SeedMicrophoneSources_is_noop_once_seeded()
+    {
+        var audio = new AudioConfig
+        {
+            MicsSeeded = true,
+            Sources = [new AudioSourceConfig { Kind = "system" }]
+        };
+
+        var changed = AudioConfigMapper.SeedMicrophoneSources(
+            audio, [new AudioDeviceInfo("m", "Mic", false)]);
+
+        Assert.False(changed);
+        Assert.Single(audio.Sources); // user's current list left untouched
+    }
+
+    [Fact]
+    public void SeedMicrophoneSources_preserves_existing_system_settings()
+    {
+        var audio = new AudioConfig
+        {
+            Sources = [new AudioSourceConfig { Kind = "system", Gain = 0.5, Muted = true }]
+        };
+
+        AudioConfigMapper.SeedMicrophoneSources(audio, [new AudioDeviceInfo("m", "Mic", false)]);
+
+        var system = Assert.Single(audio.Sources, s => s.Kind == "system");
+        Assert.Equal(0.5, system.Gain);
+        Assert.True(system.Muted);
+    }
 }
 
 public class AudioDeviceClassifierTests
@@ -183,7 +264,8 @@ public class AudioMigrationTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(3, loaded.Version);
+        Assert.Equal(4, loaded.Version);
+        Assert.True(loaded.Audio.MicsSeeded); // 기존 설정은 시드된 것으로 표시(전체 마이크 자동확장 방지)
         Assert.Equal(2, loaded.Audio.Sources.Count);
         var system = Assert.Single(loaded.Audio.Sources, s => s.Kind == "system");
         Assert.Equal(0.7, system.Gain);
@@ -202,6 +284,7 @@ public class AudioMigrationTests : IDisposable
         Assert.Equal(2, loaded.Audio.Sources.Count);
         Assert.Contains(loaded.Audio.Sources, s => s.Kind == "system");
         Assert.Contains(loaded.Audio.Sources, s => s.Kind == "mic");
+        Assert.False(loaded.Audio.MicsSeeded); // 신규 설치는 미시드 → 앱이 첫 실행에 전체 마이크로 확장
     }
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);

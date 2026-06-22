@@ -16,9 +16,10 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(3, config.Version); // schema v3 (멀티소스 오디오 믹서 + 캡처 모니터/영역)
+        Assert.Equal(4, config.Version); // schema v4 (첫 실행 전체 마이크 시드)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
+        Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
     }
 
     [Fact]
@@ -38,6 +39,7 @@ public class ConfigStoreTests : IDisposable
         config.Recording.RetentionDays = 3;
         config.Hotkey = "Ctrl+Alt+F9";
         config.Autostart = "scheduler";
+        config.ShowStatusBox = true;
 
         store.Save(config);
         var loaded = new ConfigStore(ConfigPath).Load();
@@ -54,6 +56,7 @@ public class ConfigStoreTests : IDisposable
         Assert.Equal(3, loaded.Recording.RetentionDays);
         Assert.Equal("Ctrl+Alt+F9", loaded.Hotkey);
         Assert.Equal("scheduler", loaded.Autostart);
+        Assert.True(loaded.ShowStatusBox);
     }
 
     [Fact]
@@ -78,7 +81,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(3, config.Version); // defaults are schema v3
+        Assert.Equal(4, config.Version); // defaults are schema v4
         Assert.True(File.Exists(ConfigPath + ".bak"));
     }
 

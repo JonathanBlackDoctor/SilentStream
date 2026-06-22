@@ -11,6 +11,7 @@ using SilentStream.App.Updates;
 using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.DependencyInjection;
+using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
 using SilentStream.Media.Windows;
 
@@ -19,8 +20,9 @@ namespace SilentStream.App;
 /// <summary>
 /// Background WPF host: builds the DI container (Core contracts + Windows media
 /// implementations), shows the one-time consent dialog, then runs headless with the
-/// 6px status box and the hotkey-toggled control window. The automated start
-/// sequence (mutex/warmup/auto-stream) is wired in <see cref="StartupSequence"/>.
+/// optional 6px status box (hidden by default, toggled from the control window) and the
+/// hotkey-toggled control window. The automated start sequence (mutex/warmup/auto-stream)
+/// is wired in <see cref="StartupSequence"/>.
 /// </summary>
 public partial class App : Application
 {
@@ -62,12 +64,21 @@ public partial class App : Application
             return;
         }
 
-        // 6px status box (always visible, click-through).
+        // 첫 실행: 연결된 모든 실제 마이크를 믹서 소스로 시드한다(시스템 + 마이크 전부). 기본값이
+        // 무신호 장치 하나만 잡아 무음이 됐던 2차 현장 문제를 막는다 — 한 마이크가 죽어도 다른
+        // 마이크가 커버. 제어창/오케스트레이터가 config.Audio.Sources를 읽기 전에 수행해야 한다.
+        SeedMicrophonesOnFirstRun(_services, log);
+
+        // 6px 방송 상태 박스 (좌상단, 클릭 통과). 기본은 숨김 — config.ShowStatusBox 토글로 표시한다.
+        // 창은 항상 만들어 두고 상태(StateChanged)를 계속 반영하되, 표시 여부만 Show/Hide로 제어한다.
         _statusBox = new StatusBoxWindow();
-        _statusBox.Show();
         var orchestrator = _services.GetRequiredService<IStreamOrchestrator>();
         orchestrator.StateChanged += (_, state) => _statusBox.SetState(state);
         _statusBox.SetState(orchestrator.State);
+        if (config.ShowStatusBox)
+        {
+            _statusBox.Show();
+        }
 
         // Hotkey-toggled control window.
         var viewModel = _services.GetRequiredService<MainViewModel>();
@@ -79,6 +90,18 @@ public partial class App : Application
         _hotkeyManager.HotkeyPressed += () => _controlWindow.Toggle();
         _hotkeyManager.Register(config.Hotkey);
         viewModel.HotkeyChanged += gesture => _hotkeyManager.Register(gesture);
+        // 제어창의 토글로 상태 박스를 즉시 표시/숨김 (설정은 이미 ViewModel이 저장).
+        viewModel.StatusBoxVisibilityChanged += visible =>
+        {
+            if (visible)
+            {
+                _statusBox.Show();
+            }
+            else
+            {
+                _statusBox.Hide();
+            }
+        };
 
         // 폰 페어링 PIN을 제어창에 표시 (원격 서버는 StartupSequence에서 기동).
         var remoteServer = _services.GetRequiredService<RemoteControlServer>();
@@ -122,6 +145,35 @@ public partial class App : Application
         }
         var v = asm.GetName().Version; // InformationalVersion 특성이 없는 빌드 대비 폴백
         return v is null ? "dev" : $"{v.Major}.{v.Minor}.{v.Build}";
+    }
+
+    /// <summary>
+    /// First-run only: replaces the default single-mic layout with the system loopback plus every
+    /// real microphone currently connected, so a fresh install captures all mics instead of one
+    /// possibly-silent default device (2nd field-test root cause: the default communications mic
+    /// carried no signal while the voice was on another endpoint). Device enumeration lives here in
+    /// the Windows/app layer; the platform-neutral selection policy is
+    /// <see cref="AudioConfigMapper.SeedMicrophoneSources"/>. Guarded by Audio.MicsSeeded so it runs
+    /// once — mics the user later removes stay removed; any failure leaves the default layout intact.
+    /// </summary>
+    private static void SeedMicrophonesOnFirstRun(IServiceProvider services, ILogService log)
+    {
+        try
+        {
+            var configStore = services.GetRequiredService<IConfigStore>();
+            if (configStore.Load().Audio.MicsSeeded)
+            {
+                return; // already seeded — respect the user's current source list
+            }
+
+            var mics = services.GetRequiredService<IAudioMixer>().GetMicrophoneDevices();
+            configStore.Update(c => AudioConfigMapper.SeedMicrophoneSources(c.Audio, mics));
+            log.Info($"첫 실행: 오디오 소스를 시드했습니다(시스템 + 실제 마이크 {mics.Count(d => !d.IsLoopback)}개).");
+        }
+        catch (Exception ex)
+        {
+            log.Warn($"오디오 소스 자동 시드 실패(기존 기본 마이크로 진행): {ex.Message}");
+        }
     }
 
     /// <summary>
