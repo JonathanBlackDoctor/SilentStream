@@ -50,6 +50,8 @@ public static class StartupSequence
         // 확장(교시 VOD + 폰 원격): 라이브와 독립적으로 스케줄러/업로드 워커/원격 서버를 먼저 기동한다.
         // (orchestrator.StartAsync 는 YouTube 미연결 시 재시도 루프로 반환하지 않을 수 있으므로 앞에 둔다.)
         services.GetRequiredService<VodCoordinator>().Start(_lifetimeCts.Token);
+        // 헬스 모니터: 라이브/업로드와 함께 상태 감시를 시작한다(현재는 로그로 방출; 폰 푸시는 Phase 1).
+        services.GetRequiredService<IHealthMonitor>().Start(_lifetimeCts.Token);
         await StartRemoteServerAsync(services, log, _lifetimeCts.Token).ConfigureAwait(false);
 
         // 자동 송출+녹화 시작 (30초 워밍업은 orchestrator 내부).

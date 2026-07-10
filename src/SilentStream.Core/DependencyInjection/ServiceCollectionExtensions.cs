@@ -41,6 +41,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IYouTubeUploadService, YouTubeUploadService>();
         services.AddSingleton<IUploadQueue, UploadQueue>();
         services.AddSingleton<VodCoordinator>();
+
+        // 헬스/이벤트 레이어(원격 컨트롤러 개선 Phase 0): 오케스트레이터·믹서·녹화·업로드 큐를 구독·폴링해
+        // 타입드 HealthEvent(무음/송출끊김/디스크부족/업로드실패/라이브 시작·종료)로 방출한다. 폰 푸시·
+        // 멀티 호실·UI가 공통으로 이 레이어를 소비한다.
+        services.AddSingleton<IHealthMonitor, HealthMonitor>();
         return services;
     }
 }
