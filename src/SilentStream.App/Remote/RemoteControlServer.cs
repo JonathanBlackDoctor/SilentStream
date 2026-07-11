@@ -50,6 +50,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IPreviewProvider _preview;
     private readonly IConfigStore _configStore;
     private readonly ITokenProtector _tokenProtector;
+    private readonly IHealthMonitor _health;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -80,6 +81,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IPreviewProvider preview,
         IConfigStore configStore,
         ITokenProtector tokenProtector,
+        IHealthMonitor health,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -91,6 +93,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _preview = preview;
         _configStore = configStore;
         _tokenProtector = tokenProtector;
+        _health = health;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -148,6 +151,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var app = builder.Build();
 
         app.UseWebSockets();
+        ConfigureCors(app); // must run before auth: preflights carry no token (Phase 2 멀티 호실)
         ConfigureAuth(app);
         MapEndpoints(app);
 
@@ -304,6 +308,39 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
     }
 
+    // ---- CORS (Phase 2 멀티 호실: 폰이 다른 호실 출처의 페이지에서 이 API를 직접 호출) ----
+
+    /// <summary>
+    /// Adds CORS headers for cross-origin <c>/api</c> calls and answers preflights. Placed
+    /// <b>before</b> <see cref="ConfigureAuth"/> for two reasons: an OPTIONS preflight carries no
+    /// token so it must short-circuit here (204), and headers set here survive onto the auth
+    /// middleware's 401 so the phone can distinguish "token expired" from a network error.
+    /// The Origin is reflected per request (no wildcard) and token auth is not relaxed at all —
+    /// CORS only lets the browser read responses it was already authorized to receive.
+    /// </summary>
+    private static void ConfigureCors(WebApplication app) =>
+        app.Use(async (ctx, next) =>
+        {
+            var origin = ctx.Request.Headers.Origin.ToString();
+            var path = ctx.Request.Path.Value ?? string.Empty;
+            if (RemoteCors.AppliesTo(origin, path))
+            {
+                var headers = ctx.Response.Headers;
+                headers.AccessControlAllowOrigin = origin;
+                headers.AccessControlAllowHeaders = RemoteCors.AllowHeaders;
+                headers.AccessControlAllowMethods = RemoteCors.AllowMethods;
+                headers.AccessControlMaxAge = RemoteCors.MaxAgeSeconds;
+                headers.Vary = "Origin"; // reflected origin → responses must not be cross-origin cached
+
+                if (RemoteCors.IsPreflight(ctx.Request.Method, origin, path))
+                {
+                    ctx.Response.StatusCode = StatusCodes.Status204NoContent;
+                    return;
+                }
+            }
+            await next().ConfigureAwait(false);
+        });
+
     // ---- auth ----
 
     private void ConfigureAuth(WebApplication app) =>
@@ -384,6 +421,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
         });
 
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
+
+        // 멀티 호실 그리드 카드용 경량 요약(Phase 2). 시간표/업로드 큐 등 무거운 부분은 /api/status에만 둔다.
+        app.MapGet("/api/summary", () => Results.Json(BuildSummary(), Json));
 
         app.MapGet("/api/schedule", () => Results.Json(GetWeekdayDefaults(), Json));
         app.MapPut("/api/schedule", async ctx =>
@@ -762,6 +802,40 @@ public sealed class RemoteControlServer : IRemoteControlServer
                     videoId = j.VideoId
                 })
             }
+        };
+    }
+
+    /// <summary>
+    /// Lightweight per-room snapshot for the phone's multi-room grid (Phase 2). One card polls this
+    /// every 5–10 s per room, so it stays small: state/badge, mic silence, bitrate, free disk, and
+    /// the health monitor's active conditions — no timetable, no upload-queue listing.
+    /// </summary>
+    private object BuildSummary()
+    {
+        var state = _orchestrator.State;
+        var recording = _recording.GetStatus();
+        string[] silentMics;
+        lock (_silentMicsGate)
+        {
+            silentMics = _silentMics.Values.ToArray();
+        }
+
+        return new
+        {
+            room = _roomName,
+            state = state.ToString(),
+            badge = StateBadge(state),
+            live = state == StreamState.Live,
+            micWarning = silentMics.Length > 0,
+            silent = silentMics,
+            bitrateKbps = _lastMetrics.UploadBitrateKbps,
+            freeBytes = recording.FreeDiskBytes,
+            issues = _health.ActiveEvents.Select(e => new
+            {
+                kind = e.Kind.ToString(),
+                severity = e.Severity.ToString(),
+                message = e.Message
+            })
         };
     }
 

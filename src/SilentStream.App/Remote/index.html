@@ -51,23 +51,77 @@
     input[type=range] { width:100%; margin-top:4px; accent-color:var(--accent); }
     .warn { background:#5a2020; border:1px solid var(--red); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:14px; }
     .preview { width:100%; display:block; border-radius:8px; background:#0e1014; min-height:120px; object-fit:contain; }
+    /* ---- 접이식 카드 (시간표 등 자주 안 쓰는 섹션은 기본 접힘) ---- */
+    details.card { padding:0; }
+    details.card > summary { list-style:none; cursor:pointer; padding:14px; font-size:13px;
+                             text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
+                             display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    details.card > summary::-webkit-details-marker { display:none; }
+    details.card > summary::after { content:"▸"; transition:transform .15s; color:var(--muted); }
+    details.card[open] > summary::after { transform:rotate(90deg); }
+    details.card > .fold-body { padding:0 14px 14px; }
+    /* ---- 중지 확인 모달 (오조작 방지 안전장치) ---- */
+    #confirm { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex;
+               align-items:center; justify-content:center; padding:24px; z-index:50; }
+    #confirm .box { background:var(--card); border:1px solid var(--line); border-radius:14px;
+                    padding:18px; width:100%; max-width:340px; }
+    #confirm .title { font-weight:700; font-size:16px; margin:0 0 6px; }
+    #confirm .desc { color:var(--muted); font-size:14px; margin:0 0 14px; white-space:pre-line; }
+    button.stopHalf { background:#7a4a12; } /* 방송만 중지: 전체 중지(빨강)와 시각적으로 구분 */
+    /* ---- 멀티 호실 그리드 (Phase 2) ---- */
+    .gridbar { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
+    .gridbar button { width:auto; margin:0; padding:8px 14px; font-size:13px; }
+    .toggle { display:flex; align-items:center; gap:6px; font-size:14px; }
+    .toggle input { width:auto; accent-color:var(--accent); }
+    .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+    .rcard { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; cursor:pointer; }
+    .rcard.problem { border-color:var(--red); }
+    .thumbwrap { position:relative; background:#0e1014; }
+    .thumb { width:100%; aspect-ratio:16/9; object-fit:cover; display:block; background:#0e1014; }
+    .offline-tag { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                   color:var(--red); font-weight:700; font-size:13px; background:rgba(14,16,20,.55); }
+    .rbody { padding:8px 10px 10px; }
+    .rtop { display:flex; justify-content:space-between; align-items:center; gap:6px; }
+    .rname { font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .rcard .badge { font-size:11px; padding:2px 8px; flex:none; }
+    .rmeta { font-size:12px; margin-top:3px; min-height:1.2em; }
+    #noProblem { text-align:center; padding:20px 0; }
+    #backBtn { margin:0 0 10px; }
   </style>
 </head>
 <body>
   <h1>📡 Media Capture Helper 원격</h1>
 
-  <!-- 페어링 화면 -->
+  <!-- 페어링(호실 추가) 화면 -->
   <section id="pair" class="hidden">
     <div class="card">
-      <h2>기기 연결</h2>
-      <p class="muted">PC 화면(제어창)에 표시된 6자리 PIN을 입력하세요.</p>
+      <h2>호실 연결</h2>
+      <p class="muted">PC 화면(제어창)에 표시된 6자리 PIN을 입력하세요.
+        다른 호실을 추가하려면 그 호실의 주소를 함께 입력하세요(비우면 현재 접속 주소).</p>
+      <input id="addrInput" placeholder="호실 주소 (비우면 현재 주소)" autocapitalize="off"
+             autocomplete="off" spellcheck="false" style="margin-bottom:8px" />
       <input id="pinInput" inputmode="numeric" maxlength="6" placeholder="● ● ● ● ● ●" class="pin" />
       <button id="pairBtn">연결</button>
+      <button id="pairCancel" class="ghost hidden">← 돌아가기</button>
+      <p class="muted" style="margin-bottom:0">모든 호실은 같은 방식(전부 HTTPS 터널 또는 전부 LAN)으로
+        접속해야 합니다. HTTPS 페이지에서 http:// 호실은 브라우저가 차단합니다.</p>
     </div>
   </section>
 
-  <!-- 대시보드 -->
+  <!-- 멀티 호실 그리드 (Phase 2) -->
+  <section id="grid" class="hidden">
+    <div id="mixedWarn" class="warn hidden"></div>
+    <div class="gridbar">
+      <label class="toggle"><input type="checkbox" id="problemOnly" /> ⚠ 문제만 보기</label>
+      <button id="addRoomBtn" class="ghost">+ 호실 추가</button>
+    </div>
+    <div id="cards" class="cards"></div>
+    <div id="noProblem" class="muted hidden">모든 호실이 정상입니다 ✅</div>
+  </section>
+
+  <!-- 단일 호실 대시보드 -->
   <section id="dash" class="hidden">
+    <button id="backBtn" class="ghost hidden">← 전체 호실</button>
     <div class="card">
       <h2>상태 <span id="roomName" style="text-transform:none;color:var(--accent)"></span></h2>
       <div class="row"><span class="k">송출</span><span id="badge" class="badge">-</span></div>
@@ -100,75 +154,382 @@
       <div class="row"><span class="k">남은 디스크</span><span id="recFree">-</span></div>
     </div>
 
-    <div class="card">
-      <h2>오늘 시간표 <span id="todayDate" class="muted"></span></h2>
-      <div id="todayBadge" class="muted"></div>
-      <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
-        <tbody id="todayRows"></tbody></table>
-      <button class="ghost" id="addTodayRow">+ 교시 추가</button>
-      <div class="btnrow">
-        <button id="saveToday">오늘만 덮어쓰기</button>
-        <button id="clearToday" class="ghost">기본값으로</button>
+    <!-- 시간표: 자주 쓰지 않으므로 기본 접힘(운영 요청) — 펼쳐야 편집 가능 -->
+    <details class="card">
+      <summary><span>오늘 시간표 <span id="todayDate" class="muted"></span></span></summary>
+      <div class="fold-body">
+        <div id="todayBadge" class="muted"></div>
+        <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
+          <tbody id="todayRows"></tbody></table>
+        <button class="ghost" id="addTodayRow">+ 교시 추가</button>
+        <div class="btnrow">
+          <button id="saveToday">오늘만 덮어쓰기</button>
+          <button id="clearToday" class="ghost">기본값으로</button>
+        </div>
       </div>
-    </div>
+    </details>
 
-    <div class="card">
-      <h2>요일별 기본 시간표</h2>
-      <div class="tabs" id="weekTabs"></div>
-      <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
-        <tbody id="weekRows"></tbody></table>
-      <button class="ghost" id="addWeekRow">+ 교시 추가</button>
-      <button id="saveWeek">이 요일 저장</button>
-    </div>
+    <details class="card">
+      <summary><span>요일별 기본 시간표</span></summary>
+      <div class="fold-body">
+        <div class="tabs" id="weekTabs"></div>
+        <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
+          <tbody id="weekRows"></tbody></table>
+        <button class="ghost" id="addWeekRow">+ 교시 추가</button>
+        <button id="saveWeek">이 요일 저장</button>
+      </div>
+    </details>
 
     <div class="card">
       <h2>업로드 큐 <span id="qSummary" class="muted"></span></h2>
       <div id="qList"></div>
     </div>
 
-    <button class="ghost" id="unpair">이 기기 연결 해제</button>
+    <button class="ghost" id="unpair">이 호실 연결 해제</button>
   </section>
+
+  <!-- 중지 확인 모달: 실수 방지 안전장치 — 어떤 중지도 확인 없이는 실행되지 않는다 -->
+  <div id="confirm" class="hidden">
+    <div class="box">
+      <p class="title" id="confirmTitle"></p>
+      <p class="desc" id="confirmDesc"></p>
+      <div class="btnrow">
+        <button id="confirmCancel" class="ghost">취소</button>
+        <button id="confirmOk" class="stop">중지</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast"></div>
 
   <script>
     const WEEKDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
     const WEEKDAY_KR = {Mon:"월",Tue:"화",Wed:"수",Thu:"목",Fri:"금",Sat:"토",Sun:"일"};
-    let token = localStorage.getItem("ss_token") || "";
+    const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted"};
+
+    // ---- 호실 레지스트리 (Phase 2): 폰이 {label, baseUrl, token} 목록을 보관하고 각 호실 API를 직접 호출 ----
+    let rooms = [];          // [{label, baseUrl, token}]
+    let cur = null;          // 대시보드에 표시 중인 호실 (rooms의 원소)
+    let view = "";           // "pair" | "grid" | "dash"
+    let pairTarget = null;   // 재페어링 대상 호실(토큰 만료), 없으면 null
     let weekData = {}, activeDay = "Mon", ws = null;
     let renderedSrcKey = "", audioReloading = false;
+    const rstate = new Map(); // baseUrl → {online:null|bool, authFailed, summary, thumbUrl}
 
     const $ = id => document.getElementById(id);
+    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const toast = msg => { const t=$("toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1800); };
-    const fmtBytes = b => { if(!b) return "-"; const g=b/1073741824; if(g>=1) return g.toFixed(1)+" GB"; const m=b/1048576; if(m>=1) return m.toFixed(1)+" MB"; return (b/1024).toFixed(0)+" KB"; };
 
-    async function api(path, opts={}) {
-      opts.headers = Object.assign({ "Authorization":"Bearer "+token, "Content-Type":"application/json" }, opts.headers||{});
-      const r = await fetch(path, opts);
-      if (r.status === 401) { logout(); throw new Error("인증 필요"); }
+    // 중지 확인 모달: 확인 전에는 아무것도 실행하지 않는다(오조작 방지). 취소/배경 탭=취소.
+    let confirmResolve = null;
+    function confirmAsk(title, desc, okLabel){
+      return new Promise(resolve => {
+        confirmResolve = resolve;
+        $("confirmTitle").textContent = title;
+        $("confirmDesc").textContent = desc;
+        $("confirmOk").textContent = okLabel || "중지";
+        $("confirm").classList.remove("hidden");
+      });
+    }
+    function confirmDone(ok){
+      $("confirm").classList.add("hidden");
+      const r = confirmResolve; confirmResolve = null;
+      if (r) r(ok);
+    }
+    $("confirmOk").onclick = () => confirmDone(true);
+    $("confirmCancel").onclick = () => confirmDone(false);
+    $("confirm").onclick = e => { if (e.target === $("confirm")) confirmDone(false); };
+    const fmtBytes = b => { if(!b) return "-"; const g=b/1073741824; if(g>=1) return g.toFixed(1)+" GB"; const m=b/1048576; if(m>=1) return m.toFixed(1)+" MB"; return (b/1024).toFixed(0)+" KB"; };
+    const timeoutSignal = ms => (typeof AbortSignal!=="undefined" && AbortSignal.timeout) ? AbortSignal.timeout(ms) : undefined;
+
+    function stateOf(room){
+      let st = rstate.get(room.baseUrl);
+      if (!st){ st = {online:null, authFailed:false, summary:null, thumbUrl:null}; rstate.set(room.baseUrl, st); }
+      return st;
+    }
+    function saveRooms(){ localStorage.setItem("ss_rooms", JSON.stringify(rooms)); }
+    function loadRooms(){
+      let list = [];
+      try { list = JSON.parse(localStorage.getItem("ss_rooms") || "[]"); } catch(e) { list = []; }
+      if (!Array.isArray(list)) list = [];
+      list = list.filter(r => r && typeof r.baseUrl==="string" && typeof r.token==="string")
+                 .map(r => ({label: typeof r.label==="string" ? r.label : "", baseUrl: r.baseUrl, token: r.token}));
+      // 하위호환: 단일 호실 시절의 ss_token을 현재 출처의 호실로 자동 승격
+      const legacy = localStorage.getItem("ss_token");
+      if (legacy){
+        if (!list.some(r => r.baseUrl === location.origin)){
+          list.push({label:"이 호실", baseUrl:location.origin, token:legacy});
+        }
+        localStorage.removeItem("ss_token");
+        localStorage.setItem("ss_rooms", JSON.stringify(list));
+      }
+      return list;
+    }
+    function upsertRoom(room){
+      const existing = rooms.find(r => r.baseUrl === room.baseUrl);
+      if (existing){ existing.token = room.token; if (room.label) existing.label = room.label; }
+      else rooms.push(room);
+      const st = rstate.get(room.baseUrl);
+      if (st){ st.authFailed = false; st.online = null; st.summary = null; }
+      saveRooms();
+    }
+    function syncLabel(room, apiRoomName){
+      if (apiRoomName && room.label !== apiRoomName){ room.label = apiRoomName; saveRooms(); }
+    }
+    // 주소 입력 정규화: 스킴이 없으면 현재 페이지 스킴을 붙여 origin만 취한다. 잘못된 입력은 throw.
+    function normalizeBase(input){
+      let u = (input || "").trim();
+      if (!u) return location.origin;
+      if (!/^https?:\/\//i.test(u)) u = location.protocol + "//" + u;
+      return new URL(u).origin;
+    }
+    function protoOf(room){ try { return new URL(room.baseUrl).protocol; } catch(e) { return null; } }
+
+    // ---- 공통 fetch 래퍼: 호실 인자를 받아 그 호실의 baseUrl+token으로 호출 ----
+    async function api(room, path, opts={}){
+      opts.headers = Object.assign({ "Authorization":"Bearer "+room.token, "Content-Type":"application/json" }, opts.headers||{});
+      if (!opts.signal) opts.signal = timeoutSignal(8000);
+      const r = await fetch(room.baseUrl + path, opts);
+      if (r.status === 401){ onAuthFailed(room); throw new Error("인증 필요"); }
       return r;
     }
+    function onAuthFailed(room){
+      const st = stateOf(room);
+      if (st.authFailed) return; // 동시 401 여러 건이어도 한 번만 처리
+      st.authFailed = true;
+      if (cur === room && view === "dash"){
+        toast("인증이 만료되었습니다. 이 호실을 다시 페어링하세요.");
+        openPair(room);
+      }
+    }
 
-    function showPair(){ $("pair").classList.remove("hidden"); $("dash").classList.add("hidden"); }
-    function showDash(){ $("pair").classList.add("hidden"); $("dash").classList.remove("hidden"); }
-    function logout(){ token=""; localStorage.removeItem("ss_token"); if(ws) ws.close(); showPair(); }
+    // ---- 화면 전환 ----
+    function show(v){
+      if (view === "dash" && v !== "dash"){
+        if (ws){ try{ ws.close(); }catch(e){} ws = null; }
+        const img = $("preview");
+        if (img.src && img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+        img.removeAttribute("src");
+      }
+      view = v;
+      for (const id of ["pair","grid","dash"]) $(id).classList.toggle("hidden", id !== v);
+    }
+    function enter(){ // 레지스트리 크기에 따라 시작 화면 결정
+      if (rooms.length === 0) openPair(null);
+      else if (rooms.length === 1) openRoom(rooms[0]);
+      else openGrid();
+    }
 
+    // ---- 페어링 (기존 호실 유지: "교체"가 아니라 "추가") ----
+    function openPair(target){
+      pairTarget = target || null;
+      $("addrInput").value = target ? target.baseUrl : "";
+      $("pinInput").value = "";
+      $("pairCancel").classList.toggle("hidden", rooms.length === 0);
+      show("pair");
+    }
     $("pairBtn").onclick = async () => {
       const pin = $("pinInput").value.trim();
-      const r = await fetch("/api/pair", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({pin}) });
-      if (!r.ok) { toast("PIN이 올바르지 않습니다."); return; }
-      const data = await r.json(); token = data.token; localStorage.setItem("ss_token", token);
-      toast("연결되었습니다."); start();
+      let base;
+      try { base = normalizeBase($("addrInput").value); }
+      catch(e){ toast("주소가 올바르지 않습니다."); return; }
+      if (location.protocol === "https:" && base.startsWith("http://")){
+        toast("HTTPS 페이지에서는 http:// 호실에 접속할 수 없습니다(브라우저 차단)."); return;
+      }
+      let r;
+      try {
+        r = await fetch(base + "/api/pair", { method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({pin}), signal: timeoutSignal(6000) });
+      } catch(e){ toast("호실에 연결할 수 없습니다. 주소를 확인하세요."); return; }
+      if (r.status === 429){ toast("시도가 너무 많습니다. 잠시 후 다시 시도하세요."); return; }
+      if (!r.ok){ toast("PIN이 올바르지 않습니다."); return; }
+      const data = await r.json();
+      let label = "";
+      try {
+        const s = await fetch(base + "/api/summary",
+          { headers:{"Authorization":"Bearer "+data.token}, signal: timeoutSignal(4000) })
+          .then(x => x.ok ? x.json() : null);
+        label = (s && s.room) || "";
+      } catch(e){}
+      upsertRoom({ label: label || new URL(base).host, baseUrl: base, token: data.token });
+      toast("연결되었습니다.");
+      pairTarget = null;
+      enter();
     };
-    $("unpair").onclick = () => { logout(); toast("연결을 해제했습니다."); };
+    $("pairCancel").onclick = () => { pairTarget = null; enter(); };
+    $("addRoomBtn").onclick = () => openPair(null);
 
-    $("startBtn").onclick = async () => { await api("/api/live/start",{method:"POST"}); toast("라이브 시작 요청"); };
-    $("stopBtn").onclick  = async () => { await api("/api/live/stop",{method:"POST"}); toast("중지 요청"); };
+    // ---- 그리드 (호실 2개 이상일 때 기본 진입 화면) ----
+    function openGrid(){
+      cur = null;
+      show("grid");
+      rebuildGrid();
+      pollGrid();
+      refreshGridPreviews();
+    }
+    function updateMixedWarn(){
+      const protos = new Set(rooms.map(protoOf).filter(Boolean));
+      const el = $("mixedWarn");
+      if (protos.size > 1 || (location.protocol === "https:" && protos.has("http:"))){
+        el.textContent = "⚠ 호실 주소에 http/https가 섞여 있습니다. 모든 호실은 같은 방식(전부 HTTPS 터널 또는 전부 LAN)으로 접속해야 하며, 다른 방식의 호실은 브라우저가 차단해 오프라인으로 보입니다.";
+        el.classList.remove("hidden");
+      } else el.classList.add("hidden");
+    }
+    function rebuildGrid(){
+      const c = $("cards");
+      c.innerHTML = rooms.map((r,i)=>`
+        <div class="rcard" data-i="${i}">
+          <div class="thumbwrap"><img class="thumb" data-thumb="${i}" alt="" /><span class="offline-tag hidden" data-off="${i}">오프라인</span></div>
+          <div class="rbody">
+            <div class="rtop"><span class="rname" data-name="${i}">${esc(r.label)}</span><span class="badge" data-badge="${i}">…</span></div>
+            <div class="rmeta muted" data-meta="${i}">-</div>
+          </div>
+        </div>`).join("");
+      c.querySelectorAll(".rcard").forEach(el => el.onclick = () => openRoom(rooms[+el.dataset.i]));
+      rooms.forEach((room,i)=>{ // 유지 중인 마지막 썸네일 복원 (blob URL은 rstate가 소유)
+        const st = stateOf(room);
+        if (st.thumbUrl){ const img = c.querySelector(`img[data-thumb="${i}"]`); if (img) img.src = st.thumbUrl; }
+      });
+      updateMixedWarn();
+      renderGrid();
+    }
+    function isProblem(st){
+      if (st.authFailed || st.online === false) return true; // 오프라인도 '문제'다
+      if (st.online === null) return false;                  // 아직 첫 응답 전
+      const s = st.summary;
+      if (!s) return true;
+      return !!(s.micWarning || s.state === "Retrying" ||
+        (s.issues||[]).some(x => /^(warn|critical)$/i.test(x.severity)));
+    }
+    function paintBadge(el, state, text, bgVar){
+      el.textContent = text;
+      el.style.background = "var(" + (bgVar || BADGE_COLORS[state] || "--muted") + ")";
+      el.style.color = (!bgVar && (state==="Warmup" || state==="ConnectingYouTube")) ? "#000" : "#fff";
+    }
+    function renderGrid(){
+      const filter = $("problemOnly").checked;
+      let visible = 0;
+      rooms.forEach((room,i)=>{
+        const card = document.querySelector(`.rcard[data-i="${i}"]`);
+        if (!card) return;
+        const st = stateOf(room), s = st.summary;
+        const problem = isProblem(st);
+        card.querySelector(`[data-name="${i}"]`).textContent = room.label || room.baseUrl;
+        const badge = card.querySelector(`[data-badge="${i}"]`);
+        const off = card.querySelector(`[data-off="${i}"]`);
+        const meta = card.querySelector(`[data-meta="${i}"]`);
+        const blocked = location.protocol === "https:" && protoOf(room) === "http:";
+        if (st.authFailed){
+          paintBadge(badge, null, "재연결 필요", "--red");
+          off.classList.add("hidden");
+          meta.textContent = "토큰 만료 — 카드를 눌러 다시 페어링";
+        } else if (st.online === false){
+          paintBadge(badge, null, "오프라인", "--red");
+          off.textContent = blocked ? "차단됨(https↔http)" : "오프라인";
+          off.classList.remove("hidden");
+          meta.textContent = blocked ? "혼합 콘텐츠 차단" : "접속 불가";
+        } else if (st.online === null || !s){
+          paintBadge(badge, null, "…", "--muted");
+          off.classList.add("hidden");
+          meta.textContent = "확인 중…";
+        } else {
+          paintBadge(badge, s.state, s.badge);
+          off.classList.add("hidden");
+          const parts = [];
+          if (s.micWarning) parts.push("⚠ 무음");
+          const issueCount = (s.issues||[]).filter(x => /^(warn|critical)$/i.test(x.severity)).length;
+          if (issueCount) parts.push("문제 " + issueCount + "건");
+          parts.push(Math.round(s.bitrateKbps) + " kbps");
+          parts.push("남은 " + fmtBytes(s.freeBytes));
+          meta.textContent = parts.join(" · ");
+        }
+        card.classList.toggle("problem", problem);
+        const hide = filter && !problem;
+        card.classList.toggle("hidden", hide);
+        if (!hide) visible++;
+      });
+      $("noProblem").classList.toggle("hidden", !(filter && visible === 0 && rooms.length > 0));
+    }
+    let gridBusy = false;
+    async function pollGrid(){
+      if (gridBusy) return; // 죽은 호실 타임아웃 대기가 겹쳐도 갱신 주기가 밀리지 않게
+      gridBusy = true;
+      try {
+        await Promise.allSettled(rooms.map(async room => {
+          const st = stateOf(room);
+          try {
+            const r = await fetch(room.baseUrl + "/api/summary",
+              { headers:{"Authorization":"Bearer "+room.token}, signal: timeoutSignal(4000) });
+            if (r.status === 401){ st.online = true; st.authFailed = true; st.summary = null; return; }
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            st.summary = await r.json();
+            st.online = true; st.authFailed = false;
+            syncLabel(room, st.summary.room);
+          } catch(e){ st.online = false; st.summary = null; }
+        }));
+      } finally { gridBusy = false; }
+      if (view === "grid") renderGrid();
+    }
+    async function refreshGridPreviews(){
+      await Promise.allSettled(rooms.map(async room => {
+        const st = stateOf(room);
+        if (st.online === false || st.authFailed) return; // 죽은 호실에 썸네일까지 요청하지 않음
+        try {
+          const r = await fetch(room.baseUrl + "/api/preview.jpg?token=" + encodeURIComponent(room.token),
+            { signal: timeoutSignal(5000) });
+          if (r.status !== 200) return;
+          const blob = await r.blob();
+          if (!blob.size) return;
+          const url = URL.createObjectURL(blob);
+          const idx = rooms.indexOf(room);
+          const img = idx >= 0 ? document.querySelector(`img[data-thumb="${idx}"]`) : null;
+          if (!img){ URL.revokeObjectURL(url); return; } // 호실이 제거/재구성됨
+          img.src = url;
+          if (st.thumbUrl) URL.revokeObjectURL(st.thumbUrl);
+          st.thumbUrl = url;
+        } catch(e){}
+      }));
+    }
+    $("problemOnly").onchange = () => {
+      localStorage.setItem("ss_problem_only", $("problemOnly").checked ? "1" : "0");
+      renderGrid();
+    };
+    $("backBtn").onclick = () => openGrid();
+
+    // ---- 단일 호실 대시보드 (room-aware: 선택된 호실의 baseUrl+token 사용) ----
+    function openRoom(room){
+      cur = room;
+      show("dash");
+      $("backBtn").classList.toggle("hidden", rooms.length < 2);
+      $("roomName").textContent = room.label ? ("· " + room.label) : "";
+      startDash();
+    }
+    async function startDash(){
+      const room = cur;
+      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio()]);
+      if (view !== "dash" || cur !== room) return;
+      if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
+      connectWs();
+      refreshPreview();
+    }
+    $("unpair").onclick = () => {
+      if (!cur) return;
+      const st = rstate.get(cur.baseUrl);
+      if (st && st.thumbUrl){ URL.revokeObjectURL(st.thumbUrl); st.thumbUrl = null; }
+      rstate.delete(cur.baseUrl);
+      rooms = rooms.filter(r => r !== cur);
+      saveRooms();
+      cur = null;
+      toast("이 호실 연결을 해제했습니다.");
+      enter();
+    };
+
+    $("startBtn").onclick = async () => { await api(cur, "/api/live/start", {method:"POST"}); toast("라이브 시작 요청"); };
+    $("stopBtn").onclick  = async () => { await api(cur, "/api/live/stop",  {method:"POST"}); toast("중지 요청"); };
 
     function renderStatus(s){
-      const colors={Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted"};
-      const badge=$("badge"); badge.textContent=s.badge; badge.style.background="var("+(colors[s.state]||"--muted")+")";
-      badge.style.color = (s.state==="Warmup"||s.state==="ConnectingYouTube") ? "#000" : "#fff";
+      const badge=$("badge"); paintBadge(badge, s.state, s.badge);
+      if (cur) syncLabel(cur, s.room);
       const rn=$("roomName"); if(rn) rn.textContent = s.room ? ("· "+s.room) : "";
       document.title = s.room ? (s.room+" · Media Capture Helper 원격") : "Media Capture Helper 원격";
       $("bitrate").textContent = Math.round(s.metrics.bitrateKbps)+" kbps";
@@ -185,16 +546,16 @@
       $("qSummary").textContent = `대기 ${q.pending} · 업로드중 ${q.uploading} · 완료 ${q.completed} · 실패 ${q.failed}`;
       $("qList").innerHTML = q.items.length ? q.items.slice().reverse().map(i=>{
         const cls = i.status==="completed"?"done":i.status==="failed"?"failed":"pending";
-        const link = i.videoId ? ` <a href="https://youtu.be/${i.videoId}" target="_blank" style="color:var(--accent)">열기</a>`:"";
-        return `<div class="qitem"><span>${i.title}</span><span class="pill ${cls}">${i.status}${link}</span></div>`;
+        const link = i.videoId ? ` <a href="https://youtu.be/${encodeURIComponent(i.videoId)}" target="_blank" style="color:var(--accent)">열기</a>`:"";
+        return `<div class="qitem"><span>${esc(i.title)}</span><span class="pill ${cls}">${esc(i.status)}${link}</span></div>`;
       }).join("") : '<div class="muted">큐가 비어 있습니다.</div>';
     }
 
     function rowsHtml(periods){
       return periods.map((p,idx)=>`<tr data-i="${idx}">
-        <td><input class="time" value="${p.no}" inputmode="numeric" style="width:46px" data-f="no"></td>
-        <td><input class="time" value="${p.start}" data-f="start"></td>
-        <td><input class="time" value="${p.end}" data-f="end"></td>
+        <td><input class="time" value="${esc(p.no)}" inputmode="numeric" style="width:46px" data-f="no"></td>
+        <td><input class="time" value="${esc(p.start)}" data-f="start"></td>
+        <td><input class="time" value="${esc(p.end)}" data-f="end"></td>
         <td><button class="x" data-del="${idx}">✕</button></td></tr>`).join("");
     }
     function readRows(tbody){
@@ -210,9 +571,9 @@
     let todayPeriods=[];
     function renderToday(){ $("todayRows").innerHTML=rowsHtml(todayPeriods); wireDelete($("todayRows")); }
     $("addTodayRow").onclick=()=>{ todayPeriods=readRows($("todayRows")); todayPeriods.push({no:todayPeriods.length+1,start:"09:00:00",end:"09:50:00"}); renderToday(); };
-    $("saveToday").onclick=async()=>{ await api("/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); toast("오늘 시간표를 저장했습니다."); };
-    $("clearToday").onclick=async()=>{ await api("/api/schedule/today",{method:"DELETE"}); toast("기본값으로 되돌렸습니다."); loadToday(); };
-    async function loadToday(){ const r=await api("/api/schedule/today"); const d=await r.json(); todayPeriods=d.periods; renderToday(); }
+    $("saveToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); toast("오늘 시간표를 저장했습니다."); };
+    $("clearToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"DELETE"}); toast("기본값으로 되돌렸습니다."); loadToday().catch(()=>{}); };
+    async function loadToday(){ const room=cur; const r=await api(room,"/api/schedule/today"); const d=await r.json(); if(cur!==room) return; todayPeriods=d.periods; renderToday(); }
 
     // ---- 요일별 기본 ----
     function renderTabs(){
@@ -220,9 +581,9 @@
       $("weekTabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{ weekData[activeDay]=readRows($("weekRows")); activeDay=b.dataset.d; renderTabs(); renderWeek(); });
     }
     function renderWeek(){ $("weekRows").innerHTML=rowsHtml(weekData[activeDay]||[]); wireDelete($("weekRows")); }
-    $("addWeekRow").onclick=()=>{ const cur=readRows($("weekRows")); cur.push({no:cur.length+1,start:"09:00:00",end:"09:50:00"}); weekData[activeDay]=cur; renderWeek(); };
-    $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api("/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
-    async function loadWeek(){ const r=await api("/api/schedule"); weekData=await r.json(); renderTabs(); renderWeek(); }
+    $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00:00",end:"09:50:00"}); weekData[activeDay]=cur2; renderWeek(); };
+    $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
+    async function loadWeek(){ const room=cur; const r=await api(room,"/api/schedule"); const d=await r.json(); if(cur!==room) return; weekData=d; renderTabs(); renderWeek(); }
 
     // ---- 오디오 (다중 채널 미터 + 증폭/음소거 원격 제어) ----
     function setMeter(el, frac, peak){
@@ -237,21 +598,21 @@
     }
     function renderAudio(d){
       $("srcList").innerHTML = d.sources.map(s=>`
-        <div class="src" data-id="${s.id}">
+        <div class="src" data-id="${esc(s.id)}">
           <div class="top">
-            <span class="name">${s.name}</span>
-            <button class="mutebtn ${s.muted?'on':''}" data-mute="${s.id}">${s.muted?'음소거됨':'음소거'}</button>
+            <span class="name">${esc(s.name)}</span>
+            <button class="mutebtn ${s.muted?'on':''}" data-mute="${esc(s.id)}">${s.muted?'음소거됨':'음소거'}</button>
           </div>
-          <div class="meter"><i data-meter="${s.id}"></i></div>
-          <input type="range" min="0" max="4" step="0.05" value="${s.gain}" data-gain="${s.id}">
+          <div class="meter"><i data-meter="${esc(s.id)}"></i></div>
+          <input type="range" min="0" max="4" step="0.05" value="${esc(s.gain)}" data-gain="${esc(s.id)}">
         </div>`).join("");
       $("srcList").querySelectorAll("[data-mute]").forEach(b=>b.onclick=async()=>{
         const id=b.dataset.mute, on=!b.classList.contains("on");
-        try{ await api("/api/audio/mute",{method:"POST",body:JSON.stringify({id,muted:on})});
+        try{ await api(cur,"/api/audio/mute",{method:"POST",body:JSON.stringify({id,muted:on})});
           b.classList.toggle("on",on); b.textContent=on?"음소거됨":"음소거"; }catch(e){}
       });
       $("srcList").querySelectorAll("[data-gain]").forEach(sl=>sl.onchange=async()=>{
-        try{ await api("/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); }catch(e){}
+        try{ await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); }catch(e){}
       });
       updateMicWarn(d.micWarning, d.silent);
       renderedSrcKey = d.sources.map(s=>s.id).join("|");
@@ -260,20 +621,23 @@
       // The PC can add/remove a source mid-session; if the live ids no longer match the rendered
       // rows, rebuild them so meters and mute/gain controls track the real mixer.
       const key = (m.sources||[]).map(s=>s.id).join("|");
-      if (key !== renderedSrcKey && !audioReloading) { audioReloading = true; loadAudio().finally(()=>{ audioReloading = false; }); }
-      (m.sources||[]).forEach(s=> setMeter(document.querySelector(`[data-meter="${s.id}"]`), s.rms, s.peak));
+      if (key !== renderedSrcKey && !audioReloading) { audioReloading = true; loadAudio().catch(()=>{}).finally(()=>{ audioReloading = false; }); }
+      (m.sources||[]).forEach(s=> setMeter(document.querySelector(`[data-meter="${CSS.escape(s.id)}"]`), s.rms, s.peak));
       setMeter($("masterMeter"), m.master.rms, m.master.peak);
     }
-    async function loadAudio(){ try{ const r=await api("/api/audio"); renderAudio(await r.json()); }catch(e){} }
+    async function loadAudio(){ const room=cur; const r=await api(room,"/api/audio"); const d=await r.json(); if(cur!==room) return; renderAudio(d); }
 
     // 송출 미리보기: blob으로 받아 교체(204면 이전 프레임 유지, 깨진 이미지 방지)
     async function refreshPreview(){
-      if(!token) return;
+      if(view!=="dash" || !cur) return;
+      const room=cur;
       try{
-        const r = await fetch("/api/preview.jpg?token="+encodeURIComponent(token));
+        const r = await fetch(room.baseUrl+"/api/preview.jpg?token="+encodeURIComponent(room.token),
+          { signal: timeoutSignal(5000) });
         if(r.status !== 200) return;          // 204 = 아직 프레임 없음 → 이전 프레임 유지
         const blob = await r.blob();
         if(!blob.size) return;
+        if(view!=="dash" || cur!==room) return; // 받는 사이 다른 화면/호실로 이동함
         const img = $("preview"), old = img.src;
         img.src = URL.createObjectURL(blob);
         if(old && old.startsWith("blob:")) URL.revokeObjectURL(old);
@@ -281,25 +645,26 @@
     }
 
     function connectWs(){
+      if(!cur) return;
+      const room=cur;
       try {
-        const proto = location.protocol==="https:"?"wss":"ws";
-        ws = new WebSocket(`${proto}://${location.host}/ws/status?token=${encodeURIComponent(token)}`);
+        const wsBase = room.baseUrl.replace(/^http/i, "ws"); // http→ws, https→wss
+        ws = new WebSocket(`${wsBase}/ws/status?token=${encodeURIComponent(room.token)}`);
         ws.onmessage = e => { const m=JSON.parse(e.data); if(m.type==="levels") renderLevels(m); else renderStatus(m); };
-        ws.onclose = () => { ws=null; setTimeout(()=>{ if(token) connectWs(); }, 4000); };
+        ws.onclose = () => { ws=null; setTimeout(()=>{ if(view==="dash" && cur===room) connectWs(); }, 4000); };
       } catch(e){ /* fall back to polling */ }
     }
-    async function pollOnce(){ try{ const r=await api("/api/status"); renderStatus(await r.json()); }catch(e){} }
+    async function pollOnce(){ const room=cur; if(!room) return; const r=await api(room,"/api/status"); const d=await r.json(); if(cur!==room) return; renderStatus(d); }
 
-    async function start(){
-      showDash();
-      await pollOnce(); await loadToday(); await loadWeek(); await loadAudio();
-      connectWs();
-      refreshPreview();
-      setInterval(()=>{ if(!ws || ws.readyState!==1) pollOnce(); }, 5000);
-      setInterval(refreshPreview, 2000);
-    }
+    // ---- 주기 갱신 (화면 상태로 게이트: 중복 인터벌 없이 한 번만 등록) ----
+    setInterval(()=>{ if(view==="dash" && cur && (!ws || ws.readyState!==1)) pollOnce().catch(()=>{}); }, 5000);
+    setInterval(()=>{ refreshPreview(); }, 2000);
+    setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
+    setInterval(()=>{ if(view==="grid") refreshGridPreviews(); }, 10000);
 
-    if (token) start(); else showPair();
+    rooms = loadRooms();
+    $("problemOnly").checked = localStorage.getItem("ss_problem_only")==="1";
+    enter();
   </script>
 </body>
 </html>
