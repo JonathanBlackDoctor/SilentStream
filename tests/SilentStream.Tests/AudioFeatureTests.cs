@@ -264,7 +264,7 @@ public class AudioMigrationTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(5, loaded.Version);
+        Assert.Equal(6, loaded.Version);
         Assert.True(loaded.Audio.MicsSeeded); // 기존 설정은 시드된 것으로 표시(전체 마이크 자동확장 방지)
         Assert.Equal(string.Empty, loaded.DeviceName); // 기존 파일 마이그레이션은 호실명을 비워 둔다(호스트명 미각인)
         Assert.Equal(2, loaded.Audio.Sources.Count);

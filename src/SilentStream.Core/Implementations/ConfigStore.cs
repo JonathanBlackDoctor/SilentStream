@@ -48,8 +48,12 @@ public sealed class ConfigStore : IConfigStore
                 var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
                 return WithRuntimeDefaults(config ?? AppConfig.CreateDefault());
             }
-            catch (JsonException)
+            catch (Exception loadEx) when (loadEx is JsonException or IOException or UnauthorizedAccessException)
             {
+                // JsonException = corrupt file; IO/UnauthorizedAccess = transiently locked (AV/backup/
+                // indexer). Callers Load() from timer/event threads (health layer), so throwing here
+                // could unwind into a Timer callback and kill the unattended process — fall back to
+                // defaults instead. The next Load picks the real file up again once unlocked.
                 // Keep the broken file for diagnosis, then fall back to defaults. The backup copy
                 // is best-effort: a locked/unwritable .bak must never turn a recoverable corruption
                 // into a hard startup crash (the whole point of this fallback).
@@ -164,6 +168,18 @@ public sealed class ConfigStore : IConfigStore
         if (config.Version < 5)
         {
             config.Version = 5;
+        }
+
+        // v6 migration: phone push-notification section (원격 컨트롤러 개선 Phase 1). Additive only —
+        // all fields default (no credentials = notifier no-op), so old files just gain the section.
+        config.Notifications ??= new NotificationsConfig();
+        if (string.IsNullOrWhiteSpace(config.Notifications.NotifyLevel))
+        {
+            config.Notifications.NotifyLevel = "warn";
+        }
+        if (config.Version < 6)
+        {
+            config.Version = 6;
         }
         return config;
     }

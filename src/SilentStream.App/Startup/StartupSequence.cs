@@ -50,7 +50,11 @@ public static class StartupSequence
         // 확장(교시 VOD + 폰 원격): 라이브와 독립적으로 스케줄러/업로드 워커/원격 서버를 먼저 기동한다.
         // (orchestrator.StartAsync 는 YouTube 미연결 시 재시도 루프로 반환하지 않을 수 있으므로 앞에 둔다.)
         services.GetRequiredService<VodCoordinator>().Start(_lifetimeCts.Token);
-        // 헬스 모니터: 라이브/업로드와 함께 상태 감시를 시작한다(현재는 로그로 방출; 폰 푸시는 Phase 1).
+        // 헬스 모니터 + 폰 푸시: 상태 감시를 시작하고, 헬스 이벤트를 텔레그램 등 알림 채널로 전달한다.
+        // 알림 서비스를 먼저 구독시켜 첫 이벤트부터 놓치지 않는다. 손으로 붙여넣은 평문 봇 토큰은
+        // 알림 사용 여부와 무관하게 지금 즉시 DPAPI 암호화한다(평문이 디스크에 남지 않도록).
+        services.GetRequiredService<TelegramNotifier>().MigratePlaintextTokenAtRest();
+        services.GetRequiredService<HealthNotificationService>().Start(_lifetimeCts.Token);
         services.GetRequiredService<IHealthMonitor>().Start(_lifetimeCts.Token);
         await StartRemoteServerAsync(services, log, _lifetimeCts.Token).ConfigureAwait(false);
 

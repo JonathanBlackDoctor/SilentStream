@@ -16,7 +16,7 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(5, config.Version); // schema v5 (호실명 라벨)
+        Assert.Equal(6, config.Version); // schema v6 (폰 푸시 알림)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
@@ -34,7 +34,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(5, loaded.Version);
+        Assert.Equal(6, loaded.Version);
         Assert.Equal(string.Empty, loaded.DeviceName);
     }
 
@@ -57,6 +57,10 @@ public class ConfigStoreTests : IDisposable
         config.Autostart = "scheduler";
         config.DeviceName = "201호";
         config.ShowStatusBox = true;
+        config.Notifications.Enabled = false;
+        config.Notifications.TelegramBotTokenEnc = "TGBLOB==";
+        config.Notifications.TelegramChatId = "12345";
+        config.Notifications.NotifyLevel = "critical";
 
         store.Save(config);
         var loaded = new ConfigStore(ConfigPath).Load();
@@ -75,6 +79,35 @@ public class ConfigStoreTests : IDisposable
         Assert.Equal("scheduler", loaded.Autostart);
         Assert.Equal("201호", loaded.DeviceName);
         Assert.True(loaded.ShowStatusBox);
+        Assert.False(loaded.Notifications.Enabled);
+        Assert.Equal("TGBLOB==", loaded.Notifications.TelegramBotTokenEnc);
+        Assert.Equal("12345", loaded.Notifications.TelegramChatId);
+        Assert.Equal("critical", loaded.Notifications.NotifyLevel);
+    }
+
+    [Fact]
+    public void V5_file_gains_the_notifications_section_with_defaults()
+    {
+        // A pre-v6 file (or one hand-edited to an explicit null section) must load with the
+        // notification defaults instead of NRE-ing out of the auto-start path.
+        File.WriteAllText(ConfigPath, """{ "version": 5, "notifications": null }""");
+
+        var loaded = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(6, loaded.Version);
+        Assert.True(loaded.Notifications.Enabled);
+        Assert.Equal(string.Empty, loaded.Notifications.TelegramBotTokenEnc);
+        Assert.Equal("warn", loaded.Notifications.NotifyLevel);
+    }
+
+    [Fact]
+    public void Blank_notify_level_is_normalized_to_warn_on_load()
+    {
+        File.WriteAllText(ConfigPath, """{ "version": 5, "notifications": { "notifyLevel": "" } }""");
+        Assert.Equal("warn", new ConfigStore(ConfigPath).Load().Notifications.NotifyLevel);
+
+        File.WriteAllText(ConfigPath, """{ "version": 5, "notifications": { "notifyLevel": "critical" } }""");
+        Assert.Equal("critical", new ConfigStore(ConfigPath).Load().Notifications.NotifyLevel);
     }
 
     [Fact]
@@ -120,7 +153,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(5, config.Version); // defaults are schema v5
+        Assert.Equal(6, config.Version); // defaults are schema v6
         Assert.True(File.Exists(ConfigPath + ".bak"));
         // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
         // label stays empty rather than being silently stamped with this machine's hostname.

@@ -66,6 +66,7 @@ public class ContractsScaffoldingTests
     [InlineData(typeof(IUploadQueue))]
     [InlineData(typeof(IRecordingSessionInfo))]
     [InlineData(typeof(IHealthMonitor))]
+    [InlineData(typeof(INotifier))]
     public void Extension_contracts_resolve_from_the_container(Type contract)
     {
         // 확장(교시 VOD + 폰 원격) 신규 계약이 DI 그래프에서 정상 해석되는지 검증.
@@ -95,7 +96,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(5, config.Version); // schema v5 (호실명 라벨)
+        Assert.Equal(6, config.Version); // schema v6 (폰 푸시 알림)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

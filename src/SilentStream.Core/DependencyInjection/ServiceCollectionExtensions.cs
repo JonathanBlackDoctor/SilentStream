@@ -46,6 +46,13 @@ public static class ServiceCollectionExtensions
         // 타입드 HealthEvent(무음/송출끊김/디스크부족/업로드실패/라이브 시작·종료)로 방출한다. 폰 푸시·
         // 멀티 호실·UI가 공통으로 이 레이어를 소비한다.
         services.AddSingleton<IHealthMonitor, HealthMonitor>();
+
+        // 폰 푸시 알림(Phase 1): HealthEvent → 심각도 필터 → 채널 팬아웃. 채널은 INotifier로 추가
+        // 등록한다(현재 텔레그램; Phase 3에서 PWA Web Push 합류 예정). TelegramNotifier는 기동 시
+        // 평문 토큰 즉시 암호화(MigratePlaintextTokenAtRest) 호출을 위해 구체 타입으로도 노출한다.
+        services.AddSingleton<TelegramNotifier>();
+        services.AddSingleton<INotifier>(sp => sp.GetRequiredService<TelegramNotifier>());
+        services.AddSingleton<HealthNotificationService>();
         return services;
     }
 }

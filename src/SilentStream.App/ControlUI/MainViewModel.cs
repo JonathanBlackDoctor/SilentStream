@@ -29,7 +29,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IPreviewProvider _preview;
     private readonly IRecordingManager _recordingManager;
     private readonly IConfigStore _configStore;
+    private readonly ITokenProtector _tokenProtector;
+    private readonly INotifier _notifier;
     private readonly ILogService _log;
+
+    /// <summary>Shown instead of the stored bot token — the plaintext is never bound back into the UI.</summary>
+    private const string TokenPlaceholder = "********";
 
     private CancellationTokenSource? _startCts;
     private readonly HashSet<string> _silentMics = [];
@@ -50,6 +55,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         IPreviewProvider preview,
         IRecordingManager recordingManager,
         IConfigStore configStore,
+        ITokenProtector tokenProtector,
+        INotifier notifier,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -58,6 +65,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _preview = preview;
         _recordingManager = recordingManager;
         _configStore = configStore;
+        _tokenProtector = tokenProtector;
+        _notifier = notifier;
         _log = log;
 
         var config = _configStore.Load();
@@ -73,6 +82,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _recordingFolder = config.Recording.Folder;
         _maxSizeGb = config.Recording.MaxSizeGb;
         _retentionDays = config.Recording.RetentionDays;
+
+        // ---- 텔레그램 알림 (Phase 1): 저장된 토큰은 플레이스홀더로만 표시 ----
+        _telegramEnabled = config.Notifications.Enabled;
+        _telegramBotToken = string.IsNullOrEmpty(config.Notifications.TelegramBotTokenEnc)
+                            && string.IsNullOrEmpty(config.Notifications.TelegramBotToken)
+            ? string.Empty
+            : TokenPlaceholder;
+        _telegramChatId = config.Notifications.TelegramChatId;
+        var notifyLevel = (config.Notifications.NotifyLevel ?? string.Empty).Trim().ToLowerInvariant();
+        _telegramNotifyLevel = TelegramNotifyLevels.Contains(notifyLevel) ? notifyLevel : "warn";
 
         // ---- audio master filters (apply next session) ----
         _noiseSuppressionEnabled = config.Audio.Filters.NoiseSuppressionEnabled;
@@ -92,6 +111,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         SaveSettingsCommand = new RelayCommand(SaveSettings);
         RefreshDevicesCommand = new RelayCommand(RefreshDevices);
         AddMicCommand = new RelayCommand(AddMic);
+        SendTestAlertCommand = new RelayCommand(SendTestAlert);
         _persistDebounce.Tick += (_, _) => PersistAudioSources();
 
         _orchestrator.StateChanged += (_, state) => OnUi(() => ApplyState(state));
@@ -385,11 +405,34 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private int _retentionDays;
     public int RetentionDays { get => _retentionDays; set => Set(ref _retentionDays, value); }
 
+    // ---- 텔레그램 알림 (Phase 1, [설정 저장]으로 일괄 저장) ----
+    private bool _telegramEnabled;
+    public bool TelegramEnabled { get => _telegramEnabled; set => Set(ref _telegramEnabled, value); }
+
+    private string _telegramBotToken;
+    /// <summary>
+    /// Bot-token entry. Shows <see cref="TokenPlaceholder"/> while a token is stored; typing a real
+    /// token replaces it (encrypted on save), clearing the box deletes the stored token on save.
+    /// </summary>
+    public string TelegramBotToken { get => _telegramBotToken; set => Set(ref _telegramBotToken, value); }
+
+    private string _telegramChatId;
+    public string TelegramChatId { get => _telegramChatId; set => Set(ref _telegramChatId, value); }
+
+    public string[] TelegramNotifyLevels { get; } = ["info", "warn", "critical"];
+
+    private string _telegramNotifyLevel;
+    public string TelegramNotifyLevel { get => _telegramNotifyLevel; set => Set(ref _telegramNotifyLevel, value); }
+
+    private string _telegramStatusText = "";
+    public string TelegramStatusText { get => _telegramStatusText; private set => Set(ref _telegramStatusText, value); }
+
     public RelayCommand StartCommand { get; }
     public RelayCommand StopCommand { get; }
     public RelayCommand SaveSettingsCommand { get; }
     public RelayCommand RefreshDevicesCommand { get; }
     public RelayCommand AddMicCommand { get; }
+    public RelayCommand SendTestAlertCommand { get; }
 
     /// <summary>Raised when the saved hotkey changes so App can re-register it.</summary>
     public event Action<string>? HotkeyChanged;
@@ -642,16 +685,21 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void SaveSettings()
     {
-        if (!HotkeyGesture.TryParse(HotkeyText, out var gesture))
+        // 단축키가 잘못돼도 나머지 설정(특히 텔레그램 토큰)은 저장한다 — 저장 전체를 막으면
+        // 토큰을 입력한 사용자가 실패를 모른 채 알림이 영영 설정되지 않는다. 단축키만 건너뛴다.
+        var hotkeyValid = HotkeyGesture.TryParse(HotkeyText, out var gesture);
+        if (!hotkeyValid)
         {
-            _log.Warn($"단축키 형식이 올바르지 않아 저장하지 않았습니다: \"{HotkeyText}\"");
-            return;
+            _log.Warn($"단축키 형식이 올바르지 않아 단축키만 저장하지 않았습니다: \"{HotkeyText}\"");
         }
 
-        var hotkeyDisplay = gesture!.Display;
+        var protectFailed = false;
         _configStore.Update(config =>
         {
-            config.Hotkey = hotkeyDisplay;
+            if (hotkeyValid)
+            {
+                config.Hotkey = gesture!.Display;
+            }
             config.Autostart = AutostartMethod;
             config.DeviceName = (RoomName ?? string.Empty).Trim();
             config.Recording.Folder = RecordingFolder;
@@ -666,12 +714,105 @@ public sealed class MainViewModel : INotifyPropertyChanged
             config.Encoding.Fps = Fps;
             config.Encoding.VideoBitrateKbps = VideoBitrateKbps;
             config.Encoding.AudioBitrateKbps = AudioBitrateKbps;
+
+            // 텔레그램 알림: 토큰은 즉시 DPAPI 암호화해 저장하고 평문은 config에 남기지 않는다.
+            // 플레이스홀더(********)가 그대로면 기존 토큰 유지, 비우고 저장하면 삭제.
+            config.Notifications.Enabled = TelegramEnabled;
+            config.Notifications.TelegramChatId = (TelegramChatId ?? string.Empty).Trim();
+            config.Notifications.NotifyLevel = TelegramNotifyLevel;
+            var typedToken = (TelegramBotToken ?? string.Empty).Trim();
+            if (typedToken.Length == 0)
+            {
+                config.Notifications.TelegramBotToken = string.Empty;
+                config.Notifications.TelegramBotTokenEnc = string.Empty;
+            }
+            else if (typedToken != TokenPlaceholder)
+            {
+                try
+                {
+                    config.Notifications.TelegramBotTokenEnc = _tokenProtector.Protect(typedToken);
+                    config.Notifications.TelegramBotToken = string.Empty;
+                }
+                catch (Exception ex)
+                {
+                    protectFailed = true;
+                    _log.Error("텔레그램 봇 토큰 암호화 실패 — 토큰을 저장하지 못했습니다.", ex);
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(config.Notifications.TelegramBotToken))
+            {
+                // 플레이스홀더 유지 = 기존 토큰 유지. 그 토큰이 아직 평문(수동 편집 직후)이라면
+                // 이 기회에 암호화해 평문을 디스크에서 제거한다.
+                try
+                {
+                    config.Notifications.TelegramBotTokenEnc =
+                        _tokenProtector.Protect(config.Notifications.TelegramBotToken.Trim());
+                    config.Notifications.TelegramBotToken = string.Empty;
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("텔레그램 봇 토큰 암호화 실패 — 평문 토큰을 유지합니다.", ex);
+                }
+            }
         });
 
-        HotkeyText = hotkeyDisplay;
-        HotkeyChanged?.Invoke(hotkeyDisplay);
-        _log.Info("설정이 저장되었습니다. (캡처 모니터/영역은 다음 세션부터 적용)");
+        if (protectFailed)
+        {
+            // 암호화 실패를 성공처럼 위장하지 않는다: 입력값을 남겨 재시도할 수 있게 하고 알린다.
+            TelegramStatusText = "토큰 암호화에 실패해 저장하지 못했습니다 — 로그를 확인하세요.";
+        }
+        else
+        {
+            // 저장 결과 기준으로 토큰 입력칸을 플레이스홀더/빈칸으로 되돌린다(평문 잔류 방지).
+            // 평문 필드도 함께 검사해야 수동 편집(아직 미암호화) 토큰이 빈칸→삭제로 오인되지 않는다.
+            var savedNotifications = _configStore.Load().Notifications;
+            TelegramBotToken = string.IsNullOrEmpty(savedNotifications.TelegramBotTokenEnc)
+                               && string.IsNullOrEmpty(savedNotifications.TelegramBotToken)
+                ? string.Empty
+                : TokenPlaceholder;
+        }
+
+        if (hotkeyValid)
+        {
+            HotkeyText = gesture!.Display;
+            HotkeyChanged?.Invoke(gesture.Display);
+        }
+        _log.Info(hotkeyValid
+            ? "설정이 저장되었습니다. (캡처 모니터/영역은 다음 세션부터 적용)"
+            : "설정이 저장되었습니다(단축키 제외 — 형식 오류). (캡처 모니터/영역은 다음 세션부터 적용)");
         RefreshRecordingStatus();
+    }
+
+    /// <summary>
+    /// Sends a test message through the configured notifier so the operator can verify the phone
+    /// receives alerts. Runs off the UI thread (RelayCommand is synchronous); the result is
+    /// marshalled back into the bound status text — the app's toast-equivalent.
+    /// </summary>
+    private void SendTestAlert()
+    {
+        if (!TelegramEnabled)
+        {
+            TelegramStatusText = "알림 사용이 꺼져 있습니다 — 체크하고 [설정 저장] 후 테스트하세요.";
+            return;
+        }
+        TelegramStatusText = "테스트 알림 전송 중...";
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var ok = await _notifier
+                    .SendAsync("✅ [테스트] Media Capture Helper 알림이 정상 동작합니다.", CancellationToken.None)
+                    .ConfigureAwait(false);
+                OnUi(() => TelegramStatusText = ok
+                    ? "테스트 알림을 보냈습니다. 폰에서 확인하세요."
+                    : "전송 실패 — 봇 토큰/채팅 ID를 확인하고 [설정 저장] 후 다시 시도하세요.");
+            }
+            catch (Exception ex)
+            {
+                OnUi(() => TelegramStatusText = $"전송 오류: {ex.Message}");
+                _log.Warn($"텔레그램 테스트 알림 실패: {ex.Message}");
+            }
+        });
     }
 
     private static double ToFraction(double db)

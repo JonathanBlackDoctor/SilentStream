@@ -13,10 +13,11 @@ public sealed class AppConfig
     /// (확장계획서 §6); v3 adds the multi-source audio mixer (sources + master filters) and
     /// capture monitor/region selection; v4 adds the first-run "seed every real microphone"
     /// step (see <see cref="AudioConfig.MicsSeeded"/>); v5 adds the per-device room label
-    /// (<see cref="DeviceName"/>) for multi-PC single-channel deployments. Missing keys
-    /// deserialize to their defaults, so an older file loads cleanly and is migrated on the next save.
+    /// (<see cref="DeviceName"/>) for multi-PC single-channel deployments; v6 adds the phone
+    /// push-notification section (<see cref="Notifications"/>). Missing keys deserialize to
+    /// their defaults, so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 5;
+    public int Version { get; set; } = 6;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -36,6 +37,9 @@ public sealed class AppConfig
 
     /// <summary>Smartphone remote-control server settings (확장계획서 §6). Added in schema v2.</summary>
     public RemoteConfig Remote { get; set; } = new();
+
+    /// <summary>Phone push-notification settings (원격 컨트롤러 개선 Phase 1). Added in schema v6.</summary>
+    public NotificationsConfig Notifications { get; set; } = new();
 
     /// <summary>Global hotkey that toggles the control UI (plan §3.8).</summary>
     public string Hotkey { get; set; } = "Ctrl+Shift+F12";
@@ -294,4 +298,42 @@ public sealed class RemoteConfig
     /// does, so it is the default for unattended reliability. Blank is treated as "http2" at load.
     /// </summary>
     public string CloudflareProtocol { get; set; } = "http2";
+}
+
+/// <summary>
+/// Phone push-notification settings (원격 컨트롤러 개선 Phase 1, schema v6). The health layer's
+/// events (mic silent / rtmp down / disk low / upload failed …) are pushed to the operator's phone
+/// through the configured channels — Telegram in Phase 1; PWA Web Push joins in Phase 3.
+/// </summary>
+public sealed class NotificationsConfig
+{
+    /// <summary>
+    /// Master switch. Defaults to true so pasting a bot token + chat id "just works" — with no
+    /// credentials configured the notifier is a no-op anyway, so the default is harmless.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Telegram bot token (from @BotFather). Sensitive — paste the plaintext token here ONCE (or
+    /// enter it in the control window, which encrypts immediately); on first use the app encrypts
+    /// it into <see cref="TelegramBotTokenEnc"/> (DPAPI) and wipes this field, so it is never left
+    /// at rest in plaintext. Mirrors <see cref="RemoteConfig.CloudflareTunnelToken"/>.
+    /// </summary>
+    public string TelegramBotToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// DPAPI-encrypted Telegram bot token (base64, CurrentUser scope) — the at-rest form actually
+    /// used. Empty until a token is configured. Mirrors <see cref="RemoteConfig.CloudflareTunnelTokenEnc"/>.
+    /// </summary>
+    public string TelegramBotTokenEnc { get; set; } = string.Empty;
+
+    /// <summary>Chat id the bot sends to (not secret — stored plain, like <see cref="RemoteConfig.CloudflareHostname"/>).</summary>
+    public string TelegramChatId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Minimum severity that triggers a push: "info" | "warn" | "critical". Default "warn" so the
+    /// operational alerts (무음/송출 끊김/디스크 부족/업로드 실패) push while routine live start/stop
+    /// stays in the log. Blank is treated as "warn" at load.
+    /// </summary>
+    public string NotifyLevel { get; set; } = "warn";
 }
