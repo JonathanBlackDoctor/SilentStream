@@ -64,14 +64,14 @@ public sealed record QualityStep(
 /// <param name="LevelName">User-facing Korean label of the applied level.</param>
 /// <param name="Reason">Why the level last changed.</param>
 /// <param name="Applied">Concrete encode parameters of the applied level; null until known.</param>
-/// <param name="DegradedSinceUtc">When the level first left 0, or null while at the original.</param>
+/// <param name="DegradedSince">Local wall-clock time the level first left 0; null at 원본.</param>
 public sealed record QualityStatus(
     QualityMode Mode,
     int Level,
     string LevelName,
     QualityChangeReason Reason,
     QualityStep? Applied,
-    DateTime? DegradedSinceUtc)
+    DateTime? DegradedSince)
 {
     /// <summary>Level 0 / auto — the state before any adaptation (원본 품질).</summary>
     public static QualityStatus Original { get; } =

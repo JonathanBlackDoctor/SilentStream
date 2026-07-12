@@ -51,6 +51,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IConfigStore _configStore;
     private readonly ITokenProtector _tokenProtector;
     private readonly IHealthMonitor _health;
+    private readonly IAdaptiveQualityController _quality;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -82,6 +83,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IConfigStore configStore,
         ITokenProtector tokenProtector,
         IHealthMonitor health,
+        IAdaptiveQualityController quality,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -94,6 +96,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _configStore = configStore;
         _tokenProtector = tokenProtector;
         _health = health;
+        _quality = quality;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -157,6 +160,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         _orchestrator.StateChanged += OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated += OnMetrics;
+        _orchestrator.QualityChanged += OnQualityChanged;
         _audioMixer.LevelsUpdated += OnLevels;
         _audioMixer.MicSignalChanged += OnMicSignal;
 
@@ -258,6 +262,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _app = null;
         _orchestrator.StateChanged -= OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated -= OnMetrics;
+        _orchestrator.QualityChanged -= OnQualityChanged;
         _audioMixer.LevelsUpdated -= OnLevels;
         _audioMixer.MicSignalChanged -= OnMicSignal;
 
@@ -502,6 +507,27 @@ public sealed class RemoteControlServer : IRemoteControlServer
             await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
         });
 
+        // ---- 송출 품질 (적응형 품질 §7.2: 조회 + 수동 고정/자동 복귀) ----
+        app.MapGet("/api/quality", () => Results.Json(
+            QualityRemote.BuildDto(_quality, _orchestrator.CurrentQuality,
+                _configStore.Load().Encoding.Adaptive.Enabled), Json));
+        app.MapPut("/api/quality", async ctx =>
+        {
+            var body = await ReadJsonAsync<QualityRemote.PutRequest>(ctx).ConfigureAwait(false);
+            var result = QualityRemote.Apply(body, _quality, _orchestrator.CurrentQuality,
+                _configStore.Load().Encoding.Adaptive.Enabled,
+                live: _orchestrator.State == StreamState.Live);
+            if (result.Ok)
+            {
+                _log.Info($"원격 품질 요청: mode={result.Quality.Mode}, level={result.Quality.Level} → {result.Applied}");
+            }
+            else
+            {
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            }
+            await ctx.Response.WriteAsJsonAsync(result, Json).ConfigureAwait(false);
+        });
+
         // 송출 미리보기 썸네일 (토큰은 쿼리스트링으로 — <img> 헤더 불가). 프레임 없으면 204.
         app.MapGet("/api/preview.jpg", () =>
         {
@@ -584,6 +610,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     }
 
     private void OnStateOrMetricsChanged(object? sender, StreamState state) => BroadcastStatus();
+
+    private void OnQualityChanged(object? sender, QualityStatus quality) => BroadcastStatus();
 
     // ---- audio levels + mic-signal push ----
 
@@ -761,6 +789,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var recording = _recording.GetStatus();
         var jobs = _uploadQueue.Snapshot();
         var today = DateOnly.FromDateTime(DateTime.Now);
+        var quality = _orchestrator.CurrentQuality;
         string[] silentMics;
         lock (_silentMicsGate)
         {
@@ -773,6 +802,22 @@ public sealed class RemoteControlServer : IRemoteControlServer
             badge = StateBadge(state),
             live = state == StreamState.Live,
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
+
+            // 적용 중인 송출 품질(적응형 품질) — 폰 상태 카드의 품질 줄 + 프리셋 하이라이트용.
+            quality = new
+            {
+                mode = quality.Mode == QualityMode.ManualHold ? "manual" : "auto",
+                level = quality.Level,
+                levelName = quality.LevelName,
+                degraded = quality.Level > 0,
+                current = quality.Applied is { } step
+                    ? (object)new
+                    {
+                        width = step.Width, height = step.Height,
+                        fps = step.Fps, videoBitrateKbps = step.VideoBitrateKbps
+                    }
+                    : null
+            },
 
             audio = new
             {
@@ -830,6 +875,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             silentMics = _silentMics.Values.ToArray();
         }
 
+        var quality = _orchestrator.CurrentQuality;
         return new
         {
             room = _roomName,
@@ -840,6 +886,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             silent = silentMics,
             bitrateKbps = _lastMetrics.UploadBitrateKbps,
             freeBytes = recording.FreeDiskBytes,
+            qualityLevel = quality.Level,   // 그리드 카드의 "절약" 칩용 (0 = 원본)
+            qualityName = quality.LevelName,
             issues = _health.ActiveEvents.Select(e => new
             {
                 kind = e.Kind.ToString(),

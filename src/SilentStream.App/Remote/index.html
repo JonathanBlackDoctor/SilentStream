@@ -138,6 +138,14 @@
       <p class="muted" style="margin:6px 0 0">방송 중지 = 송출만 끝내고 녹화는 계속. 전체 중지 = 송출·녹화 모두 종료.</p>
     </div>
 
+    <!-- 송출 품질 (적응형 품질): 현재 단계 표시 + 프리셋 수동 고정/자동 복귀 -->
+    <div class="card">
+      <h2>송출 품질</h2>
+      <div class="row"><span class="k">현재</span><span id="qualNow">-</span></div>
+      <div class="tabs" id="qualPills" style="margin:8px 0 0"></div>
+      <p class="muted" id="qualHint" style="margin:6px 0 0"></p>
+    </div>
+
     <div class="card">
       <h2>송출 미리보기</h2>
       <img id="preview" class="preview" alt="미리보기 대기 중" />
@@ -445,6 +453,7 @@
           if (s.micWarning) parts.push("⚠ 무음");
           const issueCount = (s.issues||[]).filter(x => /^(warn|critical)$/i.test(x.severity)).length;
           if (issueCount) parts.push("문제 " + issueCount + "건");
+          if (s.qualityLevel > 0) parts.push("절약: " + (s.qualityName || s.qualityLevel + "단계"));
           parts.push(Math.round(s.bitrateKbps) + " kbps");
           parts.push("남은 " + fmtBytes(s.freeBytes));
           meta.textContent = parts.join(" · ");
@@ -512,7 +521,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio()]);
+      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -570,6 +579,7 @@
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
       if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
+      if (s.quality) renderQualityStatus(s.quality); // 적용 품질(진실)은 상태 푸시로 갱신된다
       $("startBtn").disabled = s.state!=="Idle";
       $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
       $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
@@ -617,6 +627,42 @@
     $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00:00",end:"09:50:00"}); weekData[activeDay]=cur2; renderWeek(); };
     $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
     async function loadWeek(){ const room=cur; const r=await api(room,"/api/schedule"); const d=await r.json(); if(cur!==room) return; weekData=d; renderTabs(); renderWeek(); }
+
+    // ---- 송출 품질 (적응형 품질: 프리셋 수동 고정 + 자동 복귀) ----
+    const QUAL_NAMES = ["원본","절약 1단계","절약 2단계","안전 모드"];
+    let qualLadder = [], qualMode = "auto", qualLevel = 0;
+    function paintQualityPills(){
+      // 사다리는 세션마다 달라질 수 있다(퇴화 단계 제거). 첫 세션 전이면 명목 단계로 표시.
+      const rungs = qualLadder.length ? qualLadder : QUAL_NAMES.map((n,l)=>({level:l, name:n}));
+      $("qualPills").innerHTML =
+        `<button data-q="auto" class="${qualMode==="auto"?'active':''}">자동</button>` +
+        rungs.map(r=>`<button data-q="${r.level}" class="${qualMode==="manual"&&qualLevel===r.level?'active':''}">${esc(r.name)}</button>`).join("");
+      $("qualPills").querySelectorAll("button").forEach(b=>b.onclick=()=>putQuality(b.dataset.q));
+      $("qualHint").textContent =
+        qualMode==="manual" ? "수동 고정 중 — 전체 중지 시 자동으로 복귀합니다."
+        : qualLevel>0 ? "자동 절약 중 — 여건이 회복되면 쉬는 시간에 원본으로 돌아갑니다."
+        : "부하·네트워크 상태에 따라 자동으로 조절됩니다.";
+    }
+    function renderQualityStatus(q){ // /api/status 푸시의 적용 품질(진실)
+      const dims = q.current ? ` · ${q.current.width}×${q.current.height}@${Math.round(q.current.fps)} ${q.current.videoBitrateKbps}kbps` : "";
+      $("qualNow").textContent = q.levelName + dims + (q.mode==="manual" ? " · 수동" : " · 자동");
+      if (q.mode !== qualMode || q.level !== qualLevel){ qualMode=q.mode; qualLevel=q.level; paintQualityPills(); }
+    }
+    async function putQuality(q){
+      const body = q==="auto" ? {mode:"auto"} : {mode:"manual", level:+q};
+      try{
+        const d = await (await api(cur,"/api/quality",{method:"PUT",body:JSON.stringify(body)})).json();
+        if(!d.ok){ toast(d.error||"요청이 잘못되었습니다."); return; }
+        toast(d.applied==="swapped" ? "품질 전환 중 — 잠시 화면이 끊길 수 있습니다." : "다음 시작부터 적용됩니다.");
+        qualLadder = d.quality.ladder||[]; qualMode = d.quality.mode; qualLevel = d.quality.level;
+        paintQualityPills();
+      }catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    }
+    async function loadQuality(){
+      const room=cur; const r=await api(room,"/api/quality"); const d=await r.json(); if(cur!==room) return;
+      qualLadder = d.ladder||[]; qualMode = d.mode; qualLevel = d.level;
+      paintQualityPills();
+    }
 
     // ---- 오디오 (다중 채널 미터 + 증폭/음소거 원격 제어) ----
     function setMeter(el, frac, peak){

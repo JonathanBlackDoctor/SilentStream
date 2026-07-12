@@ -116,6 +116,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         _orchestrator.StateChanged += (_, state) => OnUi(() => ApplyState(state));
         _orchestrator.MetricsUpdated += (_, metrics) => OnUi(() => ApplyMetrics(metrics));
+        _orchestrator.QualityChanged += (_, quality) => OnUi(() => ApplyQuality(quality));
+        ApplyQuality(_orchestrator.CurrentQuality);
         _audioMixer.LevelsUpdated += (_, levels) => OnUi(() => ApplyLevels(levels));
         _audioMixer.MicSignalChanged += (_, status) => OnUi(() => ApplyMicSignal(status));
         _preview.FrameUpdated += () => OnUi(UpdatePreview);
@@ -350,6 +352,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     /// <summary>App가 시작 시 현재 실행 버전을 전달한다(제어창 제목/상태바 표시용).</summary>
     public void SetVersion(string version) => OnUi(() => VersionText = $"v{version}");
+
+    // ---- 송출 품질 (적응형 품질) ----
+    private string _qualityText = "";
+    /// <summary>적용 중인 품질 단계(예 "품질: 절약 1단계 · 자동"). 하단 상태바 중앙에 표시.</summary>
+    public string QualityText { get => _qualityText; private set => Set(ref _qualityText, value); }
+
+    private void ApplyQuality(QualityStatus quality)
+    {
+        var mode = quality.Mode == QualityMode.ManualHold ? "수동 고정" : "자동";
+        var dims = quality.Applied is { } step
+            ? $" · {step.Width}x{step.Height}@{step.Fps:0.#} {step.VideoBitrateKbps}kbps"
+            : string.Empty;
+        QualityText = $"품질: {quality.LevelName}{dims} · {mode}";
+    }
 
     /// <summary>업데이트가 내려받아져 다음 재시작 때 적용 예약되면 App(→AppUpdateManager)가 호출한다.</summary>
     public void SetStagedUpdate(string version) => OnUi(() =>

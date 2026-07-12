@@ -323,7 +323,7 @@
             </ScrollViewer>
         </Grid>
 
-        <!-- 하단 상태바: 현재 실행 버전 + 자동 업데이트 안내(다운로드되어 적용 대기 중일 때만) -->
+        <!-- 하단 상태바: 현재 실행 버전 + 적용 품질(적응형) + 자동 업데이트 안내(적용 대기 중일 때만) -->
         <Border Grid.Row="3" Margin="0,10,0,0" Padding="10,5" CornerRadius="4" Background="#15151A">
             <DockPanel>
                 <TextBlock DockPanel.Dock="Left" Text="{Binding VersionText}"
@@ -333,7 +333,10 @@
                            Foreground="#2ECC40" FontWeight="Bold" FontSize="11"
                            VerticalAlignment="Center"
                            Visibility="{Binding UpdateAvailable, Converter={StaticResource B2V}}" />
-                <TextBlock />
+                <TextBlock Text="{Binding QualityText}" Margin="14,0,0,0"
+                           Foreground="{StaticResource DimBrush}" FontSize="11"
+                           VerticalAlignment="Center"
+                           ToolTip="적용 중인 송출 품질 — 부하·네트워크에 따라 자동 조절(폰 원격에서 수동 고정 가능)" />
             </DockPanel>
         </Border>
     </Grid>
