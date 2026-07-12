@@ -387,8 +387,10 @@ public class HealthMonitorTests : IDisposable
     private sealed class FakeOrchestrator : IStreamOrchestrator
     {
         public StreamState State { get; private set; } = StreamState.Idle;
+        public QualityStatus CurrentQuality { get; private set; } = QualityStatus.Original;
         public event EventHandler<StreamState>? StateChanged;
         public event EventHandler<MetricsSnapshot>? MetricsUpdated;
+        public event EventHandler<QualityStatus>? QualityChanged;
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync() => Task.CompletedTask;
         public Task StopStreamingKeepRecordingAsync() => Task.CompletedTask;
@@ -396,6 +398,11 @@ public class HealthMonitorTests : IDisposable
         {
             State = state;
             StateChanged?.Invoke(this, state);
+        }
+        public void RaiseQuality(QualityStatus quality)
+        {
+            CurrentQuality = quality;
+            QualityChanged?.Invoke(this, quality);
         }
     }
 

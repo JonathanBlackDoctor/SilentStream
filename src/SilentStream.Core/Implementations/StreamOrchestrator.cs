@@ -58,10 +58,17 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private DateTime _sessionStart;
     private TimeSpan _lastCpuTime;
     private DateTime _lastCpuSample;
-    // Non-zero while StopStreamingKeepRecordingAsync is swapping the encoder (stop tee → start
-    // file-only). The watchdog's RecordingOnly recovery must not see the intentional mid-swap
-    // "encoder not running" window and double-start a second ffmpeg.
+    // Non-zero while an in-place encoder swap is in flight (방송만 중지의 tee→file-only 교체 or a
+    // quality swap that keeps Live). The watchdog must not see the intentional mid-swap "encoder
+    // not running" window and double-start a second ffmpeg — both its Live and RecordingOnly
+    // branches consult this flag.
     private int _encoderSwapInProgress;
+
+    // Serialises in-place swaps against each other (품질 전환 vs 방송만 중지): each is a
+    // multi-second stop→start sequence, and two interleaved swaps would double-drive the single
+    // encoder. The full StopAsync deliberately does NOT take this lock — it cancels the session
+    // token instead, so it can never block behind a wedged swap.
+    private readonly SemaphoreSlim _swapLock = new(1, 1);
 
     public StreamOrchestrator(
         IConfigStore configStore,
@@ -100,8 +107,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
     public StreamState State { get; private set; } = StreamState.Idle;
 
+    public QualityStatus CurrentQuality { get; private set; } = QualityStatus.Original;
+
     public event EventHandler<StreamState>? StateChanged;
     public event EventHandler<MetricsSnapshot>? MetricsUpdated;
+    public event EventHandler<QualityStatus>? QualityChanged;
 
     public async Task StartAsync(CancellationToken ct)
     {
@@ -237,88 +247,190 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             return;
         }
 
-        CancellationToken token;
-        lock (_gate)
-        {
-            if (State != StreamState.Live)
-            {
-                return; // only an established live stream can be dropped in place
-            }
-            // Transition FIRST so the watchdog's Live-only restart branch can no longer resurrect
-            // the RTMP leg while the encoder is being swapped below.
-            SetState(StreamState.RecordingOnly);
-            token = _runCts?.Token ?? CancellationToken.None;
-        }
-
-        Interlocked.Exchange(ref _encoderSwapInProgress, 1);
+        // One in-place swap at a time: a concurrent quality swap must fully finish (or abort)
+        // before the broadcast leg is dropped, so the two never double-drive the encoder.
+        await _swapLock.WaitAsync().ConfigureAwait(false);
         try
         {
-            await _encoder.StopAsync().ConfigureAwait(false);
-            var config = _configStore.Load();
-            // Re-stamp the session start: the new part file's position 0 is NOW. Without this,
-            // every later period VOD cut computes its offset from the pre-swap start and lands
-            // past EOF (silently dropping the cut).
-            _sessionStart = DateTime.Now;
-            var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
-            await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), token)
-                .ConfigureAwait(false);
-
-            // A concurrent 전체 중지 may have finished its whole teardown while this swap was
-            // mid-flight (its encoder stop saw the OLD process). A freshly started encoder must
-            // not outlive that teardown — nothing would supervise or ever stop it.
-            bool tornDown;
+            CancellationToken token;
             lock (_gate)
             {
-                tornDown = State is StreamState.Stopping or StreamState.Idle;
+                if (State != StreamState.Live)
+                {
+                    return; // only an established live stream can be dropped in place
+                }
+                // Transition FIRST so the watchdog's Live-only restart branch can no longer
+                // resurrect the RTMP leg while the encoder is being swapped below.
+                SetState(StreamState.RecordingOnly);
+                token = _runCts?.Token ?? CancellationToken.None;
             }
-            if (tornDown)
-            {
-                await _encoder.StopAsync().ConfigureAwait(false);
-                return;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            return; // session shutdown raced us — StopAsync owns the teardown
-        }
-        catch (Exception ex)
-        {
-            // Best-effort: the watchdog's RecordingOnly branch revives a dead recording encoder.
-            _log.Error("녹화 전용 전환 중 오류 — 워치독이 녹화를 복구합니다.", ex);
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _encoderSwapInProgress, 0);
-        }
 
-        // Complete the broadcast so no feedless live lingers (mirrors StopAsync §4.3). Snapshot-
-        // and-clear under the gate (a concurrent full stop also completes/clears); on failure the
-        // session is restored so the eventual full StopAsync retries the completion.
-        LiveSession? session;
-        lock (_gate)
-        {
-            session = _session;
-            _session = null;
-        }
-        if (session is not null)
-        {
+            var tornDown = false;
+            Interlocked.Exchange(ref _encoderSwapInProgress, 1);
             try
             {
-                using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
-                    .ConfigureAwait(false);
+                tornDown = !await RestartEncoderInPlaceAsync(string.Empty, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return; // session shutdown raced us — StopAsync owns the teardown
             }
             catch (Exception ex)
             {
-                _log.Error("방송 종료 처리 실패 — 전체 중지 시 다시 시도합니다.", ex);
-                lock (_gate)
+                // Best-effort: the watchdog's RecordingOnly branch revives a dead recording encoder.
+                _log.Error("녹화 전용 전환 중 오류 — 워치독이 녹화를 복구합니다.", ex);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _encoderSwapInProgress, 0);
+            }
+            if (tornDown)
+            {
+                return; // a concurrent 전체 중지 finished mid-swap and owns the shutdown
+            }
+
+            // Complete the broadcast so no feedless live lingers (mirrors StopAsync §4.3). Snapshot-
+            // and-clear under the gate (a concurrent full stop also completes/clears); on failure the
+            // session is restored so the eventual full StopAsync retries the completion.
+            LiveSession? session;
+            lock (_gate)
+            {
+                session = _session;
+                _session = null;
+            }
+            if (session is not null)
+            {
+                try
                 {
-                    _session ??= session;
+                    using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _log.Error("방송 종료 처리 실패 — 전체 중지 시 다시 시도합니다.", ex);
+                    lock (_gate)
+                    {
+                        _session ??= session;
+                    }
                 }
             }
-        }
 
-        _log.Info("방송을 중지했습니다 — 로컬 백업 녹화는 계속됩니다.");
+            _log.Info("방송을 중지했습니다 — 로컬 백업 녹화는 계속됩니다.");
+        }
+        finally
+        {
+            _swapLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds the live encoder in place (적응형 품질 전환의 실행 단계): the broadcast, watch URL
+    /// and <see cref="StreamState.Live"/> state are kept while the encoder restarts with freshly
+    /// built options, and the local recording continues in a new part file. The intentional stop
+    /// window is claimed under the watchdog's gate, so exactly one of {swap, watchdog restart,
+    /// 방송만 중지} owns the pipeline at a time. On success <paramref name="quality"/> becomes
+    /// <see cref="CurrentQuality"/> and <see cref="QualityChanged"/> is raised. Returns false when
+    /// the pipeline was not Live, a competing transition won, or the swap failed (the watchdog
+    /// then rebuilds the pipeline at the still-current options).
+    /// </summary>
+    public async Task<bool> SwapLiveEncoderAsync(QualityStatus quality)
+    {
+        await _swapLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            CancellationToken token;
+            LiveSession? session;
+            lock (_gate)
+            {
+                if (State != StreamState.Live)
+                {
+                    return false; // stopped / reconnecting / recording-only — nothing to swap in place
+                }
+                session = _session;
+                token = _runCts?.Token ?? CancellationToken.None;
+                // Claim the intentional-stop window under the same gate the watchdog uses to claim
+                // Live→Connecting, so it can never misread the swap's stop as a dead encoder.
+                Volatile.Write(ref _encoderSwapInProgress, 1);
+            }
+            if (session is null)
+            {
+                Volatile.Write(ref _encoderSwapInProgress, 0);
+                return false; // Live without a session cannot happen in practice; stay safe
+            }
+
+            try
+            {
+                if (!await RestartEncoderInPlaceAsync(
+                        $"{session.RtmpUrl}/{session.StreamKey}", token).ConfigureAwait(false))
+                {
+                    return false; // a full teardown finished mid-swap and owns the shutdown
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                return false; // session shutdown raced us — StopAsync owns the teardown
+            }
+            catch (Exception ex)
+            {
+                _log.Error("품질 전환 중 오류 — 워치독이 파이프라인을 복구합니다.", ex);
+                return false;
+            }
+            finally
+            {
+                Volatile.Write(ref _encoderSwapInProgress, 0);
+            }
+
+            SetQuality(quality);
+            _log.Info($"송출 품질을 전환했습니다: {quality.LevelName}");
+            return true;
+        }
+        finally
+        {
+            _swapLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Core of an in-place encoder swap shared by 방송만 중지 and quality swaps: finalise the
+    /// current output, re-stamp the session start (the new part file's position 0 is NOW — a stale
+    /// start would shift every later period-VOD cut past EOF, silently dropping it), and start a
+    /// fresh encoder against <paramref name="rtmpUrl"/> (empty = recording only). The caller owns
+    /// state transitions and the <c>_encoderSwapInProgress</c> claim. Returns false when a
+    /// concurrent full teardown finished while the swap was mid-flight (its encoder stop saw the
+    /// OLD process) — the freshly started encoder is re-stopped because nothing would supervise
+    /// or ever stop it.
+    /// </summary>
+    private async Task<bool> RestartEncoderInPlaceAsync(string rtmpUrl, CancellationToken token)
+    {
+        await _encoder.StopAsync().ConfigureAwait(false);
+        var config = _configStore.Load();
+        _sessionStart = DateTime.Now;
+        // A recording-only swap always keeps the file leg (that is its whole point), even if the
+        // config was flipped mid-flight; a streaming swap follows the current recording setting.
+        var recordingPath = config.Recording.Enabled || rtmpUrl.Length == 0
+            ? _recording.CreateSessionFilePath(_sessionStart)
+            : string.Empty;
+        await _encoder.StartAsync(BuildEncoderOptions(rtmpUrl, recordingPath, config), token)
+            .ConfigureAwait(false);
+
+        bool tornDown;
+        lock (_gate)
+        {
+            tornDown = State is StreamState.Stopping or StreamState.Idle;
+        }
+        if (tornDown)
+        {
+            await _encoder.StopAsync().ConfigureAwait(false);
+            return false;
+        }
+        return true;
+    }
+
+    private void SetQuality(QualityStatus quality)
+    {
+        CurrentQuality = quality;
+        QualityChanged?.Invoke(this, quality);
     }
 
     /// <summary>Infinite exponential-backoff connect loop (plan §4.4): 1→2→4…→60s cap.</summary>
@@ -525,8 +637,12 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 // Second liveness signal: is the local recording file still growing? A file that
                 // keeps growing proves the encoder is muxing frames even when its progress line has
                 // gone quiet. 0 length (recording off / not started yet) yields no signal → stats decide.
+                // A SHRINK also refreshes the stamp: the active file was replaced by a fresh part
+                // file (in-place quality swap / recording revive), and comparing the new file against
+                // the old length would freeze this signal until it outgrows the previous file,
+                // tripping a false stall restart right after the swap.
                 var recordingLength = _recording.GetActiveRecordingLength();
-                if (recordingLength > lastRecordingLength)
+                if (recordingLength != lastRecordingLength)
                 {
                     lastRecordingGrowthAt = DateTime.UtcNow;
                 }
@@ -534,7 +650,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 var recordingAdvancing = recordingLength > 0 &&
                     DateTime.UtcNow - lastRecordingGrowthAt <= _options.StallTimeout;
 
-                if (State == StreamState.Live)
+                if (State == StreamState.Live && Volatile.Read(ref _encoderSwapInProgress) == 0)
                 {
                     string? restartReason = null;
                     if (!_encoder.IsRunning)
@@ -549,13 +665,15 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                     if (restartReason is not null)
                     {
                         // Claim the pipeline under the gate before reconnecting: 방송만 중지 takes the
-                        // same gate to leave Live, so exactly one side wins — the watchdog can never
-                        // resurrect a broadcast the operator just dropped (unlocked re-checks cannot
-                        // guarantee that; this transition can).
+                        // same gate to leave Live, and a quality swap claims _encoderSwapInProgress
+                        // under it, so exactly one side wins — the watchdog can never resurrect a
+                        // broadcast the operator just dropped nor double-start a mid-swap encoder
+                        // (unlocked re-checks cannot guarantee that; this claim can).
                         bool proceed;
                         lock (_gate)
                         {
-                            proceed = State == StreamState.Live;
+                            proceed = State == StreamState.Live &&
+                                Volatile.Read(ref _encoderSwapInProgress) == 0;
                             if (proceed)
                             {
                                 SetState(StreamState.ConnectingYouTube);

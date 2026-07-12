@@ -214,6 +214,120 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Quality_swap_keeps_live_state_and_broadcast_and_opens_a_new_part_file()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        QualityStatus? published = null;
+        orchestrator.QualityChanged += (_, q) => published = q;
+
+        var target = QualityStatus.Original with
+        {
+            Level = 1,
+            LevelName = "절약 1단계",
+            Reason = QualityChangeReason.ManualSet
+        };
+        Assert.True(await orchestrator.SwapLiveEncoderAsync(target));
+
+        // Same broadcast + ingest (no orphan, no new watch URL), state stays Live throughout,
+        // and the recording continues in a NEW part file (frag mp4 cannot be appended).
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        Assert.Equal(2, _encoder.StartCalls.Count);
+        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[1].RtmpUrl);
+        Assert.Contains("_part", _encoder.StartCalls[1].RecordingFilePath);
+        Assert.True(_encoder.IsRunning);
+        Assert.Equal(1, _youtube.CreateCalls);
+        Assert.Equal(0, _youtube.CompleteCalls);
+        Assert.Equal(target, orchestrator.CurrentQuality);
+        Assert.Equal(target, published);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Quality_swap_from_non_live_is_rejected()
+    {
+        var orchestrator = CreateOrchestrator();
+
+        Assert.False(await orchestrator.SwapLiveEncoderAsync(QualityStatus.Original));
+
+        Assert.Empty(_encoder.StartCalls);
+        Assert.Equal(QualityStatus.Original, orchestrator.CurrentQuality);
+    }
+
+    [Fact]
+    public async Task Watchdog_leaves_an_in_flight_quality_swap_alone()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // Hold the swap inside its encoder stop: IsRunning is false while the state is still Live —
+        // exactly the window the watchdog would misread as a dead encoder and double-start from.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _encoder.StopGate = gate;
+        var swap = orchestrator.SwapLiveEncoderAsync(
+            QualityStatus.Original with { Level = 1, LevelName = "절약 1단계" });
+
+        await Task.Delay(200); // many 25ms watchdog ticks over the held stop window
+        Assert.Single(_encoder.StartCalls);                 // no watchdog double-start
+        Assert.Equal(StreamState.Live, orchestrator.State); // and no reconnect claim
+
+        gate.SetResult();
+        Assert.True(await swap);
+        Assert.Equal(2, _encoder.StartCalls.Count); // exactly the swap's own restart
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Full_stop_during_quality_swap_leaves_no_orphan_encoder()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // Hold the quality swap inside its encoder stop…
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _encoder.StopGate = gate;
+        var swap = orchestrator.SwapLiveEncoderAsync(
+            QualityStatus.Original with { Level = 1, LevelName = "절약 1단계" });
+
+        // …while a full stop races through its entire teardown to Idle.
+        var fullStop = orchestrator.StopAsync();
+        await WaitUntilAsync(() => orchestrator.State == StreamState.Idle, TimeSpan.FromSeconds(5));
+
+        gate.SetResult(); // release the swap: it now starts a fresh encoder post-teardown
+        Assert.False(await swap); // …and must notice the teardown and re-stop it
+        await fullStop;
+
+        Assert.False(_encoder.IsRunning);
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Equal(QualityStatus.Original, orchestrator.CurrentQuality); // no phantom publication
+    }
+
+    [Fact]
+    public async Task Watchdog_treats_a_shrunken_recording_file_as_a_fresh_part_file_not_a_stall()
+    {
+        _recording.ActiveRecordingLength = 50_000_000; // a long-running part file
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Single(_encoder.StartCalls);
+
+        // Let the growth stamp age past StallTimeout while the file size stays constant.
+        await Task.Delay(300);
+
+        // A new (small) part file replaces the active one while the progress line is quiet —
+        // exactly the post-swap window. The shrink must re-baseline the growth signal instead of
+        // being compared against the old length (which would trip a false stall restart).
+        _recording.ActiveRecordingLength = 1_000_000;
+        _recording.GrowOnSample = true;                       // …and it keeps growing normally
+        _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // progress line still quiet
+
+        await Task.Delay(300); // many watchdog ticks
+        Assert.Single(_encoder.StartCalls); // no false restart
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Watchdog_revives_a_dead_recording_only_encoder_without_reconnecting()
     {
         var orchestrator = CreateOrchestrator();

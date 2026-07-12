@@ -17,6 +17,16 @@ public interface IStreamOrchestrator
     /// <summary>Raised on each metrics poll (bps, fps, cpu, gpu).</summary>
     event EventHandler<MetricsSnapshot> MetricsUpdated;
 
+    /// <summary>
+    /// The encode-quality level currently applied to the pipeline (적응형 송출 품질). Starts at
+    /// <see cref="QualityStatus.Original"/> and changes only through a successful in-place encoder
+    /// swap or a session reset — never speculatively.
+    /// </summary>
+    QualityStatus CurrentQuality { get; }
+
+    /// <summary>Raised when the applied quality level or mode changes.</summary>
+    event EventHandler<QualityStatus> QualityChanged;
+
     /// <summary>Runs the start sequence (warmup → connect → live).</summary>
     Task StartAsync(CancellationToken ct);
 
