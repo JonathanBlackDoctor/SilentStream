@@ -35,7 +35,9 @@ public class StreamOrchestratorTests : IDisposable
                 RetryMaxDelay = TimeSpan.FromMilliseconds(40),
                 WatchdogInterval = watchdog ?? TimeSpan.FromMilliseconds(25),
                 StallTimeout = TimeSpan.FromMilliseconds(200),
-                RetentionInterval = retention ?? TimeSpan.FromHours(1)
+                RetentionInterval = retention ?? TimeSpan.FromHours(1),
+                RtmpLegRetryBaseDelay = TimeSpan.FromMilliseconds(100),
+                RtmpLegRetryMaxDelay = TimeSpan.FromMilliseconds(400)
             });
         orchestrator.StateChanged += (_, s) => { lock (_states) { _states.Add(s); } };
         return orchestrator;
@@ -473,6 +475,42 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Rtmp_leg_failure_rebuilds_the_pipeline_reusing_the_broadcast()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Single(_encoder.StartCalls);
+
+        // onfail=ignore: the process keeps running and progress keeps flowing — only the sticky
+        // leg-down signal betrays the silently dead broadcast (the -10053 field bug).
+        _encoder.RtmpLegDown = true;
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+
+        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[^1].RtmpUrl);
+        Assert.Equal(1, _youtube.CreateCalls); // same broadcast reused — no orphan
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        Assert.False(_encoder.RtmpLegDown); // the fresh session reset the signal
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Rtmp_leg_rebuilds_are_backed_off_not_looped()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // The uplink stays dead: every rebuilt encoder immediately reports the leg down again.
+        _encoder.KeepRtmpLegDownOnStart = true;
+        _encoder.RtmpLegDown = true;
+        await Task.Delay(500); // ~20 watchdog ticks — an unguarded loop would rebuild on each
+
+        // Backoff (100→200→400ms cap in tests): a handful of spaced rebuilds, not a loop that
+        // shreds the recording into part-file confetti.
+        Assert.InRange(_encoder.StartCalls.Count, 2, 6);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Disabled_recording_streams_without_a_file()
     {
         var config = _configStore.Load();
@@ -549,6 +587,12 @@ public class StreamOrchestratorTests : IDisposable
         /// <summary>Settable so tests can simulate a stalled feed (process alive, no progress).</summary>
         public TimeSpan TimeSinceProgress { get; set; } = TimeSpan.Zero;
 
+        /// <summary>Sticky per-session RTMP-leg failure signal (mirrors EncoderPipeline).</summary>
+        public bool RtmpLegDown { get; set; }
+
+        /// <summary>Keeps RtmpLegDown asserted across restarts — simulates an uplink that stays dead.</summary>
+        public bool KeepRtmpLegDownOnStart;
+
 #pragma warning disable CS0067
         public event EventHandler<MetricsSnapshot>? MetricsUpdated;
         public event EventHandler? UnexpectedExit;
@@ -559,6 +603,10 @@ public class StreamOrchestratorTests : IDisposable
             StartCalls.Add(options);
             _running = true;
             TimeSinceProgress = TimeSpan.Zero; // a fresh start clears any prior stall
+            if (!KeepRtmpLegDownOnStart)
+            {
+                RtmpLegDown = false; // a fresh session resets the sticky leg signal
+            }
             return Task.CompletedTask;
         }
 

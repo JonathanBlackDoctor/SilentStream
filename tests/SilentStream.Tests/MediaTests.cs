@@ -111,11 +111,126 @@ public class FfmpegProgressParserTests
         Assert.NotNull(metrics);
         Assert.Equal(30, metrics!.Fps);
         Assert.Equal(6021.3, metrics.UploadBitrateKbps);
+        Assert.Equal(1234, metrics.FrameCount);
+        Assert.Equal(10240, metrics.OutputKBytes); // legacy "kB" suffix (1024-byte units too)
+    }
+
+    [Fact]
+    public void Parses_cumulative_counters_from_a_real_81_recording_line()
+    {
+        // 실측 ffmpeg 8.1 (recording-only): KiB suffix, elapsed= field.
+        var line = "frame=  180 fps=0.0 q=-1.0 Lsize=     373KiB time=00:00:06.00 bitrate= 509.3kbits/s speed= 101x elapsed=0:00:00.05";
+        var metrics = FfmpegProgressParser.TryParse(line, DateTime.UtcNow);
+
+        Assert.NotNull(metrics);
+        Assert.Equal(180, metrics!.FrameCount);
+        Assert.Equal(373, metrics.OutputKBytes); // Lsize= carries the same total
+        Assert.Equal(509.3, metrics.UploadBitrateKbps);
+    }
+
+    [Fact]
+    public void Tee_stats_with_na_size_still_parse_with_zero_counters()
+    {
+        // 실측 ffmpeg 8.1 under the tee muxer: size/bitrate are N/A there (2026-07-13).
+        var line = "frame=   38 fps= 37 q=6.0 size=N/A time=00:00:01.26 bitrate=N/A speed=1.24x elapsed=0:00:01.02    ";
+        var metrics = FfmpegProgressParser.TryParse(line, DateTime.UtcNow);
+
+        Assert.NotNull(metrics);
+        Assert.Equal(38, metrics!.FrameCount);
+        Assert.Equal(0, metrics.OutputKBytes);
+        Assert.Equal(0, metrics.UploadBitrateKbps);
+        Assert.Equal(37, metrics.Fps);
     }
 
     [Fact]
     public void Non_stats_lines_return_null()
     {
         Assert.Null(FfmpegProgressParser.TryParse("Stream mapping:", DateTime.UtcNow));
+    }
+}
+
+public class FfmpegStderrClassifierTests
+{
+    // Drop/failure fixtures are 실측 ffmpeg 8.1 output (dead-RTMP tee run, 2026-07-13) plus the
+    // binary's own message template for the tee-level slave failure.
+    [Theory]
+    [InlineData("[fifo @ 000001bdf5e4d840] FIFO queue full", true)]
+    [InlineData("frame=   38 fps= 37 q=6.0 size=N/A time=00:00:01.26 bitrate=N/A speed=1.24x", false)]
+    [InlineData("[rtmp @ 000001bdf4c10100] Cannot open connection tcp://127.0.0.1:9?tcp_nodelay=0", false)]
+    public void Detects_fifo_drop_lines(string line, bool expected) =>
+        Assert.Equal(expected, FfmpegProgressParser.IsTeeDropLine(line));
+
+    [Theory]
+    [InlineData("[fifo @ 000001bdf5e4d840] Error opening rtmp://127.0.0.1:9/live/x: Error number -138 occurred", true)]
+    [InlineData("[tee @ 000001bdf4c0e000] Slave muxer #0 failed: Error number -32 occurred, continuing with 1/2 slaves.", true)]
+    [InlineData("[fifo @ 000001bdf5e4d840] FIFO queue full", false)]
+    [InlineData("[fifo @ 000001bdf5e4d840] Error writing packet to C:/rec/session.mp4: I/O error", false)]
+    [InlineData("frame=   38 fps= 37 q=6.0 size=N/A time=00:00:01.26 bitrate=N/A speed=1.24x", false)]
+    public void Detects_rtmp_slave_failure_lines(string line, bool expected) =>
+        Assert.Equal(expected, FfmpegProgressParser.IsRtmpSlaveFailureLine(line));
+}
+
+public class MetricsWindowerTests
+{
+    private static SilentStream.Core.Models.MetricsSnapshot Raw(
+        double sec, long frame, long kib, double fps = 30, double kbps = 6000) =>
+        new(kbps, fps, 0, -1, DateTime.UnixEpoch.AddSeconds(sec),
+            FrameCount: frame, OutputKBytes: kib);
+
+    [Fact]
+    public void First_tick_passes_cumulative_values_through()
+    {
+        var windower = new MetricsWindower();
+
+        var first = windower.Apply(Raw(0, 60, 100));
+
+        Assert.Equal(30, first.Fps);
+        Assert.Equal(6000, first.UploadBitrateKbps);
+    }
+
+    [Fact]
+    public void Windows_fps_and_bitrate_from_counter_deltas()
+    {
+        var windower = new MetricsWindower();
+        windower.Apply(Raw(0, 60, 1000));
+
+        var second = windower.Apply(Raw(2, 120, 2000)); // +60 frames, +1000KiB over 2s
+
+        Assert.Equal(30, second.Fps);
+        Assert.Equal(1000 * 8.192 / 2, second.UploadBitrateKbps); // 4096 kbps
+    }
+
+    [Fact]
+    public void Stalled_frame_counter_reads_zero_fps_even_when_cumulative_average_looks_healthy()
+    {
+        var windower = new MetricsWindower();
+        windower.Apply(Raw(0, 7200, 0, fps: 60)); // 2 min in — cumulative average still 60
+
+        var stalled = windower.Apply(Raw(2, 7200, 0, fps: 59)); // no new frames for 2s
+
+        Assert.Equal(0, stalled.Fps); // the sag ffmpeg's own fps= field would hide for minutes
+    }
+
+    [Fact]
+    public void Missing_size_counters_keep_ffmpegs_bitrate_value()
+    {
+        var windower = new MetricsWindower();
+        windower.Apply(Raw(0, 60, 0, kbps: 0));
+
+        var second = windower.Apply(Raw(2, 120, 0, kbps: 0)); // live tee: size=N/A → counters 0
+
+        Assert.Equal(30, second.Fps); // fps still windowed from frame deltas
+        Assert.Equal(0, second.UploadBitrateKbps);
+    }
+
+    [Fact]
+    public void Degenerate_tick_spacing_passes_through()
+    {
+        var windower = new MetricsWindower();
+        windower.Apply(Raw(0, 60, 100));
+
+        var burst = windower.Apply(Raw(0.05, 61, 101, fps: 42)); // buffered-line burst
+
+        Assert.Equal(42, burst.Fps); // cumulative value kept — no noisy micro-delta
     }
 }

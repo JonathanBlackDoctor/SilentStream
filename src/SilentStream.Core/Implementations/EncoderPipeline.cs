@@ -33,6 +33,14 @@ public sealed class EncoderPipeline : IEncoderPipeline
     private CancellationTokenSource? _sessionCts;
     private volatile bool _intendedRunning;
     private DateTime _lastProgressUtc;
+    // Per-session signal state (reset in StartAsync before the process spawns): the delta
+    // windower for the cumulative stats counters, the fifo drop counter (NET congestion signal),
+    // the sticky RTMP-leg-failure flag, and the ffmpeg child-process CPU sample baseline.
+    private MetricsWindower? _windower;
+    private int _teeDropCount;
+    private int _rtmpLegDown;
+    private TimeSpan _lastEncoderCpuTime;
+    private DateTime _lastEncoderCpuSampleUtc;
 
     public EncoderPipeline(
         IScreenCaptureSource capture,
@@ -52,6 +60,8 @@ public sealed class EncoderPipeline : IEncoderPipeline
 
     public TimeSpan TimeSinceProgress =>
         _intendedRunning ? DateTime.UtcNow - _lastProgressUtc : TimeSpan.Zero;
+
+    public bool RtmpLegDown => Volatile.Read(ref _rtmpLegDown) == 1;
 
     public event EventHandler<MetricsSnapshot>? MetricsUpdated;
 
@@ -96,6 +106,14 @@ public sealed class EncoderPipeline : IEncoderPipeline
 
         _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var sessionToken = _sessionCts.Token;
+
+        // Fresh per-session signal state BEFORE the process spawns — stderr events may fire as
+        // soon as BeginErrorReadLine is called.
+        _windower = new MetricsWindower();
+        Interlocked.Exchange(ref _teeDropCount, 0);
+        Volatile.Write(ref _rtmpLegDown, 0);
+        _lastEncoderCpuTime = default;
+        _lastEncoderCpuSampleUtc = default;
 
         // Audio pipe must exist before ffmpeg tries to open it.
         _audioPipe = new NamedPipeServerStream(
@@ -317,11 +335,76 @@ public sealed class EncoderPipeline : IEncoderPipeline
         if (metrics is not null)
         {
             _lastProgressUtc = DateTime.UtcNow; // feed is alive; resets the stall watchdog
-            MetricsUpdated?.Invoke(this, metrics);
+            var windowed = _windower?.Apply(metrics) ?? metrics;
+            MetricsUpdated?.Invoke(this, windowed with
+            {
+                TeeDropCount = Volatile.Read(ref _teeDropCount),
+                EncoderCpuPercent = SampleEncoderCpuPercent()
+            });
+            return;
         }
-        else if (e.Data.Contains("error", StringComparison.OrdinalIgnoreCase))
+
+        if (FfmpegProgressParser.IsTeeDropLine(e.Data))
+        {
+            // Uplink congestion: drop_pkts_on_overflow discarded RTMP packets. Counted rather
+            // than just logged — the adaptive controller reads the cumulative count off the
+            // metrics stream. Drops arrive in bursts, so only the first is logged per session.
+            if (Interlocked.Increment(ref _teeDropCount) == 1)
+            {
+                _log.Warn("FFmpeg: RTMP 전송이 지연되어 패킷을 버리기 시작했습니다(FIFO queue full) — 네트워크 혼잡 신호.");
+            }
+            return;
+        }
+        if (FfmpegProgressParser.IsRtmpSlaveFailureLine(e.Data))
+        {
+            // onfail=ignore ate the slave: the process keeps encoding to the mp4 while the
+            // broadcast is silently dead. Latch the sticky flag; the watchdog rebuilds (§5.4).
+            if (Interlocked.Exchange(ref _rtmpLegDown, 1) == 0)
+            {
+                _log.Warn($"RTMP 송출 경로 실패 감지 — 워치독이 파이프라인을 재구성합니다: {e.Data}");
+            }
+            return;
+        }
+        if (e.Data.Contains("error", StringComparison.OrdinalIgnoreCase))
         {
             _log.Warn($"FFmpeg: {e.Data}");
+        }
+    }
+
+    /// <summary>
+    /// ffmpeg child-process CPU% across all cores since the previous metrics tick. The
+    /// orchestrator's CpuPercent covers only the WPF host process — the encode cost lives here.
+    /// Returns -1 when unavailable (first tick / process gone).
+    /// </summary>
+    private double SampleEncoderCpuPercent()
+    {
+        try
+        {
+            var process = _process;
+            if (process is null || process.HasExited)
+            {
+                return -1;
+            }
+            var now = DateTime.UtcNow;
+            var cpu = process.TotalProcessorTime;
+            double percent = -1;
+            if (_lastEncoderCpuSampleUtc != default)
+            {
+                var wall = (now - _lastEncoderCpuSampleUtc).TotalMilliseconds * Environment.ProcessorCount;
+                if (wall > 0)
+                {
+                    percent = Math.Clamp(
+                        (cpu - _lastEncoderCpuTime).TotalMilliseconds / wall * 100, 0, 100);
+                }
+            }
+            _lastEncoderCpuTime = cpu;
+            _lastEncoderCpuSampleUtc = now;
+            return percent;
+        }
+        catch (Exception ex) when (
+            ex is InvalidOperationException or PlatformNotSupportedException or System.ComponentModel.Win32Exception)
+        {
+            return -1; // process raced away between the checks — a metrics tick is best-effort
         }
     }
 

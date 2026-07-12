@@ -78,7 +78,10 @@ public static class FfmpegArgumentsBuilder
 
         var args = new List<string>
         {
-            "-hide_banner", "-loglevel warning", "-stats_period 2",
+            // -stats must be EXPLICIT: with a redirected (non-tty) stderr at -loglevel warning,
+            // ffmpeg suppresses the periodic report entirely (실측, 8.1) — without this flag the
+            // app never receives progress lines, so the stall watchdog and all metrics starve.
+            "-hide_banner", "-loglevel warning", "-stats", "-stats_period 2",
             // input 0: raw BGRA frames pushed by the capture source via stdin
             "-f rawvideo", "-pix_fmt bgra",
             $"-s {spec.Width}x{spec.Height}", $"-framerate {inputFps}",

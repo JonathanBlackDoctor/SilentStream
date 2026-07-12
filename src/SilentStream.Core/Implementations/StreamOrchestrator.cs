@@ -31,6 +31,17 @@ public sealed record StreamOrchestratorOptions
 
     /// <summary>Recording retention sweep interval (plan §3.6: 1시간 주기).</summary>
     public TimeSpan RetentionInterval { get; init; } = TimeSpan.FromHours(1);
+
+    /// <summary>
+    /// First delay between pipeline rebuilds for a failed RTMP tee slave; doubles up to
+    /// <see cref="RtmpLegRetryMaxDelay"/> while the leg keeps dying (확장계획서_적응형송출품질
+    /// §5.4). Deliberately spaced far apart: each rebuild cuts the recording into a new part
+    /// file, so a long uplink outage must not shred the recording into confetti.
+    /// </summary>
+    public TimeSpan RtmpLegRetryBaseDelay { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>Backoff cap for RTMP-leg rebuilds; also the healthy period that forgives it.</summary>
+    public TimeSpan RtmpLegRetryMaxDelay { get; init; } = TimeSpan.FromMinutes(5);
 }
 
 /// <summary>
@@ -626,6 +637,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         var lastSweep = DateTime.UtcNow;
         var lastRecordingLength = -1L;
         var lastRecordingGrowthAt = DateTime.UtcNow;
+        var rtmpLegDelay = _options.RtmpLegRetryBaseDelay;
+        var lastRtmpLegRestart = DateTime.MinValue;
         while (!ct.IsCancellationRequested)
         {
             // The whole body is guarded: an unhandled fault here must never silently kill the
@@ -660,6 +673,25 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                     else if (_encoder.TimeSinceProgress > _options.StallTimeout && !recordingAdvancing)
                     {
                         restartReason = "인코더 피드 정지(스톨)"; // feed quiet AND recording frozen → real stall
+                    }
+                    else if (_encoder.RtmpLegDown)
+                    {
+                        // onfail=ignore: the mp4 leg keeps progress flowing, so a dead RTMP slave
+                        // is invisible to both signals above (the -10053 field bug). Rebuild, but
+                        // on its own backoff — every rebuild cuts the recording into a new part
+                        // file, so a long uplink outage must not shred it into confetti.
+                        if (DateTime.UtcNow - lastRtmpLegRestart >= rtmpLegDelay)
+                        {
+                            restartReason = "RTMP 송출 경로 사망";
+                            lastRtmpLegRestart = DateTime.UtcNow;
+                            rtmpLegDelay = TimeSpan.FromTicks(
+                                Math.Min(rtmpLegDelay.Ticks * 2, _options.RtmpLegRetryMaxDelay.Ticks));
+                        }
+                    }
+                    else if (DateTime.UtcNow - lastRtmpLegRestart >= _options.RtmpLegRetryMaxDelay)
+                    {
+                        // The leg stayed healthy long enough — forgive the accumulated backoff.
+                        rtmpLegDelay = _options.RtmpLegRetryBaseDelay;
                     }
 
                     if (restartReason is not null)

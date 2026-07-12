@@ -14,9 +14,18 @@ public interface IEncoderPipeline : IDisposable
     /// <summary>
     /// Time since the last ffmpeg progress line while the encoder is intended to be running
     /// (<see cref="TimeSpan.Zero"/> when stopped). Lets the watchdog catch a stalled feed where
-    /// the process is alive but no longer emitting frames (e.g. RTMP slave failure / pipe EOF).
+    /// the process is alive but no longer emitting frames (e.g. capture/pipe EOF).
     /// </summary>
     TimeSpan TimeSinceProgress { get; }
+
+    /// <summary>
+    /// True once the RTMP tee slave has failed for the current session (open/write error absorbed
+    /// by onfail=ignore) while the mp4 leg keeps the process alive and progress flowing — a dead
+    /// broadcast that is otherwise invisible to the liveness signals above. The watchdog rebuilds
+    /// the pipeline when it sees this (확장계획서_적응형송출품질 §5.4). Reset by
+    /// <see cref="StartAsync"/>.
+    /// </summary>
+    bool RtmpLegDown { get; }
 
     /// <summary>Raised on each metrics poll from the encoder (bitrate/fps).</summary>
     event EventHandler<MetricsSnapshot> MetricsUpdated;
