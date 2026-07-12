@@ -16,7 +16,7 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(6, config.Version); // schema v6 (폰 푸시 알림)
+        Assert.Equal(7, config.Version); // schema v7 (적응형 송출 품질)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
@@ -34,7 +34,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(6, loaded.Version);
+        Assert.Equal(7, loaded.Version);
         Assert.Equal(string.Empty, loaded.DeviceName);
     }
 
@@ -61,6 +61,9 @@ public class ConfigStoreTests : IDisposable
         config.Notifications.TelegramBotTokenEnc = "TGBLOB==";
         config.Notifications.TelegramChatId = "12345";
         config.Notifications.NotifyLevel = "critical";
+        config.Encoding.Adaptive.Enabled = false;
+        config.Encoding.Adaptive.AutoRecover = false;
+        config.Encoding.Adaptive.MaxLevel = 2;
 
         store.Save(config);
         var loaded = new ConfigStore(ConfigPath).Load();
@@ -83,6 +86,34 @@ public class ConfigStoreTests : IDisposable
         Assert.Equal("TGBLOB==", loaded.Notifications.TelegramBotTokenEnc);
         Assert.Equal("12345", loaded.Notifications.TelegramChatId);
         Assert.Equal("critical", loaded.Notifications.NotifyLevel);
+        Assert.False(loaded.Encoding.Adaptive.Enabled);
+        Assert.False(loaded.Encoding.Adaptive.AutoRecover);
+        Assert.Equal(2, loaded.Encoding.Adaptive.MaxLevel);
+    }
+
+    [Fact]
+    public void V6_file_gains_the_adaptive_section_with_defaults()
+    {
+        // A pre-v7 file (or one hand-edited to an explicit null section) must load with the
+        // adaptive-quality defaults (자동 하강 켬 / 자동 복귀 켬 / 전체 사다리, D-AQ1/2).
+        File.WriteAllText(ConfigPath, """{ "version": 6, "encoding": { "adaptive": null } }""");
+
+        var loaded = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(7, loaded.Version);
+        Assert.True(loaded.Encoding.Adaptive.Enabled);
+        Assert.True(loaded.Encoding.Adaptive.AutoRecover);
+        Assert.Equal(3, loaded.Encoding.Adaptive.MaxLevel);
+    }
+
+    [Fact]
+    public void Out_of_range_adaptive_max_level_is_clamped_on_load()
+    {
+        File.WriteAllText(ConfigPath, """{ "version": 7, "encoding": { "adaptive": { "maxLevel": 9 } } }""");
+        Assert.Equal(3, new ConfigStore(ConfigPath).Load().Encoding.Adaptive.MaxLevel);
+
+        File.WriteAllText(ConfigPath, """{ "version": 7, "encoding": { "adaptive": { "maxLevel": -1 } } }""");
+        Assert.Equal(0, new ConfigStore(ConfigPath).Load().Encoding.Adaptive.MaxLevel);
     }
 
     [Fact]
@@ -94,7 +125,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(6, loaded.Version);
+        Assert.Equal(7, loaded.Version);
         Assert.True(loaded.Notifications.Enabled);
         Assert.Equal(string.Empty, loaded.Notifications.TelegramBotTokenEnc);
         Assert.Equal("warn", loaded.Notifications.NotifyLevel);
@@ -153,7 +184,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(6, config.Version); // defaults are schema v6
+        Assert.Equal(7, config.Version); // defaults are schema v7
         Assert.True(File.Exists(ConfigPath + ".bak"));
         // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
         // label stays empty rather than being silently stamped with this machine's hostname.

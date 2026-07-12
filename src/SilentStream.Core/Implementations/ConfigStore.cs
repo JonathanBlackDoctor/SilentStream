@@ -181,6 +181,16 @@ public sealed class ConfigStore : IConfigStore
         {
             config.Version = 6;
         }
+
+        // v7 migration: adaptive stream-quality section (확장계획서_적응형송출품질 §9). Additive —
+        // the defaults keep automatic degradation ON with the full ladder available (D-AQ1/D-AQ2),
+        // and a hand-edited out-of-range MaxLevel is clamped to the ladder bounds.
+        config.Encoding.Adaptive ??= new AdaptiveConfig();
+        config.Encoding.Adaptive.MaxLevel = Math.Clamp(config.Encoding.Adaptive.MaxLevel, 0, 3);
+        if (config.Version < 7)
+        {
+            config.Version = 7;
+        }
         return config;
     }
 }

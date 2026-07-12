@@ -58,7 +58,16 @@ public enum HealthEventKind
     /// expiry today (see IYouTubeLiveService), so the health layer does not emit this yet — wiring it
     /// requires a small new hook on the auth service. Defined here so consumers can already handle it.
     /// </summary>
-    OauthExpiring
+    OauthExpiring,
+
+    /// <summary>
+    /// The adaptive controller lowered the stream quality (확장계획서_적응형송출품질 §8). A
+    /// condition: active while an automatic degradation is in effect (Warn; Critical at the 안전
+    /// 모드 floor), cleared on recovery to 원본 or when an operator pins the level manually. A
+    /// manual pin itself is a momentary Info. NOTE: the enum member name is serialized to the
+    /// phone via ToString() — it is a wire contract.
+    /// </summary>
+    QualityDegraded
 }
 
 /// <summary>

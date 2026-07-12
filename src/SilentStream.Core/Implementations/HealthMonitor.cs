@@ -46,6 +46,7 @@ public sealed class HealthMonitor : IHealthMonitor
 
     // Debounce/hysteresis state — all mutated only under _gate.
     private bool _liveSessionActive;
+    private bool _qualityDegradedActive;
     private DateTime? _retryingSinceUtc;
     private HealthSeverity? _rtmpDownSeverity;
     private HealthSeverity? _diskLowSeverity;
@@ -101,6 +102,7 @@ public sealed class HealthMonitor : IHealthMonitor
         }
 
         _orchestrator.StateChanged += OnStateChanged;
+        _orchestrator.QualityChanged += OnQualityChanged;
         _mixer.MicSignalChanged += OnMicSignalChanged;
 
         // Seed the baseline so we don't emit a spurious live_started, and pick up an in-progress outage.
@@ -198,6 +200,57 @@ public sealed class HealthMonitor : IHealthMonitor
         }
         RaiseAll(buffer);
     }
+
+    /// <summary>
+    /// Mirrors the applied quality into the QualityDegraded condition (확장계획서_적응형송출품질
+    /// §8): active while an AUTOMATIC degradation is in effect (Warn, Critical at the 안전 모드
+    /// floor so the deepening pushes past the notifier's escalation de-dup), cleared on recovery
+    /// to 원본 or when an operator pins the level manually; a manual pin itself is a momentary
+    /// Info. The notifier already formats by severity/active only, so no mapping there changes.
+    /// </summary>
+    private void OnQualityChanged(object? sender, QualityStatus quality)
+    {
+        var buffer = new List<HealthEvent>();
+        lock (_gate)
+        {
+            var autoDegraded = quality.Level > 0 && quality.Mode == QualityMode.Auto;
+            if (autoDegraded)
+            {
+                _qualityDegradedActive = true;
+                var severity = quality.Level >= 3 ? HealthSeverity.Critical : HealthSeverity.Warn;
+                var applied = quality.Applied is { } step ? $"({step.VideoBitrateKbps}kbps)" : string.Empty;
+                SetCondition(buffer, HealthEventKind.QualityDegraded, severity, active: true,
+                    $"송출 품질을 자동으로 낮췄습니다: {quality.LevelName}{applied} — {ReasonText(quality.Reason)}",
+                    sourceKey: null);
+            }
+            else if (_qualityDegradedActive)
+            {
+                _qualityDegradedActive = false;
+                var message = quality.Mode == QualityMode.ManualHold
+                    ? $"품질 자동 하강 상태를 수동 고정으로 전환했습니다: {quality.LevelName}"
+                    : "송출 품질이 원본으로 복구되었습니다.";
+                SetCondition(buffer, HealthEventKind.QualityDegraded, HealthSeverity.Info, active: false,
+                    message, sourceKey: null);
+            }
+            else if (quality.Mode == QualityMode.ManualHold &&
+                     quality.Reason == QualityChangeReason.ManualSet)
+            {
+                Notify(buffer, HealthEventKind.QualityDegraded, HealthSeverity.Info,
+                    $"송출 품질을 수동 설정했습니다: {quality.LevelName}", sourceKey: null);
+            }
+        }
+        RaiseAll(buffer);
+    }
+
+    private static string ReasonText(QualityChangeReason reason) => reason switch
+    {
+        QualityChangeReason.EncodeOverload => "기기 부하(인코딩 지연) 감지",
+        QualityChangeReason.NetworkCongestion => "네트워크 혼잡(전송 패킷 드롭) 감지",
+        QualityChangeReason.AutoRecover => "여건 회복",
+        QualityChangeReason.ManualSet => "수동 설정",
+        QualityChangeReason.SessionReset => "세션 종료",
+        _ => "상태 변화"
+    };
 
     private void OnMicSignalChanged(object? sender, MicSignalStatus status)
     {
@@ -522,6 +575,7 @@ public sealed class HealthMonitor : IHealthMonitor
             return;
         }
         _orchestrator.StateChanged -= OnStateChanged;
+        _orchestrator.QualityChanged -= OnQualityChanged;
         _mixer.MicSignalChanged -= OnMicSignalChanged;
         try
         {

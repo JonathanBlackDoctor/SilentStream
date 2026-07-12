@@ -377,6 +377,65 @@ public class HealthMonitorTests : IDisposable
     private static UploadJob Job(string id, string title, string status) =>
         new(id, id + ".mp4", title, new DateOnly(2026, 6, 14), 1, status, 5, null);
 
+    // ---- quality events (적응형 송출 품질 §8) ----
+
+    [Fact]
+    public void Auto_quality_degrade_raises_a_condition_and_recovery_clears_it()
+    {
+        var hm = CreateStarted();
+
+        _orch.RaiseQuality(QualityStatus.Original with
+        {
+            Level = 1, LevelName = "절약 1단계", Reason = QualityChangeReason.NetworkCongestion
+        });
+
+        var onset = Assert.Single(_events, e => e.Kind == HealthEventKind.QualityDegraded);
+        Assert.True(onset.Active);
+        Assert.Equal(HealthSeverity.Warn, onset.Severity);
+        Assert.Contains("네트워크 혼잡", onset.Message);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.QualityDegraded);
+
+        _orch.RaiseQuality(QualityStatus.Original);
+
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.QualityDegraded && !e.Active);
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.QualityDegraded);
+    }
+
+    [Fact]
+    public void Deep_auto_degrade_escalates_to_critical()
+    {
+        CreateStarted();
+
+        _orch.RaiseQuality(QualityStatus.Original with
+        {
+            Level = 1, LevelName = "절약 1단계", Reason = QualityChangeReason.EncodeOverload
+        });
+        _orch.RaiseQuality(QualityStatus.Original with
+        {
+            Level = 3, LevelName = "안전 모드", Reason = QualityChangeReason.EncodeOverload
+        });
+
+        // The 안전 모드 floor escalates so the notifier's escalation-only de-dup pushes it.
+        Assert.Contains(_events, e =>
+            e.Kind == HealthEventKind.QualityDegraded && e.Active && e.Severity == HealthSeverity.Critical);
+    }
+
+    [Fact]
+    public void Manual_quality_pin_is_a_momentary_info_not_a_condition()
+    {
+        var hm = CreateStarted();
+
+        _orch.RaiseQuality(QualityStatus.Original with
+        {
+            Level = 2, LevelName = "절약 2단계",
+            Mode = QualityMode.ManualHold, Reason = QualityChangeReason.ManualSet
+        });
+
+        var evt = Assert.Single(_events, e => e.Kind == HealthEventKind.QualityDegraded);
+        Assert.Equal(HealthSeverity.Info, evt.Severity);
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.QualityDegraded);
+    }
+
     // ---- fakes ----
 
     private sealed class Clock

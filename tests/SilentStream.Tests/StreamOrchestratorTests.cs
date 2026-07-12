@@ -14,6 +14,7 @@ public class StreamOrchestratorTests : IDisposable
     private readonly FakeRecording _recording = new();
     private readonly FakeCapture _capture = new();
     private readonly FakeMixer _mixer = new();
+    private readonly FakeQuality _quality = new();
     private readonly List<StreamState> _states = [];
 
     public StreamOrchestratorTests()
@@ -27,7 +28,7 @@ public class StreamOrchestratorTests : IDisposable
     private StreamOrchestrator CreateOrchestrator(TimeSpan? watchdog = null, TimeSpan? retention = null)
     {
         var orchestrator = new StreamOrchestrator(
-            _configStore, new LogService(), _youtube, _encoder, _recording, _capture, _mixer,
+            _configStore, new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
             new StreamOrchestratorOptions
             {
                 WarmupDelay = TimeSpan.FromMilliseconds(10),
@@ -475,6 +476,62 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Controller_change_request_while_live_swaps_with_the_controllers_options()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // The controller lowered its desired level: every rebuilt options pass through Apply.
+        _quality.ApplyOverride = o => o with { VideoBitrateKbps = 5400 };
+        _quality.Raise(QualityStatus.Original with
+        {
+            Level = 1, LevelName = "절약 1단계", Reason = QualityChangeReason.NetworkCongestion
+        });
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+
+        Assert.Equal(5400, _encoder.StartCalls[^1].VideoBitrateKbps);
+        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[^1].RtmpUrl);
+        await WaitUntilAsync(() => orchestrator.CurrentQuality.Level == 1, TimeSpan.FromSeconds(5));
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Controller_status_is_applied_and_published_on_session_start()
+    {
+        // A level desired before the session (e.g. deferred manual pin) applies on the next start.
+        _quality.Status = QualityStatus.Original with { Level = 2, LevelName = "절약 2단계" };
+        _quality.ApplyOverride = o => o with { VideoBitrateKbps = 3600, OutputFps = 30 };
+        var orchestrator = CreateOrchestrator();
+
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        var options = Assert.Single(_encoder.StartCalls);
+        Assert.Equal(3600, options.VideoBitrateKbps);
+        Assert.Equal(30, options.OutputFps);
+        Assert.Equal(2, orchestrator.CurrentQuality.Level);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Change_request_at_the_applied_level_updates_status_without_a_swap()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // Mode-only change (manual pin at the SAME level): no pointless encoder restart.
+        _quality.Raise(QualityStatus.Original with
+        {
+            Mode = QualityMode.ManualHold, Reason = QualityChangeReason.ManualSet
+        });
+        await WaitUntilAsync(
+            () => orchestrator.CurrentQuality.Mode == QualityMode.ManualHold, TimeSpan.FromSeconds(5));
+
+        Assert.Single(_encoder.StartCalls);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Rtmp_leg_failure_rebuilds_the_pipeline_reusing_the_broadcast()
     {
         var orchestrator = CreateOrchestrator();
@@ -660,6 +717,35 @@ public class StreamOrchestratorTests : IDisposable
                 throw new IOException("simulated retention sweep failure");
             }
             return Task.CompletedTask;
+        }
+    }
+
+    /// <summary>Pass-through policy stub: tests drive it via ApplyOverride/Status/Raise.</summary>
+    private sealed class FakeQuality : IAdaptiveQualityController
+    {
+        public QualityMode Mode => Status.Mode;
+        public int Level => Status.Level;
+        public IReadOnlyList<QualityStep> Ladder { get; } = [];
+        public QualityStatus Status { get; set; } = QualityStatus.Original;
+        public Func<EncoderStartOptions, EncoderStartOptions>? ApplyOverride;
+
+        public event EventHandler<QualityStatus>? ChangeRequested;
+
+        public EncoderStartOptions Apply(EncoderStartOptions baseOptions) =>
+            ApplyOverride?.Invoke(baseOptions) ?? baseOptions;
+
+        public void OnMetrics(MetricsSnapshot metrics) { }
+
+        public void OnStateChanged(StreamState state) { }
+
+        public void SetManual(int level) { }
+
+        public void SetAuto() { }
+
+        public void Raise(QualityStatus status)
+        {
+            Status = status;
+            ChangeRequested?.Invoke(this, status);
         }
     }
 

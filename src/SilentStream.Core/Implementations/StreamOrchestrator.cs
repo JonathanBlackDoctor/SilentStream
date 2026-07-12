@@ -60,6 +60,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private readonly IRecordingManager _recording;
     private readonly IScreenCaptureSource _capture;
     private readonly IAudioMixer _audioMixer;
+    private readonly IAdaptiveQualityController _quality;
     private readonly StreamOrchestratorOptions _options;
 
     private readonly object _gate = new();
@@ -88,8 +89,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IEncoderPipeline encoder,
         IRecordingManager recording,
         IScreenCaptureSource capture,
-        IAudioMixer audioMixer)
-        : this(configStore, log, youtube, encoder, recording, capture, audioMixer,
+        IAudioMixer audioMixer,
+        IAdaptiveQualityController quality)
+        : this(configStore, log, youtube, encoder, recording, capture, audioMixer, quality,
             new StreamOrchestratorOptions())
     {
     }
@@ -102,6 +104,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IRecordingManager recording,
         IScreenCaptureSource capture,
         IAudioMixer audioMixer,
+        IAdaptiveQualityController quality,
         StreamOrchestratorOptions options)
     {
         _configStore = configStore;
@@ -111,9 +114,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         _recording = recording;
         _capture = capture;
         _audioMixer = audioMixer;
+        _quality = quality;
         _options = options;
 
         _encoder.MetricsUpdated += OnEncoderMetrics;
+        _quality.ChangeRequested += OnQualityChangeRequested;
     }
 
     public StreamState State { get; private set; } = StreamState.Idle;
@@ -392,7 +397,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 Volatile.Write(ref _encoderSwapInProgress, 0);
             }
 
-            SetQuality(quality);
+            SetQuality(quality); // usually a no-op after the restart already published it
             _log.Info($"송출 품질을 전환했습니다: {quality.LevelName}");
             return true;
         }
@@ -435,13 +440,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             await _encoder.StopAsync().ConfigureAwait(false);
             return false;
         }
+        SetQuality(_quality.Status); // the fresh encoder runs at the controller's desired level
         return true;
-    }
-
-    private void SetQuality(QualityStatus quality)
-    {
-        CurrentQuality = quality;
-        QualityChanged?.Invoke(this, quality);
     }
 
     /// <summary>Infinite exponential-backoff connect loop (plan §4.4): 1→2→4…→60s cap.</summary>
@@ -516,6 +516,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
             await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), ct)
                 .ConfigureAwait(false);
+            SetQuality(_quality.Status);
             _log.Info("로컬 백업 녹화를 시작했습니다 (송출 연결과 독립).");
             return true;
         }
@@ -559,6 +560,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         await _encoder.StartAsync(
             BuildEncoderOptions($"{_session.RtmpUrl}/{_session.StreamKey}", recordingPath, config), ct)
             .ConfigureAwait(false);
+        SetQuality(_quality.Status); // publish the level this pipeline actually runs at
     }
 
     /// <summary>
@@ -579,7 +581,10 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             : BitrateMapper.GetVideoBitrateKbps(outHeight, outFps);
         var audioBitrate = config.Encoding.AudioBitrateKbps > 0 ? config.Encoding.AudioBitrateKbps : 160;
 
-        return new EncoderStartOptions(
+        // The adaptive controller applies the current quality-ladder level LAST, so every start
+        // path (initial connect, retry reconnect, watchdog rebuild, in-place swap) follows the
+        // same level — including reconnects after an outage the degradation was reacting to.
+        return _quality.Apply(new EncoderStartOptions(
             RtmpUrl: rtmpUrl,
             RecordingFilePath: recordingPath,
             VideoBitrateKbps: videoBitrate,
@@ -590,7 +595,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             AudioFilters: AudioConfigMapper.ToFilterSettings(config.Audio.Filters),
             OutputWidth: outWidth == capWidth ? 0 : outWidth,
             OutputHeight: outHeight == capHeight ? 0 : outHeight,
-            OutputFps: Math.Abs(outFps - capFps) < 0.01 ? 0 : outFps);
+            OutputFps: Math.Abs(outFps - capFps) < 0.01 ? 0 : outFps));
     }
 
     /// <summary>Parses "WxH" (else "source") into even encode dimensions, clamped to the capture.</summary>
@@ -751,8 +756,40 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         }
     }
 
-    private void OnEncoderMetrics(object? sender, MetricsSnapshot metrics) =>
-        MetricsUpdated?.Invoke(this, metrics with { CpuPercent = SampleCpuPercent() });
+    private void OnEncoderMetrics(object? sender, MetricsSnapshot metrics)
+    {
+        var enriched = metrics with { CpuPercent = SampleCpuPercent() };
+        _quality.OnMetrics(enriched);
+        MetricsUpdated?.Invoke(this, enriched);
+    }
+
+    /// <summary>
+    /// Executes a controller decision. Always hops to the pool: requests can be raised from under
+    /// the controller's (or, via SetState, this class's) gate, and the swap itself is a
+    /// multi-second sequence that must never run on a metrics/stderr thread.
+    /// </summary>
+    private void OnQualityChangeRequested(object? sender, QualityStatus status) =>
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (status.Level != CurrentQuality.Level && State == StreamState.Live)
+                {
+                    await SwapLiveEncoderAsync(status).ConfigureAwait(false);
+                }
+                else
+                {
+                    // Mode/reason-only change, or no live pipeline to swap (the level is picked up
+                    // by the next encoder start via BuildEncoderOptions→Apply): publish the status
+                    // so the UI/phone/health layer reflect it now.
+                    SetQuality(status);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Error("품질 전환 처리 오류", ex);
+            }
+        });
 
     /// <summary>Process CPU% across all cores since the previous metrics tick.</summary>
     private double SampleCpuPercent()
@@ -787,6 +824,22 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             return;
         }
         State = state;
+        // The controller only records the state (its Idle-reset raise is consumed via the
+        // pool-hopping OnQualityChangeRequested, so no lock is nested under callers' _gate).
+        _quality.OnStateChanged(state);
         StateChanged?.Invoke(this, state);
+    }
+
+    private void SetQuality(QualityStatus quality)
+    {
+        lock (_gate)
+        {
+            if (CurrentQuality == quality)
+            {
+                return; // start sites and the swap publish the same status — dedupe by value
+            }
+            CurrentQuality = quality;
+        }
+        QualityChanged?.Invoke(this, quality);
     }
 }

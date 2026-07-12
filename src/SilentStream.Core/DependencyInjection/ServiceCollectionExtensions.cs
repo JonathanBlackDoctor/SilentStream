@@ -27,6 +27,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IEncoderPipeline, EncoderPipeline>();
         services.AddSingleton<IYouTubeLiveService, YouTubeLiveService>();
         services.AddSingleton<IRecordingManager, RecordingManager>();
+        // 적응형 송출 품질(확장계획서_적응형송출품질): 정책 컨트롤러. 오케스트레이터가 메트릭/상태를
+        // 밀어넣고 ChangeRequested를 받아 스왑을 실행한다; 원격 서버는 수동 고정(SetManual)에 쓴다.
+        services.AddSingleton<IAdaptiveQualityController, AdaptiveQualityController>();
         // The same RecordingManager instance exposes the read-only session view for the VOD cut.
         services.AddSingleton<IRecordingSessionInfo>(sp =>
             (IRecordingSessionInfo)sp.GetRequiredService<IRecordingManager>());

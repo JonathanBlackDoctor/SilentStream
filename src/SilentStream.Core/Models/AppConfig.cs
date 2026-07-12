@@ -14,10 +14,11 @@ public sealed class AppConfig
     /// capture monitor/region selection; v4 adds the first-run "seed every real microphone"
     /// step (see <see cref="AudioConfig.MicsSeeded"/>); v5 adds the per-device room label
     /// (<see cref="DeviceName"/>) for multi-PC single-channel deployments; v6 adds the phone
-    /// push-notification section (<see cref="Notifications"/>). Missing keys deserialize to
-    /// their defaults, so an older file loads cleanly and is migrated on the next save.
+    /// push-notification section (<see cref="Notifications"/>); v7 adds the adaptive
+    /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>). Missing keys deserialize
+    /// to their defaults, so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 6;
+    public int Version { get; set; } = 7;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -104,6 +105,30 @@ public sealed class EncodingConfig
 
     /// <summary>"25" | "50" | "75" | "none" — approximate resource cap (plan §3.5).</summary>
     public string ResourceLimit { get; set; } = "none";
+
+    /// <summary>Adaptive stream-quality settings (확장계획서_적응형송출품질 §9). Schema v7.</summary>
+    public AdaptiveConfig Adaptive { get; set; } = new();
+}
+
+/// <summary>
+/// Adaptive stream-quality settings (확장계획서_적응형송출품질 §9, schema v7). These gate only
+/// the AUTOMATIC controller decisions — manual quality control from the phone remote works
+/// regardless. The trigger/dwell windows are code constants (AdaptiveQualityController), not config.
+/// </summary>
+public sealed class AdaptiveConfig
+{
+    /// <summary>Master switch for automatic degradation on overload/congestion (D-AQ1: 기본 켬).</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Whether the controller may step back UP after conditions recover (D-AQ2: 기본 켬). The
+    /// step-up defers to 쉬는 시간 (no class period running) so a working broadcast is not
+    /// glitched mid-class. false = automatic changes only ever go down; recovery is manual.
+    /// </summary>
+    public bool AutoRecover { get; set; } = true;
+
+    /// <summary>Deepest ladder level automatic degradation may reach (0-3; 0 = never degrade).</summary>
+    public int MaxLevel { get; set; } = 3;
 }
 
 public sealed class AudioConfig
