@@ -668,6 +668,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
             StreamState.ConnectingYouTube => ("연결 중", "#F1C40F"),
             StreamState.Retrying => ("재시도 중", "#E74C3C"),
             StreamState.Stopping => ("중지 중", "#E74C3C"),
+            StreamState.RecordingOnly => ("녹화만", "#F1C40F"),
             _ => ("대기", "#7F8C8D")
         };
         StartCommand.RaiseCanExecuteChanged();

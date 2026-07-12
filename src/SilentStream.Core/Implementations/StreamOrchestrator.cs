@@ -58,6 +58,10 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private DateTime _sessionStart;
     private TimeSpan _lastCpuTime;
     private DateTime _lastCpuSample;
+    // Non-zero while StopStreamingKeepRecordingAsync is swapping the encoder (stop tee → start
+    // file-only). The watchdog's RecordingOnly recovery must not see the intentional mid-swap
+    // "encoder not running" window and double-start a second ffmpeg.
+    private int _encoderSwapInProgress;
 
     public StreamOrchestrator(
         IConfigStore configStore,
@@ -190,16 +194,131 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             _log.Error("캡처/오디오 정지 중 오류", ex);
         }
 
-        if (_session is not null)
+        // Snapshot-and-clear under the gate: the broadcast-only swap also completes/clears the
+        // session concurrently, and a check-then-dereference here could NRE past SetState(Idle),
+        // bricking the state machine at Stopping. Completion failure must not block Idle either.
+        LiveSession? session;
+        lock (_gate)
         {
-            using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await _youtube.CompleteBroadcastAsync(_session.BroadcastId, completeCts.Token)
-                .ConfigureAwait(false);
+            session = _session;
             _session = null;
+        }
+        if (session is not null)
+        {
+            try
+            {
+                using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("브로드캐스트 종료 전이 실패 — 유튜브 스튜디오에서 상태를 확인하세요.", ex);
+            }
         }
 
         SetState(StreamState.Idle);
         _log.Info("송출·녹화가 중지되었습니다.");
+    }
+
+    /// <summary>
+    /// Stops only the YouTube broadcast; the local backup recording keeps running (원격 "방송만
+    /// 중지"). The single-process tee encoder cannot drop one output at runtime, so the current
+    /// mp4 is finalised and the encoder restarts in recording-only mode — recording continues in
+    /// a NEW part file (frag mp4 cannot be appended). The broadcast is then completed so no
+    /// feedless live lingers on the channel. Going live again requires 전체 중지 → 라이브 시작.
+    /// </summary>
+    public async Task StopStreamingKeepRecordingAsync()
+    {
+        if (!_configStore.Load().Recording.Enabled)
+        {
+            // Nothing to keep — a broadcast-only session degenerates to a full stop.
+            await StopAsync().ConfigureAwait(false);
+            return;
+        }
+
+        CancellationToken token;
+        lock (_gate)
+        {
+            if (State != StreamState.Live)
+            {
+                return; // only an established live stream can be dropped in place
+            }
+            // Transition FIRST so the watchdog's Live-only restart branch can no longer resurrect
+            // the RTMP leg while the encoder is being swapped below.
+            SetState(StreamState.RecordingOnly);
+            token = _runCts?.Token ?? CancellationToken.None;
+        }
+
+        Interlocked.Exchange(ref _encoderSwapInProgress, 1);
+        try
+        {
+            await _encoder.StopAsync().ConfigureAwait(false);
+            var config = _configStore.Load();
+            // Re-stamp the session start: the new part file's position 0 is NOW. Without this,
+            // every later period VOD cut computes its offset from the pre-swap start and lands
+            // past EOF (silently dropping the cut).
+            _sessionStart = DateTime.Now;
+            var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
+            await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), token)
+                .ConfigureAwait(false);
+
+            // A concurrent 전체 중지 may have finished its whole teardown while this swap was
+            // mid-flight (its encoder stop saw the OLD process). A freshly started encoder must
+            // not outlive that teardown — nothing would supervise or ever stop it.
+            bool tornDown;
+            lock (_gate)
+            {
+                tornDown = State is StreamState.Stopping or StreamState.Idle;
+            }
+            if (tornDown)
+            {
+                await _encoder.StopAsync().ConfigureAwait(false);
+                return;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return; // session shutdown raced us — StopAsync owns the teardown
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: the watchdog's RecordingOnly branch revives a dead recording encoder.
+            _log.Error("녹화 전용 전환 중 오류 — 워치독이 녹화를 복구합니다.", ex);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _encoderSwapInProgress, 0);
+        }
+
+        // Complete the broadcast so no feedless live lingers (mirrors StopAsync §4.3). Snapshot-
+        // and-clear under the gate (a concurrent full stop also completes/clears); on failure the
+        // session is restored so the eventual full StopAsync retries the completion.
+        LiveSession? session;
+        lock (_gate)
+        {
+            session = _session;
+            _session = null;
+        }
+        if (session is not null)
+        {
+            try
+            {
+                using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Error("방송 종료 처리 실패 — 전체 중지 시 다시 시도합니다.", ex);
+                lock (_gate)
+                {
+                    _session ??= session;
+                }
+            }
+        }
+
+        _log.Info("방송을 중지했습니다 — 로컬 백업 녹화는 계속됩니다.");
     }
 
     /// <summary>Infinite exponential-backoff connect loop (plan §4.4): 1→2→4…→60s cap.</summary>
@@ -268,6 +387,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
         try
         {
+            // Stamp the session start at encoder start: StartLocal must map to the new file's
+            // position 0, or period VOD cuts compute offsets from a stale start (past EOF).
+            _sessionStart = DateTime.Now;
             var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
             await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), ct)
                 .ConfigureAwait(false);
@@ -298,6 +420,10 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
         var config = _configStore.Load();
         var recordingEnabled = config.Recording.Enabled;
+        // Stamp the session start at (re)connect time: on a watchdog restart or a delayed first
+        // connect the tee opens a NEW part file whose position 0 is now, and a stale StartLocal
+        // would shift every later period VOD cut past EOF (same fix as the broadcast-only swap).
+        _sessionStart = DateTime.Now;
         var recordingPath = recordingEnabled
             ? _recording.CreateSessionFilePath(_sessionStart)
             : string.Empty;
@@ -422,14 +548,40 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
                     if (restartReason is not null)
                     {
-                        _log.Warn($"{restartReason} 감지 — 파이프라인을 재구성합니다.");
-                        await ConnectUntilLiveAsync(ct).ConfigureAwait(false);
-                        // Re-baseline: the new _part file restarts near 0 bytes and the encoder's
-                        // progress clock is reset by StartAsync, so the next ticks see a fresh feed and
-                        // a small file without either signal falsely re-tripping the stall branch.
-                        lastRecordingLength = -1L;
-                        lastRecordingGrowthAt = DateTime.UtcNow;
+                        // Claim the pipeline under the gate before reconnecting: 방송만 중지 takes the
+                        // same gate to leave Live, so exactly one side wins — the watchdog can never
+                        // resurrect a broadcast the operator just dropped (unlocked re-checks cannot
+                        // guarantee that; this transition can).
+                        bool proceed;
+                        lock (_gate)
+                        {
+                            proceed = State == StreamState.Live;
+                            if (proceed)
+                            {
+                                SetState(StreamState.ConnectingYouTube);
+                            }
+                        }
+                        if (proceed)
+                        {
+                            _log.Warn($"{restartReason} 감지 — 파이프라인을 재구성합니다.");
+                            await ConnectUntilLiveAsync(ct).ConfigureAwait(false);
+                            // Re-baseline: the new _part file restarts near 0 bytes and the encoder's
+                            // progress clock is reset by StartAsync, so the next ticks see a fresh feed and
+                            // a small file without either signal falsely re-tripping the stall branch.
+                            lastRecordingLength = -1L;
+                            lastRecordingGrowthAt = DateTime.UtcNow;
+                        }
                     }
+                }
+                else if (State == StreamState.RecordingOnly && !_encoder.IsRunning &&
+                         Volatile.Read(ref _encoderSwapInProgress) == 0)
+                {
+                    // 방송만 중지 후 남은 녹화 전용 인코더가 죽으면 녹화만 되살린다 — 스트림 재수립 금지.
+                    // (교체가 진행 중인 의도적 정지 구간은 _encoderSwapInProgress 플래그로 건너뛴다.)
+                    _log.Warn("녹화 인코더 사망 감지 — 녹화를 재시작합니다.");
+                    await StartRecordingOnlyAsync(ct).ConfigureAwait(false);
+                    lastRecordingLength = -1L;
+                    lastRecordingGrowthAt = DateTime.UtcNow;
                 }
 
                 if (DateTime.UtcNow - lastSweep >= _options.RetentionInterval)

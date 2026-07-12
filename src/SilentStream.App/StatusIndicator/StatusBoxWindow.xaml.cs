@@ -43,7 +43,8 @@ public partial class StatusBoxWindow : Window
         StateRect.Fill = state switch
         {
             StreamState.Live => GreenBrush,
-            StreamState.Warmup or StreamState.ConnectingYouTube => YellowBrush,
+            // RecordingOnly is a deliberate healthy state (방송만 중지) — amber, not error red.
+            StreamState.Warmup or StreamState.ConnectingYouTube or StreamState.RecordingOnly => YellowBrush,
             _ => RedBrush
         };
     });

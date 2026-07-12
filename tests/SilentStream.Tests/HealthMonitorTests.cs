@@ -171,6 +171,32 @@ public class HealthMonitorTests : IDisposable
         Assert.Equal(HealthSeverity.Warn, _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
     }
 
+    [Fact]
+    public void Broadcast_only_stop_emits_live_stopped_once_and_downgrades_mics()
+    {
+        using var hm = CreateStarted();
+        _mixer.ConfigureSources(new[]
+        {
+            new AudioSourceSettings("mic:1", AudioSourceKind.Microphone, null, "마이크1")
+        });
+
+        _orch.Raise(StreamState.Live);
+        _mixer.RaiseMic("mic:1", present: false); // critical while live
+
+        // 방송만 중지 → RecordingOnly: the live session ends while recording continues.
+        _orch.Raise(StreamState.RecordingOnly);
+
+        var stopped = Assert.Single(_events, e => e.Kind == HealthEventKind.LiveStopped);
+        Assert.Contains("녹화는 계속", stopped.Message);
+        Assert.Equal(HealthSeverity.Warn,
+            _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
+
+        // The eventual full stop must not announce a second live_stopped.
+        _orch.Raise(StreamState.Stopping);
+        _orch.Raise(StreamState.Idle);
+        Assert.Single(_events, e => e.Kind == HealthEventKind.LiveStopped);
+    }
+
     // ---- rtmp_down (hysteresis + escalation + recovery) ----
 
     [Fact]
@@ -365,6 +391,7 @@ public class HealthMonitorTests : IDisposable
         public event EventHandler<MetricsSnapshot>? MetricsUpdated;
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync() => Task.CompletedTask;
+        public Task StopStreamingKeepRecordingAsync() => Task.CompletedTask;
         public void Raise(StreamState state)
         {
             State = state;

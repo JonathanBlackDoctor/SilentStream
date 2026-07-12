@@ -63,6 +63,8 @@
     /* ---- 중지 확인 모달 (오조작 방지 안전장치) ---- */
     #confirm { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex;
                align-items:center; justify-content:center; padding:24px; z-index:50; }
+    /* ID 선택자(#confirm)의 display:flex가 .hidden(클래스)보다 우선하므로 명시적으로 이긴다 */
+    #confirm.hidden { display:none; }
     #confirm .box { background:var(--card); border:1px solid var(--line); border-radius:14px;
                     padding:18px; width:100%; max-width:340px; }
     #confirm .title { font-weight:700; font-size:16px; margin:0 0 6px; }
@@ -128,10 +130,12 @@
       <div class="row"><span class="k">업로드</span><span id="bitrate">- kbps</span></div>
       <div class="row"><span class="k">FPS</span><span id="fps">-</span></div>
       <div class="row"><span class="k">CPU / GPU</span><span id="cpugpu">- / -</span></div>
-      <div class="btnrow">
-        <button id="startBtn">라이브 시작</button>
-        <button id="stopBtn" class="stop">중지</button>
+      <button id="startBtn">라이브 시작</button>
+      <div class="btnrow" style="margin-top:6px">
+        <button id="stopBroadcastBtn" class="stopHalf">방송 중지</button>
+        <button id="stopBtn" class="stop">전체 중지</button>
       </div>
+      <p class="muted" style="margin:6px 0 0">방송 중지 = 송출만 끝내고 녹화는 계속. 전체 중지 = 송출·녹화 모두 종료.</p>
     </div>
 
     <div class="card">
@@ -205,7 +209,7 @@
   <script>
     const WEEKDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
     const WEEKDAY_KR = {Mon:"월",Tue:"화",Wed:"수",Thu:"목",Fri:"금",Sat:"토",Sun:"일"};
-    const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted"};
+    const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted",RecordingOnly:"--yellow"};
 
     // ---- 호실 레지스트리 (Phase 2): 폰이 {label, baseUrl, token} 목록을 보관하고 각 호실 API를 직접 호출 ----
     let rooms = [];          // [{label, baseUrl, token}]
@@ -305,6 +309,8 @@
 
     // ---- 화면 전환 ----
     function show(v){
+      // 화면이 바뀌면(인증 만료 → 페어링 등) 열려 있던 중지 확인 모달은 취소로 정리한다.
+      if (confirmResolve) confirmDone(false);
       if (view === "dash" && v !== "dash"){
         if (ws){ try{ ws.close(); }catch(e){} ws = null; }
         const img = $("preview");
@@ -404,7 +410,7 @@
     function paintBadge(el, state, text, bgVar){
       el.textContent = text;
       el.style.background = "var(" + (bgVar || BADGE_COLORS[state] || "--muted") + ")";
-      el.style.color = (!bgVar && (state==="Warmup" || state==="ConnectingYouTube")) ? "#000" : "#fff";
+      el.style.color = (!bgVar && (state==="Warmup" || state==="ConnectingYouTube" || state==="RecordingOnly")) ? "#000" : "#fff";
     }
     function renderGrid(){
       const filter = $("problemOnly").checked;
@@ -524,8 +530,33 @@
       enter();
     };
 
-    $("startBtn").onclick = async () => { await api(cur, "/api/live/start", {method:"POST"}); toast("라이브 시작 요청"); };
-    $("stopBtn").onclick  = async () => { await api(cur, "/api/live/stop",  {method:"POST"}); toast("중지 요청"); };
+    $("startBtn").onclick = async () => {
+      try { await api(cur, "/api/live/start", {method:"POST"}); toast("라이브 시작 요청"); }
+      catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    };
+    // 안전장치: 어떤 중지든 확인 모달을 통과해야 실행된다(실수 방지).
+    $("stopBroadcastBtn").onclick = async () => {
+      const room = cur;
+      if (!await confirmAsk("방송만 중지할까요?",
+        "유튜브 송출만 끝나고 로컬 녹화는 계속됩니다.\n녹화 파일은 이 시점부터 새 파일로 이어집니다.\n다시 방송하려면 전체 중지 후 라이브 시작을 누르세요.",
+        "방송 중지")) return;
+      if (cur !== room) return; // 확인하는 사이 다른 호실로 이동함
+      try {
+        const d = await (await api(cur, "/api/live/stop-broadcast", {method:"POST"})).json();
+        toast(d.ok ? "방송 중지 요청 — 녹화는 계속됩니다"
+                   : "지금은 방송을 중지할 수 없습니다(재연결 중) — 잠시 후 다시 시도하세요.");
+      }
+      catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    };
+    $("stopBtn").onclick = async () => {
+      const room = cur;
+      if (!await confirmAsk("방송과 녹화를 모두 중지할까요?",
+        "유튜브 송출과 로컬 백업 녹화가 모두 끝납니다.",
+        "전체 중지")) return;
+      if (cur !== room) return;
+      try { await api(cur, "/api/live/stop", {method:"POST"}); toast("전체 중지 요청"); }
+      catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    };
 
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
@@ -539,7 +570,9 @@
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
       if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
-      $("startBtn").disabled = s.state!=="Idle"; $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
+      $("startBtn").disabled = s.state!=="Idle";
+      $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
+      $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
       $("todayDate").textContent = s.today.date;
       $("todayBadge").textContent = s.today.hasOverride ? "오늘 덮어쓰기 적용 중" : "요일 기본값 사용 중";
       const q=s.queue;

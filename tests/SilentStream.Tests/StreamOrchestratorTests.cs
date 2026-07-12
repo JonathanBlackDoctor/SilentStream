@@ -132,6 +132,107 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Stop_broadcast_keeps_recording_and_completes_the_broadcast()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        await orchestrator.StopStreamingKeepRecordingAsync();
+
+        // The tee encoder was swapped for a recording-only one: same session, new part file.
+        Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
+        Assert.Equal(2, _encoder.StartCalls.Count);
+        Assert.Equal(string.Empty, _encoder.StartCalls[1].RtmpUrl);
+        Assert.EndsWith(".mp4", _encoder.StartCalls[1].RecordingFilePath);
+        Assert.True(_encoder.IsRunning);
+        // Capture/audio keep feeding the recording; the broadcast is completed (no ghost live).
+        Assert.True(_capture.Started);
+        Assert.True(_mixer.Started);
+        Assert.Equal("bc-1", _youtube.CompletedBroadcastId);
+        Assert.Equal(1, _youtube.CompleteCalls);
+
+        // A later full stop finalises the recording too — without re-completing the broadcast.
+        await orchestrator.StopAsync();
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Equal(1, _youtube.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task Stop_broadcast_from_non_live_is_a_no_op()
+    {
+        var orchestrator = CreateOrchestrator();
+
+        await orchestrator.StopStreamingKeepRecordingAsync(); // Idle — nothing to drop
+
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Empty(_encoder.StartCalls);
+        Assert.Equal(0, _youtube.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task Stop_broadcast_with_recording_disabled_degenerates_to_a_full_stop()
+    {
+        var config = _configStore.Load();
+        config.Recording.Enabled = false;
+        _configStore.Save(config);
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        await orchestrator.StopStreamingKeepRecordingAsync();
+
+        // No recording leg to keep → full stop semantics.
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.True(_encoder.Stopped);
+        Assert.Single(_encoder.StartCalls); // no recording-only restart
+        Assert.Equal("bc-1", _youtube.CompletedBroadcastId);
+    }
+
+    [Fact]
+    public async Task Full_stop_during_broadcast_swap_leaves_no_orphan_encoder()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        // Hold the swap inside its encoder stop (ffmpeg flush can take ~10s in the field)…
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _encoder.StopGate = gate;
+        var swap = orchestrator.StopStreamingKeepRecordingAsync();
+        await WaitUntilAsync(() => orchestrator.State == StreamState.RecordingOnly, TimeSpan.FromSeconds(5));
+
+        // …while a full stop races through its entire teardown to Idle.
+        var fullStop = orchestrator.StopAsync();
+        await WaitUntilAsync(() => orchestrator.State == StreamState.Idle, TimeSpan.FromSeconds(5));
+
+        gate.SetResult(); // release the swap: it now starts a fresh recording encoder post-teardown
+        await swap;
+        await fullStop;
+
+        // The swap must notice the finished teardown and stop its fresh encoder — no orphan ffmpeg
+        // left running while every UI shows Idle.
+        Assert.False(_encoder.IsRunning);
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+    }
+
+    [Fact]
+    public async Task Watchdog_revives_a_dead_recording_only_encoder_without_reconnecting()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        await orchestrator.StopStreamingKeepRecordingAsync();
+        Assert.Equal(2, _encoder.StartCalls.Count);
+
+        _encoder.SimulateDeath();
+        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 3, TimeSpan.FromSeconds(5));
+
+        // Recording is revived recording-only; the stream must NOT be re-established.
+        Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+        Assert.EndsWith(".mp4", _encoder.StartCalls[^1].RecordingFilePath);
+        Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
+        Assert.Equal(1, _youtube.CreateCalls); // no new broadcast
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Watchdog_restarts_a_dead_encoder()
     {
         var orchestrator = CreateOrchestrator();
@@ -298,6 +399,7 @@ public class StreamOrchestratorTests : IDisposable
     {
         public int FailuresBeforeSuccess;
         public int CreateCalls;
+        public int CompleteCalls;
         public string? CompletedBroadcastId;
 
         public Task<bool> AuthenticateAsync(CancellationToken ct) => Task.FromResult(true);
@@ -316,6 +418,7 @@ public class StreamOrchestratorTests : IDisposable
 
         public Task CompleteBroadcastAsync(string broadcastId, CancellationToken ct)
         {
+            CompleteCalls++;
             CompletedBroadcastId = broadcastId;
             return Task.CompletedTask;
         }
@@ -345,11 +448,19 @@ public class StreamOrchestratorTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public Task StopAsync()
+        /// <summary>When set, the NEXT StopAsync awaits it — simulates ffmpeg's slow (~10s) flush.</summary>
+        public TaskCompletionSource? StopGate;
+
+        public async Task StopAsync()
         {
             Stopped = true;
             _running = false;
-            return Task.CompletedTask;
+            var gate = StopGate;
+            StopGate = null;
+            if (gate is not null)
+            {
+                await gate.Task;
+            }
         }
 
         public void SimulateDeath() => _running = false;

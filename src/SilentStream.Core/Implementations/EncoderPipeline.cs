@@ -59,6 +59,13 @@ public sealed class EncoderPipeline : IEncoderPipeline
 
     public async Task StartAsync(EncoderStartOptions options, CancellationToken ct)
     {
+        // A cancelled session token must never spawn a fresh ffmpeg: without this check a stop
+        // sequence racing a pipeline swap (방송만 중지 vs 전체 중지) can start an orphan encoder
+        // AFTER the teardown finished — nothing supervises or stops it until the next session.
+        // (With PreferredGpu configured the DetectAsync call below is skipped, so ct would
+        // otherwise go completely unobserved on this path.)
+        ct.ThrowIfCancellationRequested();
+
         // Always tear down any prior session first. When ffmpeg is killed externally (the exact
         // situation the watchdog restarts from), StopAsync is never called, so the previous
         // NamedPipeServerStream is still open and a fresh `new NamedPipeServerStream(..., maxInstances:1)`

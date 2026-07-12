@@ -173,6 +173,26 @@ public sealed class HealthMonitor : IHealthMonitor
                     }
                     break;
 
+                case StreamState.RecordingOnly:
+                    // 방송만 중지: the live session is over while recording continues. Clear any
+                    // outage bookkeeping and announce the stop; the later Stopping/Idle transition
+                    // must not emit a second live_stopped (_liveSessionActive is already false).
+                    if (_rtmpDownSeverity is not null)
+                    {
+                        _rtmpDownSeverity = null;
+                        SetCondition(buffer, HealthEventKind.RtmpDown, HealthSeverity.Info, active: false,
+                            "송출을 중지했습니다.", sourceKey: null);
+                    }
+                    _retryingSinceUtc = null;
+                    if (_liveSessionActive)
+                    {
+                        _liveSessionActive = false;
+                        Notify(buffer, HealthEventKind.LiveStopped, HealthSeverity.Info,
+                            "라이브 송출이 종료되었습니다 — 로컬 녹화는 계속됩니다.", sourceKey: null);
+                        RestampSilentMics(buffer, HealthSeverity.Warn);
+                    }
+                    break;
+
                 // Warmup / ConnectingYouTube are transitional — no health event.
             }
         }

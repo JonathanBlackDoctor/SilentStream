@@ -23,5 +23,12 @@ public enum StreamState
     Retrying,
 
     /// <summary>Shutdown in progress: flushing the encoder and finalising the mp4.</summary>
-    Stopping
+    Stopping,
+
+    /// <summary>
+    /// Broadcast deliberately stopped (원격 "방송만 중지") while the local backup recording keeps
+    /// running on a recording-only encoder. Unlike <see cref="Retrying"/> nothing reconnects the
+    /// stream; going live again requires a full stop followed by a fresh start.
+    /// </summary>
+    RecordingOnly
 }

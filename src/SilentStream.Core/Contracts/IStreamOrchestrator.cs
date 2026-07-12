@@ -22,4 +22,13 @@ public interface IStreamOrchestrator
 
     /// <summary>Runs the stop sequence (flush encoder, finalise mp4, complete broadcast).</summary>
     Task StopAsync();
+
+    /// <summary>
+    /// Stops only the YouTube broadcast while the local backup recording continues
+    /// (→ <see cref="StreamState.RecordingOnly"/>). Because the tee encoder is a single process,
+    /// the current mp4 is finalised and recording resumes in a new part file. No-op unless
+    /// <see cref="State"/> is <see cref="StreamState.Live"/>; degenerates to <see cref="StopAsync"/>
+    /// when recording is disabled (nothing to keep).
+    /// </summary>
+    Task StopStreamingKeepRecordingAsync();
 }

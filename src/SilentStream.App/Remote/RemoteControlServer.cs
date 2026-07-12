@@ -521,6 +521,16 @@ public sealed class RemoteControlServer : IRemoteControlServer
             await _orchestrator.StopAsync().ConfigureAwait(false);
             return Results.Json(new { ok = true, state = _orchestrator.State.ToString() }, Json);
         });
+        // 방송만 중지(녹화 계속): 인코더가 녹화 전용으로 전환되고 브로드캐스트는 종료된다.
+        // 워치독 재연결 중(ConnectingYouTube/Retrying)에는 no-op이므로 ok=false로 정직하게 알린다 —
+        // 폰이 성공 토스트를 띄운 채 방송이 스스로 되살아나는 상황을 막는다.
+        app.MapPost("/api/live/stop-broadcast", async () =>
+        {
+            await _orchestrator.StopStreamingKeepRecordingAsync().ConfigureAwait(false);
+            var state = _orchestrator.State;
+            var ok = state is StreamState.RecordingOnly or StreamState.Stopping or StreamState.Idle;
+            return Results.Json(new { ok, state = state.ToString() }, Json);
+        });
 
         app.Map("/ws/status", HandleWebSocketAsync);
     }
@@ -846,6 +856,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         StreamState.ConnectingYouTube => "연결 중",
         StreamState.Retrying => "재시도 중",
         StreamState.Stopping => "중지 중",
+        StreamState.RecordingOnly => "녹화만",
         _ => "대기"
     };
 
