@@ -6,51 +6,78 @@
   <meta name="color-scheme" content="dark" />
   <title>Media Capture Helper 원격</title>
   <style>
-    :root { --bg:#15171c; --card:#1f232b; --line:#2c313b; --fg:#e6e8ec; --muted:#8b929e;
-            --accent:#3a86ff; --green:#2ecc40; --yellow:#f1c40f; --red:#e74c3c; }
+    :root { --bg:#0e1218; --card:#151e2a; --card-soft:#111923; --line:#293b4f; --fg:#f2f6fb; --muted:#94a4b8;
+            --accent:#73b5ff; --accent-strong:#9bd0ff; --green:#56dd97; --yellow:#f4c44e; --red:#ee767c; }
     * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-    body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;
-           padding:max(12px,env(safe-area-inset-top)) 12px calc(12px+env(safe-area-inset-bottom)); }
-    h1 { font-size:18px; margin:4px 0 14px; display:flex; align-items:center; gap:8px; }
-    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:12px; }
-    .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:0 0 10px; }
-    .badge { display:inline-block; padding:3px 10px; border-radius:20px; font-weight:600; font-size:13px; }
-    .row { display:flex; justify-content:space-between; gap:8px; padding:3px 0; }
+    body { max-width:760px; min-height:100vh; margin:0 auto; background:radial-gradient(circle at 92% 0,#1b3859 0,transparent 29%),var(--bg); color:var(--fg); font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           padding:max(20px,env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
+    h1 { display:flex; align-items:center; gap:9px; margin:1px 0 21px; color:#f5f8fc; font-size:18px; font-weight:760; letter-spacing:-.055em; }
+    h1 .brand-mark { color:var(--accent-strong); } h1 small { padding-left:9px; border-left:1px solid #33475d; color:#8e9fb3; font-size:10px; font-weight:800; letter-spacing:.13em; }
+    .card { background:linear-gradient(145deg,rgba(24,34,47,.96),rgba(17,25,35,.96)); border:1px solid var(--line); border-radius:18px; padding:17px; margin-bottom:12px; box-shadow:0 12px 28px rgba(0,0,0,.12); }
+    .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:#91a4b9; margin:0 0 13px; }
+    .badge { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:20px; font-weight:750; font-size:11px; letter-spacing:.04em; }
+    .row { display:flex; justify-content:space-between; gap:8px; padding:5px 0; }
     .row .k { color:var(--muted); }
-    button { font:inherit; font-weight:600; border:none; border-radius:10px; padding:12px 16px; color:#fff;
-             background:var(--accent); width:100%; margin-top:6px; cursor:pointer; }
-    button.stop { background:var(--red); } button.ghost { background:#333a46; }
-    button:disabled { opacity:.45; }
+    button { font:inherit; font-weight:750; border:none; border-radius:12px; padding:13px 16px; color:#07111c;
+             background:var(--accent); width:100%; margin-top:7px; cursor:pointer; transition:transform .15s,filter .15s; }
+    button:active { transform:translateY(1px); filter:brightness(.94); }
+    button.stop { color:#ffd7d8; background:#3e222b; border:1px solid #79404a; } button.ghost { color:#c2d2e4; background:#202b39; border:1px solid #35475a; }
+    button:disabled { opacity:.38; }
     .btnrow { display:flex; gap:8px; } .btnrow button { margin-top:0; }
-    input { font:inherit; background:#12141a; border:1px solid var(--line); color:var(--fg);
-            border-radius:8px; padding:9px; width:100%; }
+    input { font:inherit; background:#0d141e; border:1px solid var(--line); color:var(--fg);
+            border-radius:10px; padding:10px; width:100%; }
     input.time { width:100%; text-align:center; }
     table { width:100%; border-collapse:collapse; } td,th { padding:5px 4px; text-align:center; font-size:14px; }
     th { color:var(--muted); font-weight:500; font-size:12px; }
-    .tabs { display:flex; gap:4px; flex-wrap:wrap; margin-bottom:10px; }
-    .tabs button { width:auto; flex:1 1 13%; padding:8px 0; margin:0; background:#262b34; font-size:13px; }
-    .tabs button.active { background:var(--accent); }
+    .tabs { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:10px; }
+    .tabs button { width:auto; flex:1 1 13%; padding:9px 0; margin:0; color:#9eafc3; border:1px solid #31455a; border-radius:10px; background:#182332; font-size:12px; }
+    .tabs button.active { color:#d5ebff; border-color:#558ecc; background:#1d3854; }
     .pin { font-size:28px; letter-spacing:.4em; text-align:center; }
     .muted { color:var(--muted); font-size:13px; }
-    .qitem { display:flex; justify-content:space-between; border-bottom:1px solid var(--line); padding:6px 0; font-size:14px; }
-    .pill { font-size:11px; padding:2px 8px; border-radius:10px; background:#333a46; }
-    .pill.done { background:#1d4d27; } .pill.pending { background:#5a4a12; } .pill.failed { background:#5a2020; }
+    .qitem { display:flex; justify-content:space-between; border-bottom:1px solid #26384b; padding:8px 0; font-size:13px; }
+    .pill { font-size:11px; padding:3px 8px; border-radius:10px; background:#283747; }
+    .pill.done { color:#b3f2d0; background:#1b4933; } .pill.pending { color:#f6de96; background:#594c1f; } .pill.failed { color:#ffbec1; background:#5a2a31; }
     .x { color:var(--red); background:none; width:auto; padding:4px 8px; margin:0; font-size:18px; }
     .hidden { display:none; }
-    #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#333a46;
-             padding:10px 16px; border-radius:8px; opacity:0; transition:opacity .3s; pointer-events:none; }
+    #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#253547; border:1px solid #405b76;
+             padding:10px 16px; border-radius:10px; opacity:0; transition:opacity .3s; pointer-events:none; }
     #toast.show { opacity:1; }
-    .meter { height:9px; background:#0e1014; border-radius:5px; overflow:hidden; margin:5px 0; }
+    .meter { height:7px; background:#0b1119; border-radius:5px; overflow:hidden; margin:8px 0; }
     .meter > i { display:block; height:100%; width:0; background:var(--green); transition:width .08s linear; }
-    .src { border-bottom:1px solid var(--line); padding:9px 0; }
+    .src { border-bottom:1px solid #26384b; padding:11px 0; }
     .src:last-child { border-bottom:none; }
     .src .top { display:flex; justify-content:space-between; align-items:center; gap:8px; }
     .src .name { font-weight:600; }
-    .mutebtn { width:auto; margin:0; padding:6px 14px; background:#333a46; font-size:13px; }
-    .mutebtn.on { background:var(--red); }
+    .mutebtn { width:auto; margin:0; padding:6px 11px; color:#c2d2e4; background:#243244; border:1px solid #384d64; font-size:12px; }
+    .mutebtn.on { color:#ffd0d2; background:#4f2830; border-color:#80414a; }
     input[type=range] { width:100%; margin-top:4px; accent-color:var(--accent); }
-    .warn { background:#5a2020; border:1px solid var(--red); border-radius:8px; padding:10px 12px; margin-bottom:10px; font-size:14px; }
-    .preview { width:100%; display:block; border-radius:8px; background:#0e1014; min-height:120px; object-fit:contain; }
+    .warn { color:#ffcecf; background:#4a242b; border:1px solid #85434c; border-radius:11px; padding:10px 12px; margin-bottom:10px; font-size:13px; }
+    .preview { width:100%; display:block; border:1px solid #2d4054; border-radius:12px; background:#0a1017; min-height:150px; object-fit:contain; }
+
+    /* Command Deck: 현재 세션·핵심 수치·안전한 제어를 한 덩어리로 묶는다. */
+    .command-card { overflow:hidden; padding:0; background:linear-gradient(140deg,#182e46,#121b27 65%); border-color:#344e6b; }
+    .command-main { padding:20px 19px 17px; }
+    .command-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+    .command-kicker { color:#9db1c8; font-size:10px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    .command-room { margin-top:4px; color:#f3f8fe; font-size:20px; font-weight:760; letter-spacing:-.045em; }
+    .command-state { margin:22px 0 3px; color:#f5f9fe; font-size:25px; font-weight:760; letter-spacing:-.055em; }
+    .command-substate { min-height:19px; margin:0; color:#a1b3c8; font-size:12px; }
+    .metric-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:7px; margin-top:18px; }
+    .metric-grid > div { min-width:0; padding:10px 8px; border:1px solid rgba(105,147,192,.27); border-radius:11px; background:rgba(7,16,27,.34); }
+    .metric-grid span { display:block; overflow:hidden; color:#93a7bd; font-size:9px; font-weight:700; letter-spacing:.06em; text-overflow:ellipsis; white-space:nowrap; }
+    .metric-grid b { display:block; overflow:hidden; margin-top:4px; color:#edf6ff; font-size:14px; letter-spacing:-.035em; text-overflow:ellipsis; white-space:nowrap; }
+    .command-actions { padding:13px 19px 18px; border-top:1px solid rgba(121,160,200,.22); background:rgba(8,15,24,.22); }
+    .command-actions > button { min-height:48px; margin:0; }
+    .command-actions .btnrow { margin-top:8px; }
+    .command-actions .stopHalf { color:#ffe1ae; background:#513b1d; border:1px solid #806135; }
+    .action-hint { margin:9px 1px 0; color:#92a6bd; font-size:11px; line-height:1.45; }
+    .card-lead { display:flex; align-items:center; justify-content:space-between; gap:9px; margin-bottom:12px; }
+    .card-lead h2 { margin:0; } .card-lead small { color:#8499af; font-size:11px; }
+    .quality-card .row { padding:0; } .quality-card .tabs { margin:12px 0 5px; }
+    .recording-grid { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+    .recording-item { padding:11px; border:1px solid #2a3b4e; border-radius:12px; background:#101822; }
+    .recording-item .k { display:block; color:#8fa0b4; font-size:10px; } .recording-item b { display:block; overflow:hidden; margin-top:4px; color:#e9f1fa; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
+    .recording-item.file { grid-column:1/-1; }
     /* ---- 접이식 카드 (시간표 등 자주 안 쓰는 섹션은 기본 접힘) ---- */
     details.card { padding:0; }
     details.card > summary { list-style:none; cursor:pointer; padding:14px; font-size:13px;
@@ -92,7 +119,7 @@
   </style>
 </head>
 <body>
-  <h1>📡 Media Capture Helper 원격</h1>
+  <h1><span>silent<span class="brand-mark">stream</span></span><small>REMOTE CONTROL</small></h1>
 
   <!-- 페어링(호실 추가) 화면 -->
   <section id="pair" class="hidden">
@@ -124,46 +151,58 @@
   <!-- 단일 호실 대시보드 -->
   <section id="dash" class="hidden">
     <button id="backBtn" class="ghost hidden">← 전체 호실</button>
-    <div class="card">
-      <h2>상태 <span id="roomName" style="text-transform:none;color:var(--accent)"></span></h2>
-      <div class="row"><span class="k">송출</span><span id="badge" class="badge">-</span></div>
-      <div class="row"><span class="k">업로드</span><span id="bitrate">- kbps</span></div>
-      <div class="row"><span class="k">FPS</span><span id="fps">-</span></div>
-      <div class="row"><span class="k">CPU / GPU</span><span id="cpugpu">- / -</span></div>
-      <button id="startBtn">라이브 시작</button>
-      <div class="btnrow" style="margin-top:6px">
+    <div class="card command-card">
+      <div class="command-main">
+        <div class="command-top">
+          <div><div class="command-kicker">현재 세션</div><div id="roomName" class="command-room">강의실 연결 중</div></div>
+          <span id="badge" class="badge">확인 중</span>
+        </div>
+        <div id="stateTitle" class="command-state">상태를 확인하고 있습니다</div>
+        <p id="stateSub" class="command-substate">호실과 연결되면 실시간 정보가 표시됩니다.</p>
+        <div class="metric-grid">
+          <div><span>UPLINK</span><b id="bitrate">- kbps</b></div>
+          <div><span>FPS</span><b id="fps">-</b></div>
+          <div><span>CPU</span><b id="cpu">-</b></div>
+          <div><span>GPU</span><b id="gpu">-</b></div>
+        </div>
+      </div>
+      <div class="command-actions">
+        <button id="startBtn">라이브 시작</button>
+        <div class="btnrow">
         <button id="stopBroadcastBtn" class="stopHalf">방송 중지</button>
         <button id="stopBtn" class="stop">전체 중지</button>
+        </div>
+        <p class="action-hint">방송 중지는 녹화를 유지합니다. 전체 중지는 송출과 녹화를 모두 종료합니다.</p>
       </div>
-      <p class="muted" style="margin:6px 0 0">방송 중지 = 송출만 끝내고 녹화는 계속. 전체 중지 = 송출·녹화 모두 종료.</p>
     </div>
 
     <!-- 송출 품질 (적응형 품질): 현재 단계 표시 + 프리셋 수동 고정/자동 복귀 -->
-    <div class="card">
-      <h2>송출 품질</h2>
-      <div class="row"><span class="k">현재</span><span id="qualNow">-</span></div>
-      <div class="tabs" id="qualPills" style="margin:8px 0 0"></div>
-      <p class="muted" id="qualHint" style="margin:6px 0 0"></p>
+    <div class="card quality-card">
+      <div class="card-lead"><h2>송출 품질</h2><small id="qualNow">-</small></div>
+      <div class="tabs" id="qualPills"></div>
+      <p class="muted" id="qualHint" style="margin:7px 0 0"></p>
     </div>
 
     <div class="card">
-      <h2>송출 미리보기</h2>
+      <div class="card-lead"><h2>송출 미리보기</h2><small>2초마다 갱신</small></div>
       <img id="preview" class="preview" alt="미리보기 대기 중" />
     </div>
 
     <div class="card">
-      <h2>오디오</h2>
+      <div class="card-lead"><h2>오디오</h2><small>실시간 입력</small></div>
       <div id="micWarn" class="warn hidden"></div>
       <div id="srcList"></div>
-      <div class="row" style="margin-top:6px"><span class="k">마스터 출력</span></div>
+      <div class="row" style="margin-top:9px"><span class="k">마스터 출력</span></div>
       <div class="meter"><i id="masterMeter"></i></div>
     </div>
 
     <div class="card">
-      <h2>녹화</h2>
-      <div class="row"><span class="k">현재 파일</span><span id="recFile">-</span></div>
-      <div class="row"><span class="k">누적 용량</span><span id="recUsed">-</span></div>
-      <div class="row"><span class="k">남은 디스크</span><span id="recFree">-</span></div>
+      <div class="card-lead"><h2>백업 녹화</h2><small>로컬 저장</small></div>
+      <div class="recording-grid">
+        <div class="recording-item file"><span class="k">현재 파일</span><b id="recFile">-</b></div>
+        <div class="recording-item"><span class="k">누적 용량</span><b id="recUsed">-</b></div>
+        <div class="recording-item"><span class="k">남은 디스크</span><b id="recFree">-</b></div>
+      </div>
     </div>
 
     <!-- 시간표: 자주 쓰지 않으므로 기본 접힘(운영 요청) — 펼쳐야 편집 가능 -->
@@ -227,6 +266,8 @@
     let weekData = {}, activeDay = "Mon", ws = null;
     let renderedSrcKey = "", audioReloading = false;
     const rstate = new Map(); // baseUrl → {online:null|bool, authFailed, summary, thumbUrl}
+    // 로컬 파일로 열거나 URL에 ?demo=1을 붙인 디자인 점검용 화면. 실제 원격 연결·인증·저장값은 건드리지 않는다.
+    const demoMode = location.protocol === "file:" || new URLSearchParams(location.search).has("demo");
 
     const $ = id => document.getElementById(id);
     const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -371,7 +412,7 @@
       enter();
     };
     $("pairCancel").onclick = () => { pairTarget = null; enter(); };
-    $("addRoomBtn").onclick = () => openPair(null);
+    $("addRoomBtn").onclick = () => { history.pushState({ v: "sub" }, ""); openPair(null); };
 
     // ---- 그리드 (호실 2개 이상일 때 기본 진입 화면) ----
     function openGrid(){
@@ -399,7 +440,14 @@
             <div class="rmeta muted" data-meta="${i}">-</div>
           </div>
         </div>`).join("");
-      c.querySelectorAll(".rcard").forEach(el => el.onclick = () => openRoom(rooms[+el.dataset.i]));
+      c.querySelectorAll(".rcard").forEach(el => el.onclick = () => {
+        const room = rooms[+el.dataset.i];
+        history.pushState({ v: "sub" }, ""); // 하드웨어 뒤로가기 = 그리드 복귀 (상세/재페어링 공통)
+        // 토큰 만료 호실은 대시보드가 401 루프뿐이므로 카드 안내문대로 바로 재페어링 화면으로.
+        // (openRoom으로 들어가면 onAuthFailed의 중복 가드가 이미 소진돼 재페어링 유도가 안 나온다)
+        if (stateOf(room).authFailed) openPair(room);
+        else openRoom(room);
+      });
       rooms.forEach((room,i)=>{ // 유지 중인 마지막 썸네일 복원 (blob URL은 rstate가 소유)
         const st = stateOf(room);
         if (st.thumbUrl){ const img = c.querySelector(`img[data-thumb="${i}"]`); if (img) img.src = st.thumbUrl; }
@@ -509,15 +557,43 @@
       localStorage.setItem("ss_problem_only", $("problemOnly").checked ? "1" : "0");
       renderGrid();
     };
-    $("backBtn").onclick = () => openGrid();
+    // 드릴다운이 쌓은 history 항목을 소비 → popstate가 그리드로 복귀시킨다(하드웨어 뒤로가기와 동일 경로).
+    // disabled 가드: 연타로 back()이 두 번 나가 페이지 밖으로 이탈하는 것 방지(openRoom에서 해제).
+    $("backBtn").onclick = e => { e.currentTarget.disabled = true; history.back(); };
 
     // ---- 단일 호실 대시보드 (room-aware: 선택된 호실의 baseUrl+token 사용) ----
     function openRoom(room){
       cur = room;
       show("dash");
-      $("backBtn").classList.toggle("hidden", rooms.length < 2);
-      $("roomName").textContent = room.label ? ("· " + room.label) : "";
+      const bb = $("backBtn");
+      bb.disabled = false;
+      bb.classList.toggle("hidden", rooms.length < 2);
+      $("roomName").textContent = room.label || "연결된 강의실";
       startDash();
+    }
+    function openDemo(){
+      cur = { label:"201호", baseUrl:"", token:"demo" };
+      show("dash");
+      $("backBtn").classList.add("hidden");
+      renderStatus({
+        state:"Live", badge:"LIVE", room:"201호",
+        metrics:{ bitrateKbps:6230, fps:29.97, cpu:32, gpu:18 },
+        recording:{ file:"2026-07-13_2교시.mp4", usedBytes:9020000000, freeBytes:197568495616 },
+        audio:{ micWarning:false, silent:[] },
+        quality:{ levelName:"표준", mode:"auto", level:0, current:{ width:1920, height:1080, fps:30, videoBitrateKbps:6200 } },
+        today:{ date:"2026-07-13", hasOverride:false },
+        queue:{ pending:0, uploading:1, completed:14, failed:0,
+          items:[{ title:"201호 · 1교시", status:"uploading" },{ title:"201호 · 전일 6교시", status:"completed", videoId:"" }] }
+      });
+      renderAudio({
+        micWarning:false, silent:[],
+        sources:[{ id:"teacher", name:"교탁 마이크", muted:false, gain:1 },{ id:"system", name:"PC 사운드", muted:false, gain:0.8 }]
+      });
+      qualLadder = [{level:0,name:"표준"},{level:1,name:"안정"},{level:2,name:"절전"}];
+      qualMode = "auto"; qualLevel = 0; paintQualityPills();
+      setMeter(document.querySelector('[data-meter="teacher"]'), .58, .58);
+      setMeter(document.querySelector('[data-meter="system"]'), .35, .35);
+      setMeter($("masterMeter"), .62, .62);
     }
     async function startDash(){
       const room = cur;
@@ -570,11 +646,24 @@
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (cur) syncLabel(cur, s.room);
-      const rn=$("roomName"); if(rn) rn.textContent = s.room ? ("· "+s.room) : "";
+      const rn=$("roomName"); if(rn) rn.textContent = s.room || "연결된 강의실";
       document.title = s.room ? (s.room+" · Media Capture Helper 원격") : "Media Capture Helper 원격";
       $("bitrate").textContent = Math.round(s.metrics.bitrateKbps)+" kbps";
       $("fps").textContent = Math.round(s.metrics.fps)+" fps";
-      $("cpugpu").textContent = Math.round(s.metrics.cpu)+"% / "+(s.metrics.gpu>=0?Math.round(s.metrics.gpu)+"%":"-");
+      $("cpu").textContent = Math.round(s.metrics.cpu)+"%";
+      $("gpu").textContent = s.metrics.gpu>=0 ? Math.round(s.metrics.gpu)+"%" : "-";
+      const stateCopy = {
+        Live:["라이브를 안정적으로 송출하고 있습니다", "영상과 오디오를 실시간으로 확인합니다."],
+        Warmup:["라이브를 준비하고 있습니다", "송출을 시작하기 전 연결 상태를 확인하고 있습니다."],
+        ConnectingYouTube:["YouTube와 연결하고 있습니다", "잠시만 기다리면 송출 상태가 갱신됩니다."],
+        Retrying:["연결을 복구하고 있습니다", "네트워크가 회복되면 자동으로 다시 시도합니다."],
+        Stopping:["안전하게 종료하고 있습니다", "송출과 녹화 정리 상태를 확인해 주세요."],
+        Idle:["방송을 시작할 준비가 되었습니다", "라이브 시작을 누르면 송출과 백업 녹화가 시작됩니다."],
+        RecordingOnly:["녹화는 계속 진행 중입니다", "방송은 끝났고 로컬 백업 녹화만 유지하고 있습니다."]
+      };
+      const stateText = stateCopy[s.state] || [s.badge || "상태 확인 중", "현재 장비 상태를 확인하고 있습니다."];
+      $("stateTitle").textContent = stateText[0];
+      $("stateSub").textContent = s.micWarning ? "마이크 신호를 확인해 주세요." : stateText[1];
       $("recFile").textContent = s.recording.file || "대기 중";
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
@@ -741,9 +830,16 @@
     setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
     setInterval(()=>{ if(view==="grid") refreshGridPreviews(); }, 10000);
 
-    rooms = loadRooms();
-    $("problemOnly").checked = localStorage.getItem("ss_problem_only")==="1";
-    enter();
+    // 하드웨어/제스처 뒤로가기: 그리드에서 들어간 하위 화면(상세·페어링)을 그리드 복귀로 되돌린다.
+    // 단일 호실이거나 이미 그리드면 관여하지 않는다(항목이 그대로 pop돼 기존처럼 페이지를 떠난다).
+    window.onpopstate = () => { if (rooms.length > 1 && view !== "grid") openGrid(); };
+
+    if (demoMode) openDemo();
+    else {
+      rooms = loadRooms();
+      $("problemOnly").checked = localStorage.getItem("ss_problem_only")==="1";
+      enter();
+    }
   </script>
 </body>
 </html>
