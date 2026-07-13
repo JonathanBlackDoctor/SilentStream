@@ -34,6 +34,7 @@ public sealed class HealthMonitor : IHealthMonitor
     private readonly IRecordingManager _recording;
     private readonly IUploadQueue _uploadQueue;
     private readonly IConfigStore _configStore;
+    private readonly ISplitApprovalService? _splits; // null in older tests — split checks just skip
     private readonly ILogService _log;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -52,6 +53,7 @@ public sealed class HealthMonitor : IHealthMonitor
     private HealthSeverity? _diskLowSeverity;
     private readonly HashSet<string> _silentMics = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reportedFailedUploadIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _reportedPendingSplitIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, HealthEvent> _active = new(StringComparer.Ordinal);
 
     public event EventHandler<HealthEvent>? HealthChanged;
@@ -63,8 +65,10 @@ public sealed class HealthMonitor : IHealthMonitor
         IRecordingManager recording,
         IUploadQueue uploadQueue,
         IConfigStore configStore,
+        ISplitApprovalService splits,
         ILogService log)
-        : this(orchestrator, mixer, recording, uploadQueue, configStore, log, () => DateTime.UtcNow, Task.Delay)
+        : this(orchestrator, mixer, recording, uploadQueue, configStore, log,
+            () => DateTime.UtcNow, Task.Delay, splits)
     {
     }
 
@@ -77,13 +81,15 @@ public sealed class HealthMonitor : IHealthMonitor
         IConfigStore configStore,
         ILogService log,
         Func<DateTime> now,
-        Func<TimeSpan, CancellationToken, Task> delay)
+        Func<TimeSpan, CancellationToken, Task> delay,
+        ISplitApprovalService? splits = null)
     {
         _orchestrator = orchestrator;
         _mixer = mixer;
         _recording = recording;
         _uploadQueue = uploadQueue;
         _configStore = configStore;
+        _splits = splits;
         _log = log;
         _now = now;
         _delay = delay;
@@ -320,6 +326,16 @@ public sealed class HealthMonitor : IHealthMonitor
             _log.Error("헬스 모니터: 업로드 큐 조회 실패", ex);
         }
 
+        IReadOnlyList<PendingSplit>? splits = null;
+        try
+        {
+            splits = _splits?.Snapshot();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("헬스 모니터: 승인 대기 조회 실패", ex);
+        }
+
         lock (_gate)
         {
             if (roomKnown)
@@ -334,6 +350,10 @@ public sealed class HealthMonitor : IHealthMonitor
             if (jobs is not null)
             {
                 CheckUploads(buffer, jobs);
+            }
+            if (splits is not null)
+            {
+                CheckSplits(buffer, splits);
             }
         }
         RaiseAll(buffer);
@@ -450,6 +470,31 @@ public sealed class HealthMonitor : IHealthMonitor
         {
             var present = new HashSet<string>(jobs.Select(j => j.Id), StringComparer.Ordinal);
             _reportedFailedUploadIds.RemoveWhere(id => !present.Contains(id));
+        }
+    }
+
+    /// <summary>
+    /// 승인 대기 알림(승인 기반 교시 분할): pending당 1회 Info를 방출한다. 기본 NotifyLevel("warn")
+    /// 에서는 텔레그램 미발송 — 경계마다 푸시를 원하는 운영자만 info로 낮춰 옵트인한다.
+    /// </summary>
+    private void CheckSplits(List<HealthEvent> buffer, IReadOnlyList<PendingSplit> splits)
+    {
+        foreach (var split in splits)
+        {
+            if (split.Status == PendingSplitStatus.Pending && _reportedPendingSplitIds.Add(split.Id))
+            {
+                var deadline = split.AutoApproveAtLocal is { } at
+                    ? $"{at:HH:mm} 자동 승인" : "수동 승인 대기";
+                Notify(buffer, HealthEventKind.SplitPending, HealthSeverity.Info,
+                    $"{PeriodLabel.FileBase(split.Periods)} 종료 — VOD 컷 승인 대기 ({deadline})", split.Id);
+            }
+        }
+
+        // Bound the reported-id set: the approval service prunes terminal splits, so follow it.
+        if (_reportedPendingSplitIds.Count > 0)
+        {
+            var present = new HashSet<string>(splits.Select(s => s.Id), StringComparer.Ordinal);
+            _reportedPendingSplitIds.RemoveWhere(id => !present.Contains(id));
         }
     }
 

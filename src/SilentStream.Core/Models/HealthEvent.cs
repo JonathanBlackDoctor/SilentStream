@@ -54,6 +54,13 @@ public enum HealthEventKind
     UploadFailed,
 
     /// <summary>
+    /// A period-end VOD cut is waiting for operator approval (승인 기반 교시 분할; momentary, once
+    /// per split). Emitted at Info so the default NotifyLevel("warn") keeps Telegram quiet — an
+    /// operator who wants boundary pings opts in by lowering the level to info.
+    /// </summary>
+    SplitPending,
+
+    /// <summary>
     /// The YouTube OAuth credential is expiring/invalid. RESERVED: no runtime source exposes token
     /// expiry today (see IYouTubeLiveService), so the health layer does not emit this yet — wiring it
     /// requires a small new hook on the auth service. Defined here so consumers can already handle it.

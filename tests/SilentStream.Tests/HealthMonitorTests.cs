@@ -24,6 +24,7 @@ public class HealthMonitorTests : IDisposable
     private readonly FakeMixer _mixer = new();
     private readonly FakeRecording _recording = new();
     private readonly FakeQueue _queue = new();
+    private readonly FakeSplits _splits = new();
     private readonly Clock _clock = new();
     private readonly List<HealthEvent> _events = new();
 
@@ -42,7 +43,8 @@ public class HealthMonitorTests : IDisposable
         var hm = new HealthMonitor(
             _orch, _mixer, _recording, _queue, _configStore, new LogService(),
             () => _clock.Now,
-            (_, ct) => Task.Delay(Timeout.Infinite, ct)); // park the poll loop; tests call RunChecksOnce
+            (_, ct) => Task.Delay(Timeout.Infinite, ct), // park the poll loop; tests call RunChecksOnce
+            _splits);
         hm.HealthChanged += (_, e) => { lock (_events) { _events.Add(e); } };
         hm.Start(CancellationToken.None);
         return hm;
@@ -323,6 +325,51 @@ public class HealthMonitorTests : IDisposable
         Assert.DoesNotContain(_events, e => e.Kind == HealthEventKind.UploadFailed);
     }
 
+    // ---- split_pending (승인 기반 교시 분할) ----
+
+    [Fact]
+    public void Pending_split_is_announced_once_per_split_at_info()
+    {
+        using var hm = CreateStarted();
+        _splits.Items.Add(Split("s1", [1]));
+
+        hm.RunChecksOnce();
+        var evt = Assert.Single(_events, e => e.Kind == HealthEventKind.SplitPending);
+        Assert.Equal(HealthSeverity.Info, evt.Severity); // 기본 warn 필터에서는 텔레그램 미발송
+        Assert.Equal("s1", evt.SourceKey);
+        Assert.Contains("1교시", evt.Message);
+
+        hm.RunChecksOnce(); // same pending — must not re-announce
+        Assert.Single(_events, e => e.Kind == HealthEventKind.SplitPending);
+
+        _splits.Items.Add(Split("s2", [2, 3])); // merged 연강 split announces with its range label
+        hm.RunChecksOnce();
+        Assert.Equal(2, _events.Count(e => e.Kind == HealthEventKind.SplitPending));
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.SplitPending && e.Message.Contains("2~3교시"));
+    }
+
+    [Fact]
+    public void Handled_splits_are_not_announced()
+    {
+        using var hm = CreateStarted();
+        _splits.Items.Add(Split("s1", [1], PendingSplitStatus.Done));
+        _splits.Items.Add(Split("s2", [2], PendingSplitStatus.Skipped));
+
+        hm.RunChecksOnce();
+
+        Assert.DoesNotContain(_events, e => e.Kind == HealthEventKind.SplitPending);
+    }
+
+    private static PendingSplit Split(string id, int[] periods, string status = PendingSplitStatus.Pending)
+    {
+        var date = new DateOnly(2026, 7, 13);
+        return new PendingSplit(id, date, periods,
+            date.ToDateTime(new TimeOnly(8, 25)), date.ToDateTime(new TimeOnly(9, 25)),
+            @"C:\rec\session.mp4", date.ToDateTime(new TimeOnly(8, 20)),
+            status, date.ToDateTime(new TimeOnly(9, 25)),
+            date.ToDateTime(new TimeOnly(9, 40)), null, null, null, null, null);
+    }
+
     // ---- ActiveEvents + room stamp ----
 
     [Fact]
@@ -503,5 +550,20 @@ public class HealthMonitorTests : IDisposable
         public void Enqueue(UploadJob job) => Jobs.Add(job);
         public IReadOnlyList<UploadJob> Snapshot() => Jobs.ToList();
         public void Start(CancellationToken ct) { }
+    }
+
+    private sealed class FakeSplits : ISplitApprovalService
+    {
+        public List<PendingSplit> Items { get; } = new();
+        public event EventHandler? Changed;
+        public IReadOnlyList<PendingSplit> Snapshot() => Items.ToList();
+        public MergeChain? OpenChain() => null;
+        public void Start(CancellationToken ct) { }
+        public void OnPeriodEnded(PeriodBoundary boundary) { }
+        public SplitActionOutcome Approve(string id, DateTime? startLocal, DateTime? endLocal) =>
+            new(true, null);
+        public SplitActionOutcome Merge(string id) => new(true, null);
+        public SplitActionOutcome CancelMerge() => new(true, null);
+        public SplitActionOutcome Skip(string id) => new(true, null);
     }
 }
