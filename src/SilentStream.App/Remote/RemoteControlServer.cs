@@ -18,6 +18,7 @@ using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Models;
 using SilentStream.Core.Remote;
+using SilentStream.Core.Remote.WebPush;
 
 namespace SilentStream.App.Remote;
 
@@ -56,6 +57,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly ITokenProtector _tokenProtector;
     private readonly IHealthMonitor _health;
     private readonly IAdaptiveQualityController _quality;
+    private readonly IPushSubscriptionStore _pushSubscriptions;
+    private readonly IVapidKeyStore _vapidKeys;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -63,6 +66,13 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly object _silentMicsGate = new();
     private readonly Dictionary<string, string> _silentMics = new();
     private readonly string _html;
+    // PWA 자산(원격 컨트롤러 개선 Phase 3): index.html과 함께 어셈블리에 임베드, 무인증 서빙.
+    private readonly string _manifest;
+    private readonly string _serviceWorker;
+    private readonly string _iconSvg;
+    private readonly byte[] _icon192;
+    private readonly byte[] _icon512;
+    private readonly byte[] _iconMaskable;
 
     private readonly CloudflaredManager _cloudflared;
     private readonly PairingThrottle _pairThrottle = new();
@@ -91,6 +101,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         ITokenProtector tokenProtector,
         IHealthMonitor health,
         IAdaptiveQualityController quality,
+        IPushSubscriptionStore pushSubscriptions,
+        IVapidKeyStore vapidKeys,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -107,9 +119,17 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _tokenProtector = tokenProtector;
         _health = health;
         _quality = quality;
+        _pushSubscriptions = pushSubscriptions;
+        _vapidKeys = vapidKeys;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
+        _manifest = LoadEmbeddedText("manifest.webmanifest");
+        _serviceWorker = LoadEmbeddedText("service-worker.js");
+        _iconSvg = LoadEmbeddedText("icon.svg");
+        _icon192 = LoadEmbeddedBytes("icon-192.png");
+        _icon512 = LoadEmbeddedBytes("icon-512.png");
+        _iconMaskable = LoadEmbeddedBytes("icon-maskable.png");
     }
 
     /// <summary>Current pairing PIN to show in the control window (null until the server starts).</summary>
@@ -403,6 +423,17 @@ public sealed class RemoteControlServer : IRemoteControlServer
     {
         app.MapGet("/", () => Results.Content(_html, "text/html; charset=utf-8"));
 
+        // PWA 설치 자산(원격 컨트롤러 개선 Phase 3). /api·/ws 밖이라 무인증 서빙 — 페어링 전에도 브라우저가
+        // 매니페스트/서비스워커/아이콘을 로드할 수 있어야 한다. 서비스워커는 루트에서 서빙되어 스코프가 "/".
+        app.MapGet("/manifest.webmanifest", () =>
+            Results.Content(_manifest, "application/manifest+json; charset=utf-8"));
+        app.MapGet("/service-worker.js", () =>
+            Results.Content(_serviceWorker, "text/javascript; charset=utf-8"));
+        app.MapGet("/icon.svg", () => Results.Content(_iconSvg, "image/svg+xml"));
+        app.MapGet("/icon-192.png", () => Results.Bytes(_icon192, "image/png"));
+        app.MapGet("/icon-512.png", () => Results.Bytes(_icon512, "image/png"));
+        app.MapGet("/icon-maskable.png", () => Results.Bytes(_iconMaskable, "image/png"));
+
         app.MapPost("/api/pair", async ctx =>
         {
             // Brute-force guard (B3): the PIN is only 6 digits, so reject without checking once
@@ -628,6 +659,23 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
             }
             await ctx.Response.WriteAsJsonAsync(result, Json).ConfigureAwait(false);
+        });
+
+        // ---- 폰 PWA Web Push 구독 (원격 컨트롤러 개선 Phase 3) ----
+        // /api 아래라 토큰 게이트 뒤 — 페어링된 기기만 구독한다. VAPID 공개키는 비밀이 아니지만 구독이
+        // 페어링 후에만 의미 있으므로 같은 게이트를 공유한다.
+        app.MapGet("/api/push/vapid", () => Results.Json(PushRemote.GetVapid(_vapidKeys), Json));
+        app.MapPost("/api/push/subscribe", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<PushRemote.SubscribeRequest>(ctx).ConfigureAwait(false);
+            var result = PushRemote.Subscribe(_pushSubscriptions, body);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
+        });
+        app.MapDelete("/api/push/subscribe", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<PushRemote.SubscribeRequest>(ctx).ConfigureAwait(false);
+            var result = PushRemote.Unsubscribe(_pushSubscriptions, body?.Endpoint);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
         });
 
         // 송출 미리보기 썸네일 (토큰은 쿼리스트링으로 — <img> 헤더 불가). 프레임 없으면 204.
@@ -1241,6 +1289,39 @@ public sealed class RemoteControlServer : IRemoteControlServer
         using var stream = assembly.GetManifestResourceStream(name)!;
         using var reader = new StreamReader(stream, Encoding.UTF8);
         return reader.ReadToEnd();
+    }
+
+    /// <summary>Reads an embedded text asset by filename suffix (PWA manifest/service worker/SVG).</summary>
+    private static string LoadEmbeddedText(string suffix)
+    {
+        using var stream = OpenEmbedded(suffix);
+        if (stream is null)
+        {
+            return string.Empty;
+        }
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
+    }
+
+    /// <summary>Reads an embedded binary asset by filename suffix (PWA icons).</summary>
+    private static byte[] LoadEmbeddedBytes(string suffix)
+    {
+        using var stream = OpenEmbedded(suffix);
+        if (stream is null)
+        {
+            return [];
+        }
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
+        return buffer.ToArray();
+    }
+
+    private static Stream? OpenEmbedded(string suffix)
+    {
+        var assembly = Assembly.GetExecutingAssembly();
+        var name = assembly.GetManifestResourceNames()
+            .FirstOrDefault(n => n.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+        return name is null ? null : assembly.GetManifestResourceStream(name);
     }
 
     private sealed record PairRequest(string? Pin);

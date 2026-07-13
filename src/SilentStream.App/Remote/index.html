@@ -4,7 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0e1218" />
   <title>Media Capture Helper 원격</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
   <style>
     :root { --bg:#0e1218; --card:#151e2a; --card-soft:#111923; --line:#293b4f; --fg:#f2f6fb; --muted:#94a4b8;
             --accent:#73b5ff; --accent-strong:#9bd0ff; --green:#56dd97; --yellow:#f4c44e; --red:#ee767c; }
@@ -267,6 +271,11 @@
       <h2>교시 자료 <span class="muted">음성 · YouTube 자막</span></h2>
       <p class="muted" style="margin-top:0">음성은 이 PC의 원본 녹화에서 내보냅니다. 자막은 업로드한 채널에서 준비된 자막만 받을 수 있습니다.</p>
       <div id="assetList"><div class="muted">교시 자료를 불러오는 중입니다.</div></div>
+    </div>
+
+    <div class="card hidden" id="pushCard">
+      <div class="card-lead"><h2>폰 알림</h2><small>상태 변화를 잠금화면으로</small></div>
+      <button class="ghost" id="pushToggle">🔔 폰 알림 켜기</button>
     </div>
 
     <button class="ghost" id="unpair">이 호실 연결 해제</button>
@@ -639,6 +648,7 @@
       renderedSplitKey = ""; // 다른 호실의 승인 카드가 남지 않게 강제 재렌더
       $("splitArea").classList.add("hidden");
       startDash();
+      refreshPushButton();
     }
     function openDemo(){
       cur = { label:"201호", baseUrl:"", token:"demo" };
@@ -1173,6 +1183,76 @@
 
     // 하드웨어/제스처 뒤로가기: 그리드에서 들어간 하위 화면(상세·페어링)을 그리드 복귀로 되돌린다.
     // 단일 호실이거나 이미 그리드면 관여하지 않는다(항목이 그대로 pop돼 기존처럼 페이지를 떠난다).
+    // ---- 폰 알림 (PWA Web Push, 원격 컨트롤러 개선 Phase 3) ----
+    // 서비스워커·푸시는 보안 컨텍스트(HTTPS)에서만 동작 → LAN 평문이나 미지원 브라우저에서는 카드가 숨는다.
+    // (그 경우 텔레그램 알림이 계속 담당한다.) 브라우저 구독은 서비스워커당 1개라, 다중 호실이면 마지막으로
+    // 켠 호실의 알림만 온다 — 모든 호실 알림엔 공유 VAPID 키 배포가 필요(후속 과제, docs/PHASE3_4_PWA_PUSH.md).
+    const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    let swReg = null;
+
+    async function registerServiceWorker(){
+      if (!pushSupported || demoMode) return;
+      try { swReg = await navigator.serviceWorker.register("/service-worker.js"); }
+      catch(e){ swReg = null; }
+    }
+
+    function urlBase64ToUint8Array(base64){
+      const pad = "=".repeat((4 - base64.length % 4) % 4);
+      const raw = atob((base64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+      return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+    }
+
+    async function currentPushSub(){
+      try { return swReg ? await swReg.pushManager.getSubscription() : null; } catch(e){ return null; }
+    }
+
+    async function refreshPushButton(){
+      const card = $("pushCard"), btn = $("pushToggle");
+      if (!card) return;
+      if (!pushSupported || demoMode || !cur || cur.token === "demo"){ card.classList.add("hidden"); return; }
+      card.classList.remove("hidden");
+      const on = !!(await currentPushSub());
+      btn.textContent = on ? "🔕 폰 알림 끄기" : "🔔 폰 알림 켜기";
+      btn.dataset.on = on ? "1" : "";
+    }
+
+    async function enablePush(){
+      if (!swReg) await registerServiceWorker();
+      if (!swReg){ toast("이 브라우저·연결에서는 알림을 쓸 수 없습니다 (HTTPS 필요)."); return; }
+      const room = cur;
+      if (await Notification.requestPermission() !== "granted"){ toast("알림 권한이 거부되었습니다."); return; }
+      let key;
+      try { key = (await (await api(room, "/api/push/vapid")).json()).publicKey; }
+      catch(e){ toast("서버에서 알림 키를 받지 못했습니다."); return; }
+      // 기존 구독이 다른 호실(다른 VAPID 키)로 돼 있으면 교체해야 한다.
+      const existing = await currentPushSub();
+      if (existing){ try { await existing.unsubscribe(); } catch(e){} }
+      let sub;
+      try {
+        sub = await swReg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key)
+        });
+      } catch(e){ toast("구독에 실패했습니다."); return; }
+      try {
+        const res = await api(room, "/api/push/subscribe", { method:"POST", body: JSON.stringify(sub) });
+        if (cur === room){ toast(res.ok ? "폰 알림을 켰습니다." : "서버 등록에 실패했습니다."); refreshPushButton(); }
+      } catch(e){ if (cur === room) toast("서버 등록에 실패했습니다."); }
+    }
+
+    async function disablePush(){
+      const room = cur;
+      const sub = await currentPushSub();
+      if (sub){
+        const endpoint = sub.endpoint;
+        try { await sub.unsubscribe(); } catch(e){}
+        try { await api(room, "/api/push/subscribe", { method:"DELETE", body: JSON.stringify({ endpoint }) }); } catch(e){}
+      }
+      toast("폰 알림을 껐습니다.");
+      refreshPushButton();
+    }
+
+    (function(){ const b = $("pushToggle"); if (b) b.onclick = () => b.dataset.on ? disablePush() : enablePush(); })();
+
     window.onpopstate = () => { if (rooms.length > 1 && view !== "grid") openGrid(); };
 
     if (demoMode) openDemo();
@@ -1180,6 +1260,7 @@
       rooms = loadRooms();
       $("problemOnly").checked = localStorage.getItem("ss_problem_only")==="1";
       enter();
+      registerServiceWorker();
     }
   </script>
 </body>

@@ -32,6 +32,12 @@ public static class AppPaths
     /// <summary>Approval-based split state (승인 기반 교시 분할): pending cuts + open 연강 chain.</summary>
     public static string PendingSplitsFile => Path.Combine(AppDataDir, "pending_splits.json");
 
+    /// <summary>Web Push subscriptions (원격 컨트롤러 개선 Phase 3). Not sensitive — endpoint + public keys.</summary>
+    public static string PushSubscriptionsFile => Path.Combine(AppDataDir, "push_subscriptions.json");
+
+    /// <summary>VAPID keypair (원격 컨트롤러 개선 Phase 3). The private scalar is DPAPI-encrypted at rest.</summary>
+    public static string VapidKeysFile => Path.Combine(AppDataDir, "vapid_keys.json");
+
     /// <summary>
     /// Durable download assets for completed period VODs. This is intentionally separate from
     /// <see cref="VodDir"/>: the upload worker removes its temporary MP4 after YouTube accepts it,

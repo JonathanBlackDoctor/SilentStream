@@ -63,6 +63,15 @@ public static class ServiceCollectionExtensions
         // 평문 토큰 즉시 암호화(MigratePlaintextTokenAtRest) 호출을 위해 구체 타입으로도 노출한다.
         services.AddSingleton<TelegramNotifier>();
         services.AddSingleton<INotifier>(sp => sp.GetRequiredService<TelegramNotifier>());
+        // 폰 PWA Web Push(Phase 3): 텔레그램과 나란히 붙는 2번째 INotifier — HealthNotificationService가
+        // IEnumerable<INotifier>로 둘 다 팬아웃한다. 구독 목록·VAPID 키는 config가 아닌 전용 파일에 두어
+        // 스키마를 건드리지 않는다. 서비스워커/푸시는 보안 컨텍스트가 필요하므로 실제 수신은 HTTPS(Cloudflare
+        // 호스트네임)에서만 되고, LAN 평문 경로는 텔레그램이 계속 담당한다.
+        services.AddSingleton<IPushSubscriptionStore>(_ => new PushSubscriptionStore(AppPaths.PushSubscriptionsFile));
+        services.AddSingleton<IVapidKeyStore>(sp =>
+            new VapidKeyStore(AppPaths.VapidKeysFile, sp.GetRequiredService<ITokenProtector>()));
+        services.AddSingleton<WebPushNotifier>();
+        services.AddSingleton<INotifier>(sp => sp.GetRequiredService<WebPushNotifier>());
         services.AddSingleton<HealthNotificationService>();
         return services;
     }

@@ -37,9 +37,16 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
-  <!-- 모바일 원격 제어 웹 UI는 어셈블리에 임베드(별도 정적 파일 배포 불필요). -->
+  <!-- 모바일 원격 제어 웹 UI + PWA 자산(매니페스트·서비스워커·아이콘)은 어셈블리에 임베드
+       (별도 정적 파일 배포 불필요). RemoteControlServer가 임베디드 리소스로 서빙한다. -->
   <ItemGroup>
     <EmbeddedResource Include="Remote\index.html" />
+    <EmbeddedResource Include="Remote\manifest.webmanifest" />
+    <EmbeddedResource Include="Remote\service-worker.js" />
+    <EmbeddedResource Include="Remote\icon.svg" />
+    <EmbeddedResource Include="Remote\icon-192.png" />
+    <EmbeddedResource Include="Remote\icon-512.png" />
+    <EmbeddedResource Include="Remote\icon-maskable.png" />
   </ItemGroup>
 
   <ItemGroup>
