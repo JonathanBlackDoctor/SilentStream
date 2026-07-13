@@ -16,11 +16,37 @@ public static class AppPaths
     /// <summary>OAuth client credentials file (never committed — see docs/CLAUDE.local.md.template).</summary>
     public static string ClientSecretFile => Path.Combine(AppDataDir, "client_secret.json");
 
+    /// <summary>
+    /// DPAPI-encrypted OAuth credential used only for authorized YouTube caption downloads. It is
+    /// separate from the live-stream token so granting <c>youtube.force-ssl</c> does not disrupt
+    /// an existing broadcast login.
+    /// </summary>
+    public static string YouTubeCaptionTokenFile => Path.Combine(AppDataDir, "youtube_caption_token.dat");
+
     /// <summary>Scratch folder for per-period VOD cuts awaiting upload (확장계획서 §4.1).</summary>
     public static string VodDir => Path.Combine(AppDataDir, "vod");
 
     /// <summary>Persistent, quota-aware upload queue (확장계획서 §4.2). Not sensitive.</summary>
     public static string UploadQueueFile => Path.Combine(AppDataDir, "upload_queue.json");
+
+    /// <summary>Approval-based split state (승인 기반 교시 분할): pending cuts + open 연강 chain.</summary>
+    public static string PendingSplitsFile => Path.Combine(AppDataDir, "pending_splits.json");
+
+    /// <summary>
+    /// Durable download assets for completed period VODs. This is intentionally separate from
+    /// <see cref="VodDir"/>: the upload worker removes its temporary MP4 after YouTube accepts it,
+    /// while exported audio remains available to the paired operator.
+    /// </summary>
+    public static string PeriodAssetsDir => Path.Combine(AppDataDir, "period-assets");
+
+    /// <summary>Metadata catalogue for <see cref="PeriodAssetsDir"/>.</summary>
+    public static string PeriodAssetsFile => Path.Combine(PeriodAssetsDir, "assets.json");
+
+    /// <summary>
+    /// Locally-exported audio from this app's own period recordings. It is never downloaded from
+    /// YouTube, which keeps the feature within YouTube API policy.
+    /// </summary>
+    public static string PeriodAudioDir => Path.Combine(PeriodAssetsDir, "audio");
 
     public static string DefaultRecordingFolder
     {
