@@ -15,4 +15,14 @@ public interface IVodSegmentService
     /// or the cut fails (best-effort; the app must not crash — 확장계획서 AC E2.3).
     /// </summary>
     Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct);
+
+    /// <summary>
+    /// Extracts an arbitrary [start, end] wall-clock window from an explicit session snapshot —
+    /// the approval-based split path (adjusted boundaries, merged 연강 periods, cuts executed
+    /// after the session ended or the app restarted). <paramref name="fileBaseLabel"/> names the
+    /// output file ("1교시", "1~2교시"). Same best-effort null semantics as ExtractPeriodAsync.
+    /// </summary>
+    Task<string?> ExtractRangeAsync(
+        RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
+        CancellationToken ct);
 }

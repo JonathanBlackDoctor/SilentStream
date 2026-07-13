@@ -38,38 +38,45 @@ public sealed class VodSegmentService : IVodSegmentService
         _outputDir = outputDir;
     }
 
-    public async Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct)
+    public Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct)
     {
         var session = _sessionInfo.Current;
         if (session is null)
         {
             _log.Warn($"{period.PeriodNumber}교시 컷 건너뜀: 진행 중인 세션 녹화가 없습니다.");
-            return null;
+            return Task.FromResult<string?>(null);
         }
+        return ExtractRangeAsync(session, period.StartLocal, period.EndLocal, $"{period.PeriodNumber}교시", ct);
+    }
+
+    public async Task<string?> ExtractRangeAsync(
+        RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
+        CancellationToken ct)
+    {
         if (!File.Exists(session.FilePath))
         {
-            _log.Warn($"{period.PeriodNumber}교시 컷 건너뜀: 세션 파일을 찾을 수 없습니다 ({session.FilePath}).");
+            _log.Warn($"{fileBaseLabel} 컷 건너뜀: 세션 파일을 찾을 수 없습니다 ({session.FilePath}).");
             return null;
         }
 
-        // File offsets: position 0 of the mp4 == session.StartLocal. Clamp a period that began
+        // File offsets: position 0 of the mp4 == session.StartLocal. Clamp a window that began
         // before recording started to offset 0 (we only have what was recorded — §4.1 best-effort).
-        var startOffset = period.StartLocal - session.StartLocal;
+        var startOffset = startLocal - session.StartLocal;
         if (startOffset < TimeSpan.Zero)
         {
             startOffset = TimeSpan.Zero;
         }
-        var endOffset = period.EndLocal - session.StartLocal;
+        var endOffset = endLocal - session.StartLocal;
         var duration = endOffset - startOffset;
         if (duration <= TimeSpan.Zero)
         {
-            _log.Warn($"{period.PeriodNumber}교시 컷 건너뜀: 추출 가능한 구간이 없습니다 " +
-                     $"(세션 시작 {session.StartLocal:HH:mm:ss}, 교시 {period.StartLocal:HH:mm:ss}~{period.EndLocal:HH:mm:ss}).");
+            _log.Warn($"{fileBaseLabel} 컷 건너뜀: 추출 가능한 구간이 없습니다 " +
+                     $"(세션 시작 {session.StartLocal:HH:mm:ss}, 구간 {startLocal:HH:mm:ss}~{endLocal:HH:mm:ss}).");
             return null;
         }
 
         Directory.CreateDirectory(_outputDir);
-        var outputPath = BuildOutputPath(period);
+        var outputPath = BuildOutputPath(fileBaseLabel, DateOnly.FromDateTime(startLocal));
 
         var args = string.Join(' ',
             "-hide_banner", "-loglevel warning", "-y",
@@ -81,7 +88,7 @@ public sealed class VodSegmentService : IVodSegmentService
             "-c copy", "-avoid_negative_ts make_zero", "-movflags +faststart",
             $"\"{outputPath}\"");
 
-        _log.Info($"{period.PeriodNumber}교시 무손실 컷 시작: +{Seconds(startOffset)}s, {Seconds(duration)}s 길이.");
+        _log.Info($"{fileBaseLabel} 무손실 컷 시작: +{Seconds(startOffset)}s, {Seconds(duration)}s 길이.");
 
         try
         {
@@ -90,12 +97,12 @@ public sealed class VodSegmentService : IVodSegmentService
 
             if (exitCode != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
             {
-                _log.Warn($"{period.PeriodNumber}교시 컷 실패 (exit={exitCode}). {Tail(output)}");
+                _log.Warn($"{fileBaseLabel} 컷 실패 (exit={exitCode}). {Tail(output)}");
                 TryDelete(outputPath);
                 return null;
             }
 
-            _log.Info($"{period.PeriodNumber}교시 컷 완료: {Path.GetFileName(outputPath)} " +
+            _log.Info($"{fileBaseLabel} 컷 완료: {Path.GetFileName(outputPath)} " +
                      $"({new FileInfo(outputPath).Length / (1024.0 * 1024.0):F1} MB)");
             return outputPath;
         }
@@ -106,15 +113,15 @@ public sealed class VodSegmentService : IVodSegmentService
         }
         catch (Exception ex)
         {
-            _log.Error($"{period.PeriodNumber}교시 컷 중 오류", ex);
+            _log.Error($"{fileBaseLabel} 컷 중 오류", ex);
             TryDelete(outputPath);
             return null;
         }
     }
 
-    private string BuildOutputPath(PeriodBoundary period)
+    private string BuildOutputPath(string fileBaseLabel, DateOnly date)
     {
-        var baseName = $"{period.PeriodNumber}교시_{period.Date:yyyy-MM-dd}";
+        var baseName = $"{fileBaseLabel}_{date:yyyy-MM-dd}";
         var path = Path.Combine(_outputDir, baseName + ".mp4");
         for (var n = 2; File.Exists(path); n++)
         {

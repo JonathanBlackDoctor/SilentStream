@@ -91,6 +91,40 @@ public class VodSegmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Range_cut_uses_the_snapshot_session_and_merged_label_filename()
+    {
+        var sessionFile = MakeSessionFile();
+        var sessionStart = new DateTime(2026, 6, 14, 8, 59, 0);
+        // Current is null on purpose: the approval path passes its own session snapshot, so the
+        // cut must work after the live session ended or was replaced (e.g. app restart).
+        var service = Create(session: null);
+
+        var result = await service.ExtractRangeAsync(
+            new RecordingSession(sessionFile, sessionStart),
+            new DateTime(2026, 6, 14, 9, 0, 0), new DateTime(2026, 6, 14, 10, 50, 0),
+            "1~2교시", CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal("1~2교시_2026-06-14.mp4", Path.GetFileName(result));
+        Assert.Equal(60d, ParseArg(_runner.LastArgs, "-ss"), 3);
+        Assert.Equal(6600d, ParseArg(_runner.LastArgs, "-t"), 3); // 09:00→10:50
+        Assert.Contains(sessionFile, _runner.LastArgs);
+    }
+
+    [Fact]
+    public async Task Range_cut_returns_null_when_the_snapshot_file_is_gone()
+    {
+        // A long-pending split can outlive its session file (retention/disk cleanup).
+        var service = Create(session: null);
+
+        Assert.Null(await service.ExtractRangeAsync(
+            new RecordingSession(Path.Combine(_dir, "deleted.mp4"), new DateTime(2026, 6, 14, 8, 59, 0)),
+            new DateTime(2026, 6, 14, 9, 0, 0), new DateTime(2026, 6, 14, 9, 50, 0),
+            "1교시", CancellationToken.None));
+        Assert.False(_runner.WasCalled);
+    }
+
+    [Fact]
     public async Task Returns_null_and_does_not_crash_when_ffmpeg_fails()
     {
         var sessionFile = MakeSessionFile();

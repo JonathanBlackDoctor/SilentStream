@@ -109,4 +109,36 @@ public class PeriodTitleTemplaterTests
 
         Assert.Equal("1교시 - 2026-06-23", result);
     }
+
+    [Fact]
+    public void Merged_periods_render_first_to_last()
+    {
+        var result = TitleTemplater.Expand(
+            "[{호실}] {교시}교시 - {yyyy-MM-dd}", new DateTime(2026, 6, 14), new[] { 1, 2 }, "201호");
+
+        Assert.Equal("[201호] 1~2교시 - 2026-06-14", result);
+    }
+
+    [Fact]
+    public void Merged_padded_period_token_pads_each_end()
+    {
+        Assert.Equal("01~03교시",
+            TitleTemplater.Expand("{교시:00}교시", new DateTime(2026, 6, 14), new[] { 1, 2, 3 }));
+    }
+
+    [Fact]
+    public void Single_element_merge_matches_the_int_overload()
+    {
+        Assert.Equal(
+            TitleTemplater.Expand("{교시}교시 - {yyyy-MM-dd}", new DateTime(2026, 6, 14), 1),
+            TitleTemplater.Expand("{교시}교시 - {yyyy-MM-dd}", new DateTime(2026, 6, 14), new[] { 1 }));
+    }
+
+    [Fact]
+    public void Period_label_file_base_formats_single_and_merged_runs()
+    {
+        Assert.Equal("1교시", PeriodLabel.FileBase([1]));
+        Assert.Equal("1~2교시", PeriodLabel.FileBase([1, 2]));
+        Assert.Equal("5~8교시", PeriodLabel.FileBase([5, 6, 7, 8]));
+    }
 }

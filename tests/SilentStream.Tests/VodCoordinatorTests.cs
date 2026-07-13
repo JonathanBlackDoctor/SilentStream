@@ -89,6 +89,10 @@ public class VodCoordinatorTests : IDisposable
         public string? ResultPath = "/vod/x.mp4";
         public Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct) =>
             Task.FromResult(ResultPath);
+        public Task<string?> ExtractRangeAsync(
+            RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
+            CancellationToken ct) =>
+            Task.FromResult(ResultPath);
     }
 
     private sealed class FakeQueue : IUploadQueue

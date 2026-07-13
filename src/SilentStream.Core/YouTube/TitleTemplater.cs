@@ -44,18 +44,27 @@ public static partial class TitleTemplater
     /// e.g. "[{호실}] {교시}교시 - {yyyy-MM-dd}" + (2026-06-14, 1, "201호") → "[201호] 1교시 - 2026-06-14".
     /// </summary>
     public static string Expand(string template, DateTime timestamp, int periodNumber, string? roomName = null) =>
+        Expand(template, timestamp, [periodNumber], roomName);
+
+    /// <summary>
+    /// Merged-periods overload (연강 승인 분할): {교시} renders <see cref="Models.PeriodLabel"/>'s
+    /// first~last form — "1" for a single period, "1~3" for a merged run; {교시:00} pads each end
+    /// ("01~03"). Everything else behaves like the single-period overload.
+    /// </summary>
+    public static string Expand(
+        string template, DateTime timestamp, IReadOnlyList<int> periods, string? roomName = null) =>
         TokenRegex().Replace(ApplyRoom(template, roomName), m =>
         {
             var token = m.Groups[1].Value;
             if (token == "교시")
             {
-                return periodNumber.ToString();
+                return Models.PeriodLabel.Token(periods);
             }
             if (token.StartsWith("교시:", StringComparison.Ordinal))
             {
                 try
                 {
-                    return periodNumber.ToString(token["교시:".Length..]);
+                    return Models.PeriodLabel.Token(periods, token["교시:".Length..]);
                 }
                 catch (FormatException)
                 {

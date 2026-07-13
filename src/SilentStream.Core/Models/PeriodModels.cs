@@ -33,3 +33,24 @@ public sealed record PeriodBoundary(
     int PeriodNumber,
     DateTime StartLocal,
     DateTime EndLocal);
+
+/// <summary>
+/// Formats a (possibly merged, 연강) run of period numbers for titles and file names:
+/// [1] → "1", [1,2,3] → "1~3" (first~last). Shared by the {교시} title token and the VOD
+/// output file name so the two never drift apart.
+/// </summary>
+public static class PeriodLabel
+{
+    /// <summary>The bare {교시} token value; <paramref name="numericFormat"/> pads each end ("01~03").</summary>
+    public static string Token(IReadOnlyList<int> periods, string? numericFormat = null)
+    {
+        var first = Format(periods[0], numericFormat);
+        return periods.Count == 1 ? first : $"{first}~{Format(periods[^1], numericFormat)}";
+    }
+
+    /// <summary>File-name base, e.g. "1교시" / "1~2교시" ('~' is a valid Windows filename char).</summary>
+    public static string FileBase(IReadOnlyList<int> periods) => Token(periods) + "교시";
+
+    private static string Format(int n, string? numericFormat) =>
+        numericFormat is null ? n.ToString() : n.ToString(numericFormat);
+}
