@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Serialization;
 
 namespace SilentStream.Core.Models;
@@ -15,10 +16,12 @@ public sealed class AppConfig
     /// step (see <see cref="AudioConfig.MicsSeeded"/>); v5 adds the per-device room label
     /// (<see cref="DeviceName"/>) for multi-PC single-channel deployments; v6 adds the phone
     /// push-notification section (<see cref="Notifications"/>); v7 adds the adaptive
-    /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>). Missing keys deserialize
-    /// to their defaults, so an older file loads cleanly and is migrated on the next save.
+    /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>); v8 adds approval-based
+    /// period splitting (<see cref="PeriodsConfig.RequireApproval"/>) and seeds the built-in
+    /// Mon–Fri timetable when no schedule exists. Missing keys deserialize to their defaults,
+    /// so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -264,6 +267,62 @@ public sealed class PeriodsConfig
 
     /// <summary>"immediate-throttled" (default, D10) or "after-hours".</summary>
     public string UploadTiming { get; set; } = "immediate-throttled";
+
+    /// <summary>Default auto-approve delay for pending splits, minutes. Single source of truth.</summary>
+    public const int DefaultAutoApproveMinutes = 15;
+
+    /// <summary>
+    /// true (default, v8): a period end creates a pending split the operator approves / adjusts /
+    /// merges from the phone before anything is cut or uploaded. false = legacy behaviour, cut +
+    /// upload immediately at the boundary.
+    /// </summary>
+    public bool RequireApproval { get; set; } = true;
+
+    /// <summary>
+    /// Minutes after a period boundary before an untouched pending split is auto-approved at its
+    /// default times (so an unattended room still converges on the legacy result). null = wait
+    /// forever, manual approval only. Added in schema v8.
+    /// </summary>
+    public int? AutoApproveMinutes { get; set; } = DefaultAutoApproveMinutes;
+
+    /// <summary>
+    /// The built-in school timetable (v8): eight 60-minute periods from 08:25, lunch 12:25~13:25
+    /// left as a plain gap (not a period → never cut/uploaded).
+    /// </summary>
+    public static List<PeriodEntry> DefaultWeekdayEntries()
+    {
+        var entries = new List<PeriodEntry>();
+        var start = new TimeOnly(8, 25);
+        for (var no = 1; no <= 8; no++)
+        {
+            if (no == 5)
+            {
+                start = new TimeOnly(13, 25); // resume after the lunch gap
+            }
+            var end = start.AddHours(1);
+            entries.Add(new PeriodEntry
+            {
+                No = no,
+                Start = start.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
+                End = end.ToString("HH:mm:ss", CultureInfo.InvariantCulture)
+            });
+            start = end;
+        }
+        return entries;
+    }
+
+    /// <summary>Fills Mon–Fri with the built-in timetable (weekends stay empty).</summary>
+    public void SeedDefaultTimetable()
+    {
+        foreach (var day in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
+        {
+            WeekdayDefaults[day] = DefaultWeekdayEntries();
+        }
+    }
+
+    /// <summary>True if any weekday default holds at least one period row (guards the v8 seed).</summary>
+    public bool HasAnyWeekdayPeriods() =>
+        WeekdayDefaults is not null && WeekdayDefaults.Values.Any(list => list is { Count: > 0 });
 }
 
 /// <summary>One timetable row as stored in config.json: {"no":1,"start":"09:00:00","end":"09:50:00"}.</summary>

@@ -39,6 +39,11 @@ public sealed class ConfigStore : IConfigStore
                 // machine whose config merely failed to parse.
                 var fresh = AppConfig.CreateDefault();
                 fresh.DeviceName = Environment.MachineName;
+                // Same rationale for the timetable: a brand-new install gets the built-in Mon–Fri
+                // schedule (CreateDefault is already v8, so the migration block won't seed it), while
+                // the corrupt-file fallback stays bare — a machine whose config merely failed to
+                // parse must never conjure a schedule and start cutting VODs.
+                fresh.Periods.SeedDefaultTimetable();
                 return WithRuntimeDefaults(fresh);
             }
 
@@ -190,6 +195,21 @@ public sealed class ConfigStore : IConfigStore
         if (config.Version < 7)
         {
             config.Version = 7;
+        }
+
+        // v8 migration: approval-based period splitting + built-in default timetable. The timetable
+        // is seeded ONLY when every weekday list is empty — an operator-entered schedule (any day)
+        // is never touched. RequireApproval/AutoApproveMinutes are additive: a pre-v8 file simply
+        // gains the C# defaults (approval on, auto-approve after 15 min).
+        config.Periods.WeekdayDefaults ??= new Dictionary<string, List<PeriodEntry>>();
+        config.Periods.Overrides ??= new Dictionary<string, List<PeriodEntry>>();
+        if (config.Version < 8)
+        {
+            if (!config.Periods.HasAnyWeekdayPeriods())
+            {
+                config.Periods.SeedDefaultTimetable();
+            }
+            config.Version = 8;
         }
         return config;
     }
