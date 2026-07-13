@@ -21,7 +21,7 @@
     button { font:inherit; font-weight:750; border:none; border-radius:12px; padding:13px 16px; color:#07111c;
              background:var(--accent); width:100%; margin-top:7px; cursor:pointer; transition:transform .15s,filter .15s; }
     button:active { transform:translateY(1px); filter:brightness(.94); }
-    button.stop { color:#ffd7d8; background:#3e222b; border:1px solid #79404a; } button.ghost { color:#c2d2e4; background:#202b39; border:1px solid #35475a; }
+    button.stop { color:#ffd7d8; background: linear-gradient(to right, rgba(255,255,255,0.18) var(--hold, 0%), #3e222b var(--hold, 0%)); border:1px solid #79404a; } button.ghost { color:#c2d2e4; background:#202b39; border:1px solid #35475a; }
     button:disabled { opacity:.38; }
     .btnrow { display:flex; gap:8px; } .btnrow button { margin-top:0; }
     input { font:inherit; background:#0d141e; border:1px solid var(--line); color:var(--fg);
@@ -76,7 +76,7 @@
     .command-actions { padding:13px 19px 18px; border-top:1px solid rgba(121,160,200,.22); background:rgba(8,15,24,.22); }
     .command-actions > button { min-height:48px; margin:0; }
     .command-actions .btnrow { margin-top:8px; }
-    .command-actions .stopHalf { color:#ffe1ae; background:#513b1d; border:1px solid #806135; }
+    .command-actions .stopHalf { color:#ffe1ae; background: linear-gradient(to right, rgba(255,255,255,0.18) var(--hold, 0%), #513b1d var(--hold, 0%)); border:1px solid #806135; }
     .action-hint { margin:9px 1px 0; color:#92a6bd; font-size:11px; line-height:1.45; }
     /* ---- 교시 승인 카드 (승인 기반 분할 v8): 경계 도달 시 최상단에 뜨는 1차 상호작용 ---- */
     .split-card { border-color:#4d7fb4; background:linear-gradient(140deg,#1b3049,#131c29 70%); }
@@ -119,7 +119,7 @@
                     padding:18px; width:100%; max-width:340px; }
     #confirm .title { font-weight:700; font-size:16px; margin:0 0 6px; }
     #confirm .desc { color:var(--muted); font-size:14px; margin:0 0 14px; white-space:pre-line; }
-    button.stopHalf { background:#7a4a12; } /* 방송만 중지: 전체 중지(빨강)와 시각적으로 구분 */
+    button.stopHalf { background: linear-gradient(to right, rgba(255,255,255,0.18) var(--hold, 0%), #7a4a12 var(--hold, 0%)); } /* 방송만 중지: 전체 중지(빨강)와 시각적으로 구분 */
     /* ---- 멀티 호실 그리드 (Phase 2) ---- */
     .gridbar { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:10px; }
     .gridbar button { width:auto; margin:0; padding:8px 14px; font-size:13px; }
@@ -693,21 +693,78 @@
       try { await api(cur, "/api/live/start", {method:"POST"}); toast("라이브 시작 요청"); }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
     };
-    // 안전장치: 어떤 중지든 확인 모달을 통과해야 실행된다(실수 방지).
-    $("stopBroadcastBtn").onclick = async () => {
+    // 안전장치: 어떤 중지든 2초간 꾹 누른 뒤 확인 모달을 통과해야 실행된다(실수 방지).
+    function makeHoldable(btnId, holdTimeMs, onTrigger) {
+      const btn = $(btnId);
+      if (!btn) return;
+
+      let animFrame = null;
+      let startTime = null;
+      let wasTriggered = false;
+
+      function startHold(e) {
+        if (btn.disabled) return;
+        wasTriggered = false;
+        startTime = Date.now();
+        btn.style.setProperty('--hold', '0%');
+
+        function tick() {
+          if (wasTriggered) return;
+          const elapsed = Date.now() - startTime;
+          const progress = Math.min(100, (elapsed / holdTimeMs) * 100);
+          btn.style.setProperty('--hold', `${progress}%`);
+
+          if (progress >= 100) {
+            wasTriggered = true;
+            cancelHold();
+            onTrigger();
+          } else {
+            animFrame = requestAnimationFrame(tick);
+          }
+        }
+        animFrame = requestAnimationFrame(tick);
+      }
+
+      function cancelHold() {
+        if (animFrame) {
+          cancelAnimationFrame(animFrame);
+          animFrame = null;
+        }
+        btn.style.setProperty('--hold', '0%');
+      }
+
+      btn.onclick = (e) => {
+        if (!wasTriggered) {
+          toast("중지하려면 버튼을 2초간 꾹 누르세요.");
+        }
+      };
+
+      // 마우스 이벤트
+      btn.addEventListener('mousedown', startHold);
+      btn.addEventListener('mouseleave', cancelHold);
+      window.addEventListener('mouseup', cancelHold);
+
+      // 터치 이벤트
+      btn.addEventListener('touchstart', startHold, { passive: true });
+      btn.addEventListener('touchend', cancelHold);
+      btn.addEventListener('touchcancel', cancelHold);
+    }
+
+    makeHoldable("stopBroadcastBtn", 2000, async () => {
       const room = cur;
       if (!await confirmAsk("방송만 중지할까요?",
         "유튜브 송출만 끝나고 로컬 녹화는 계속됩니다.\n녹화 파일은 이 시점부터 새 파일로 이어집니다.\n다시 방송하려면 전체 중지 후 라이브 시작을 누르세요.",
         "방송 중지")) return;
-      if (cur !== room) return; // 확인하는 사이 다른 호실로 이동함
+      if (cur !== room) return;
       try {
         const d = await (await api(cur, "/api/live/stop-broadcast", {method:"POST"})).json();
         toast(d.ok ? "방송 중지 요청 — 녹화는 계속됩니다"
                    : "지금은 방송을 중지할 수 없습니다(재연결 중) — 잠시 후 다시 시도하세요.");
       }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
-    };
-    $("stopBtn").onclick = async () => {
+    });
+
+    makeHoldable("stopBtn", 2000, async () => {
       const room = cur;
       if (!await confirmAsk("방송과 녹화를 모두 중지할까요?",
         "유튜브 송출과 로컬 백업 녹화가 모두 끝납니다.",
@@ -715,7 +772,7 @@
       if (cur !== room) return;
       try { await api(cur, "/api/live/stop", {method:"POST"}); toast("전체 중지 요청"); }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
-    };
+    });
 
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
