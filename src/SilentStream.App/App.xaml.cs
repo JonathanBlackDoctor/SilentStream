@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SilentStream.App.ControlUI;
 using SilentStream.App.Hotkeys;
 using SilentStream.App.Preview;
+using SilentStream.App.Provisioning;
 using SilentStream.App.Remote;
 using SilentStream.App.StatusIndicator;
 using SilentStream.App.Updates;
@@ -13,6 +14,7 @@ using SilentStream.Core.Contracts;
 using SilentStream.Core.DependencyInjection;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
+using SilentStream.Core.Provisioning;
 using SilentStream.Media.Windows;
 
 namespace SilentStream.App;
@@ -63,6 +65,12 @@ public partial class App : Application
             Shutdown();
             return;
         }
+
+        // New installer flow: when the release contains a non-secret provisioning bootstrap,
+        // choose a room once and fetch only that room's tunnel settings over HTTPS. Existing
+        // deployments are marked complete by the v9 config migration, so updates never reopen it.
+        EnsureRoomProvisioning(_services, configStore, log);
+        config = configStore.Load();
 
         // 첫 실행: 연결된 모든 실제 마이크를 믹서 소스로 시드한다(시스템 + 마이크 전부). 기본값이
         // 무신호 장치 하나만 잡아 무음이 됐던 2차 현장 문제를 막는다 — 한 마이크가 죽어도 다른
@@ -173,6 +181,76 @@ public partial class App : Application
         catch (Exception ex)
         {
             log.Warn($"오디오 소스 자동 시드 실패(기존 기본 마이크로 진행): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Shows the optional first-install room picker and persists its assignment without ever
+    /// writing a plaintext Cloudflare token. The modal can be deferred; in that case the app
+    /// continues with remote.mode=off and asks again at the next launch while provisioning remains
+    /// incomplete. A missing/invalid bootstrap is a non-fatal packaging issue, never a reason to
+    /// stop unattended local recording.
+    /// </summary>
+    private static void EnsureRoomProvisioning(
+        IServiceProvider services, IConfigStore configStore, ILogService log)
+    {
+        var config = configStore.Load();
+        if (config.Provisioning.Completed)
+        {
+            return;
+        }
+
+        var bootstrap = ProvisioningBootstrapLoader.TryLoad();
+        if (bootstrap is null)
+        {
+            return; // this installer was deliberately built without room provisioning enabled
+        }
+
+        // Persist the random identifier before the server claim. This lets the same PC retry a
+        // failed network/DPAPI attempt without being mistaken for a second machine.
+        var installationId = config.Provisioning.InstallationId;
+        if (string.IsNullOrWhiteSpace(installationId))
+        {
+            installationId = Guid.NewGuid().ToString("N");
+            var idToPersist = installationId;
+            configStore.Update(c => c.Provisioning.InstallationId = idToPersist);
+        }
+
+        try
+        {
+            using var client = new RoomProvisioningClient(bootstrap.ServiceUrl);
+            var dialog = new RoomProvisioningWindow(client, installationId);
+            dialog.ShowDialog();
+            if (dialog.Assignment is not { } assignment)
+            {
+                log.Info("호실 자동 설정을 나중으로 미뤘습니다. 원격 제어는 아직 꺼져 있습니다.");
+                return;
+            }
+
+            // Encrypt before ConfigStore.Update so the plaintext assignment token never appears in
+            // config.json, temporary files, or a second startup path.
+            var encryptedToken = services.GetRequiredService<ITokenProtector>()
+                .Protect(assignment.CloudflareTunnelToken);
+            configStore.Update(c =>
+            {
+                c.DeviceName = assignment.DisplayName;
+                c.Remote.Mode = "cloudflare";
+                c.Remote.Port = assignment.Port;
+                c.Remote.CloudflareHostname = assignment.CloudflareHostname;
+                c.Remote.CloudflareProtocol = assignment.CloudflareProtocol;
+                c.Remote.CloudflareTunnelToken = string.Empty;
+                c.Remote.CloudflareTunnelTokenEnc = encryptedToken;
+                c.Provisioning.RoomId = assignment.RoomId;
+                c.Provisioning.Completed = true;
+                c.Provisioning.CompletedAtUtc = DateTimeOffset.UtcNow;
+            });
+            log.Info($"호실 자동 설정 완료: {assignment.DisplayName} ({assignment.RoomId}).");
+        }
+        catch (Exception ex)
+        {
+            // The dialog already displays expected service errors. This catches packaging, DPAPI,
+            // and UI failures so a classroom PC can still record locally rather than fail startup.
+            log.Warn($"호실 자동 설정을 적용하지 못했습니다(원격 제어는 꺼진 상태로 시작): {ex.Message}");
         }
     }
 

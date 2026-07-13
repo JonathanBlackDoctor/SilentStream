@@ -21,6 +21,8 @@ jobs:
           dotnet restore tests/SilentStream.Tests/SilentStream.Tests.csproj
       - name: Build Core
         run: dotnet build src/SilentStream.Core/SilentStream.Core.csproj -c Release --no-restore
+      - name: Build room provisioning server
+        run: dotnet build src/SilentStream.ProvisioningServer/SilentStream.ProvisioningServer.csproj -c Release
       - name: Test
         run: dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release
       - name: Compile Windows media project (cross-targeting)
@@ -109,6 +111,24 @@ jobs:
             throw "Repo secret OAUTH_CLIENT_SECRET_JSON is not set (Settings > Secrets and variables > Actions)."
           }
           Set-Content -Path publish/client_secret.json -Value $env:CLIENT_SECRET_JSON -Encoding utf8 -NoNewline
+
+      # 3b) Optional first-install room provisioning bootstrap. It has only the HTTPS endpoint;
+      #     room tunnel tokens stay in the separately deployed provisioning service. Leaving the
+      #     repository variable empty keeps the picker disabled for ordinary/private builds.
+      - name: Bundle room provisioning bootstrap
+        shell: pwsh
+        env:
+          ROOM_PROVISIONING_URL: ${{ vars.ROOM_PROVISIONING_URL }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ROOM_PROVISIONING_URL)) {
+            Write-Host "ROOM_PROVISIONING_URL is not set; skipping optional room provisioning bootstrap."
+            exit 0
+          }
+          $uri = [Uri]$env:ROOM_PROVISIONING_URL
+          if ($uri.Scheme -ne "https" -or -not [string]::IsNullOrWhiteSpace($uri.Query) -or -not [string]::IsNullOrWhiteSpace($uri.Fragment)) {
+            throw "ROOM_PROVISIONING_URL must be a clean HTTPS base URL."
+          }
+          @{ serviceUrl = $uri.AbsoluteUri } | ConvertTo-Json | Set-Content -Path publish/provisioning.json -Encoding utf8
 
       # 4) Velopack CLI(vpk) — 라이브러리(1.2.0)와 버전을 맞춘다.
       - name: Install Velopack CLI

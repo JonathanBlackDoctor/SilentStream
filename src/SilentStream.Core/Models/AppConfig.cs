@@ -18,10 +18,11 @@ public sealed class AppConfig
     /// push-notification section (<see cref="Notifications"/>); v7 adds the adaptive
     /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>); v8 adds approval-based
     /// period splitting (<see cref="PeriodsConfig.RequireApproval"/>) and seeds the built-in
-    /// Mon–Fri timetable when no schedule exists. Missing keys deserialize to their defaults,
+    /// Mon–Fri timetable when no schedule exists; v9 adds first-install room provisioning
+    /// (<see cref="ProvisioningConfig"/>). Missing keys deserialize to their defaults,
     /// so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = 9;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -44,6 +45,14 @@ public sealed class AppConfig
 
     /// <summary>Phone push-notification settings (원격 컨트롤러 개선 Phase 1). Added in schema v6.</summary>
     public NotificationsConfig Notifications { get; set; } = new();
+
+    /// <summary>
+    /// First-install room provisioning state. The service URL lives in the non-secret bootstrap
+    /// file shipped next to the installer; this section stores only the completed assignment and
+    /// a random installation id. The Cloudflare token itself stays in <see cref="RemoteConfig"/>
+    /// as a DPAPI blob.
+    /// </summary>
+    public ProvisioningConfig Provisioning { get; set; } = new();
 
     /// <summary>Global hotkey that toggles the control UI (plan §3.8).</summary>
     public string Hotkey { get; set; } = "Ctrl+Shift+F12";
@@ -382,6 +391,26 @@ public sealed class RemoteConfig
     /// does, so it is the default for unattended reliability. Blank is treated as "http2" at load.
     /// </summary>
     public string CloudflareProtocol { get; set; } = "http2";
+}
+
+/// <summary>
+/// Durable state for the room-selection provisioning flow (schema v9). No server credential or
+/// tunnel token is stored here: the server endpoint is public configuration and the received
+/// token is immediately DPAPI-protected in <see cref="RemoteConfig.CloudflareTunnelTokenEnc"/>.
+/// </summary>
+public sealed class ProvisioningConfig
+{
+    /// <summary>Stable random id used by the provisioning service to recognise a reinstall.</summary>
+    public string InstallationId { get; set; } = string.Empty;
+
+    /// <summary>Identifier of the assigned room (for example, "m111").</summary>
+    public string RoomId { get; set; } = string.Empty;
+
+    /// <summary>True once an assignment was successfully written to the local encrypted config.</summary>
+    public bool Completed { get; set; }
+
+    /// <summary>UTC timestamp of the successful assignment, useful for support diagnostics.</summary>
+    public DateTimeOffset? CompletedAtUtc { get; set; }
 }
 
 /// <summary>

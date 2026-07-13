@@ -1,0 +1,49 @@
+<Window x:Class="SilentStream.App.Provisioning.RoomProvisioningWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="호실 원격접속 설정"
+        Width="500" Height="330"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        Background="{StaticResource BgBrush}"
+        Topmost="True"
+        Loaded="OnLoaded">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="이 PC가 설치된 호실을 선택해 주세요"
+                   FontSize="18" FontWeight="Bold" Margin="0,0,0,8" />
+        <TextBlock Grid.Row="1" TextWrapping="Wrap" Foreground="{StaticResource DimBrush}"
+                   Margin="0,0,0,18">
+            선택하면 이 호실의 원격접속 주소와 터널 설정만 받아 자동으로 적용합니다.
+            다른 호실의 설정은 이 PC에 저장되지 않습니다.
+        </TextBlock>
+
+        <StackPanel Grid.Row="2">
+            <TextBlock Text="호실" Margin="0,0,0,5" />
+            <ComboBox x:Name="RoomCombo" DisplayMemberPath="Name" SelectedValuePath="Id"
+                      MinHeight="30" SelectionChanged="OnRoomChanged" />
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" x:Name="CodePanel" Visibility="Collapsed" Margin="0,14,0,0">
+            <TextBlock Text="등록 코드" Margin="0,0,0,5" />
+            <PasswordBox x:Name="ActivationCodeBox" MinHeight="30" PasswordChanged="OnCodeChanged" />
+        </StackPanel>
+
+        <TextBlock Grid.Row="4" x:Name="StatusText" Foreground="{StaticResource DimBrush}"
+                   TextWrapping="Wrap" VerticalAlignment="Center" />
+
+        <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button x:Name="ApplyButton" Content="선택한 호실로 설정" Width="150" Margin="0,0,8,0"
+                    IsEnabled="False" Click="OnApply" />
+            <Button Content="나중에" Width="84" Click="OnLater" />
+        </StackPanel>
+    </Grid>
+</Window>

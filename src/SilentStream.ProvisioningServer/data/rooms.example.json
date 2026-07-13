@@ -1,0 +1,13 @@
+{
+  "rooms": [
+    {
+      "id": "m111",
+      "displayName": "M111",
+      "cloudflareHostname": "m111.silentstream.win",
+      "cloudflareTunnelToken": "PUT_THE_M111_TUNNEL_TOKEN_HERE",
+      "port": 8787,
+      "cloudflareProtocol": "http2",
+      "activationCodeHash": "GENERATE_WITH: dotnet run --project src/SilentStream.ProvisioningServer -- hash-code YOUR_LONG_RANDOM_CODE"
+    }
+  ]
+}

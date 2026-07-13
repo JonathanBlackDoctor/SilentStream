@@ -6,6 +6,8 @@ config.json
 *.token
 secrets.*
 appsettings.*.local.json
+# 호실 자동 설정 서버의 실제 토큰·등록 상태(예제 파일만 추적)
+src/SilentStream.ProvisioningServer/data/rooms.json
 
 # 녹화 파일 / 로그 (런타임 생성물)
 *.mp4

@@ -211,6 +211,16 @@ public sealed class ConfigStore : IConfigStore
             }
             config.Version = 8;
         }
+
+        // v9 migration: first-install room provisioning. Existing deployments must never suddenly
+        // show a room picker after an update (their remote setup is already deliberate), whereas a
+        // brand-new v9 default keeps Completed=false and is eligible for the bundled installer flow.
+        config.Provisioning ??= new ProvisioningConfig();
+        if (config.Version < 9)
+        {
+            config.Provisioning.Completed = true;
+            config.Version = 9;
+        }
         return config;
     }
 }

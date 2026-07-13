@@ -16,7 +16,7 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(8, config.Version); // schema v8 (승인 기반 교시 분할)
+        Assert.Equal(9, config.Version); // schema v9 (호실 자동 프로비저닝)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
@@ -53,7 +53,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(8, loaded.Version);
+        Assert.Equal(9, loaded.Version);
         Assert.Equal(8, loaded.Periods.WeekdayDefaults["Mon"].Count);
         Assert.True(loaded.Periods.RequireApproval);
         Assert.Equal(15, loaded.Periods.AutoApproveMinutes);
@@ -71,7 +71,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(8, loaded.Version);
+        Assert.Equal(9, loaded.Version);
         var mon = Assert.Single(loaded.Periods.WeekdayDefaults["Mon"]);
         Assert.Equal("09:00:00", mon.Start);
         Assert.False(loaded.Periods.WeekdayDefaults.ContainsKey("Tue"));
@@ -100,7 +100,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(8, loaded.Version);
+        Assert.Equal(9, loaded.Version);
         Assert.Equal(string.Empty, loaded.DeviceName);
     }
 
@@ -166,7 +166,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(8, loaded.Version);
+        Assert.Equal(9, loaded.Version);
         Assert.True(loaded.Encoding.Adaptive.Enabled);
         Assert.True(loaded.Encoding.Adaptive.AutoRecover);
         Assert.Equal(3, loaded.Encoding.Adaptive.MaxLevel);
@@ -191,7 +191,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(8, loaded.Version);
+        Assert.Equal(9, loaded.Version);
         Assert.True(loaded.Notifications.Enabled);
         Assert.Equal(string.Empty, loaded.Notifications.TelegramBotTokenEnc);
         Assert.Equal("warn", loaded.Notifications.NotifyLevel);
@@ -250,7 +250,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(8, config.Version); // defaults are schema v8
+        Assert.Equal(9, config.Version); // defaults are schema v9
         Assert.True(File.Exists(ConfigPath + ".bak"));
         // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
         // label stays empty rather than being silently stamped with this machine's hostname, and
@@ -258,6 +258,27 @@ public class ConfigStoreTests : IDisposable
         // otherwise a parse failure could quietly start cutting/uploading VODs.
         Assert.Equal(string.Empty, config.DeviceName);
         Assert.False(config.Periods.HasAnyWeekdayPeriods());
+    }
+
+    [Fact]
+    public void Pre_v8_install_is_marked_complete_so_an_update_never_reopens_room_setup()
+    {
+        File.WriteAllText(ConfigPath, """{ "version": 8, "remote": { "mode": "cloudflare" } }""");
+
+        var config = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(9, config.Version);
+        Assert.True(config.Provisioning.Completed);
+        Assert.Equal(string.Empty, config.Provisioning.RoomId);
+    }
+
+    [Fact]
+    public void Fresh_install_remains_eligible_for_room_provisioning()
+    {
+        var config = new ConfigStore(ConfigPath).Load();
+
+        Assert.False(config.Provisioning.Completed);
+        Assert.Equal(string.Empty, config.Provisioning.InstallationId);
     }
 
     public void Dispose() => Directory.Delete(_dir, recursive: true);
