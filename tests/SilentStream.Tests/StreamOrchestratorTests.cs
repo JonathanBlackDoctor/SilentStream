@@ -94,6 +94,47 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Force_retry_skips_a_pending_backoff_interval()
+    {
+        _youtube.FailuresBeforeSuccess = 1;
+        var orchestrator = new StreamOrchestrator(
+            _configStore, new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
+            new StreamOrchestratorOptions
+            {
+                WarmupDelay = TimeSpan.Zero,
+                RetryBaseDelay = TimeSpan.FromSeconds(10),
+                RetryMaxDelay = TimeSpan.FromSeconds(10),
+                WatchdogInterval = TimeSpan.FromSeconds(10),
+                StallTimeout = TimeSpan.FromMinutes(1),
+                RetentionInterval = TimeSpan.FromHours(1)
+            });
+
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => orchestrator.State == StreamState.Retrying, TimeSpan.FromSeconds(2));
+
+        Assert.True(await orchestrator.ForceRetryAsync());
+        await start.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        Assert.Equal(2, _youtube.CreateCalls);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Force_retry_rebuilds_a_live_encoder_without_creating_a_broadcast()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        Assert.True(await orchestrator.ForceRetryAsync());
+
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        Assert.Equal(2, _encoder.StartCalls.Count);
+        Assert.Equal(1, _youtube.CreateCalls);
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Recording_starts_even_when_youtube_never_connects()
     {
         _youtube.FailuresBeforeSuccess = int.MaxValue; // streaming never succeeds

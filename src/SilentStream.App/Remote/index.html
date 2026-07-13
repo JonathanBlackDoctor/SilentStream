@@ -82,6 +82,16 @@
     .command-actions .btnrow { margin-top:8px; }
     .command-actions .stopHalf { color:#ffe1ae; background: linear-gradient(to right, rgba(255,255,255,0.18) var(--hold, 0%), #513b1d var(--hold, 0%)); border:1px solid #806135; }
     .action-hint { margin:9px 1px 0; color:#92a6bd; font-size:11px; line-height:1.45; }
+    .mini-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+    .mini-actions button { margin:0; padding:10px 8px; font-size:12px; }
+    .mini-actions .restart { color:#ffd9db; background:#38262e; border:1px solid #70434d; }
+    .diag-timeline { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 12px; border:1px solid #304861; border-radius:12px; background:#101a25; }
+    .diag-timeline .label { color:#9eb2c8; font-size:12px; } .diag-timeline b { color:#eff7ff; font-size:15px; }
+    .health-item { display:flex; gap:9px; align-items:flex-start; border-bottom:1px solid #26384b; padding:9px 0; font-size:13px; }
+    .health-item:last-child { border-bottom:none; } .health-dot { width:8px; height:8px; flex:none; margin-top:6px; border-radius:50%; background:var(--yellow); }
+    .health-dot.critical { background:var(--red); } .health-dot.info { background:var(--accent); }
+    .issue-list { margin:10px 0 0; padding:0; list-style:none; max-height:180px; overflow:auto; }
+    .issue-list li { padding:7px 0; border-bottom:1px solid #26384b; color:#c8d6e5; font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; }
     /* ---- 교시 승인 카드 (승인 기반 분할 v8): 경계 도달 시 최상단에 뜨는 1차 상호작용 ---- */
     .split-card { border-color:#4d7fb4; background:linear-gradient(140deg,#1b3049,#131c29 70%); }
     .split-card .win { display:flex; align-items:center; justify-content:center; gap:7px; margin:3px 0 10px; }
@@ -201,7 +211,21 @@
         <button id="stopBtn" class="stop">전체 중지</button>
         </div>
         <p class="action-hint">방송 중지는 녹화를 유지합니다. 전체 중지는 송출과 녹화를 모두 종료합니다.</p>
+        <div class="mini-actions">
+          <button id="retryBtn" class="ghost">↻ 송출 복구</button>
+          <button id="snapshotBtn" class="ghost">▣ 스냅샷 저장</button>
+        </div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-lead"><h2>진단</h2><small id="diagClock">PC 시간 확인 중</small></div>
+      <div id="diagTimeline" class="diag-timeline"><span class="label">시간표 상태</span><b>시간표를 불러오는 중입니다</b></div>
+      <div id="healthList" class="muted" style="margin-top:9px">진단 신호를 확인하는 중입니다.</div>
+      <details style="margin-top:9px">
+        <summary class="muted" style="cursor:pointer">최근 경고·오류 <span id="issueCount"></span></summary>
+        <ul id="issueList" class="issue-list"></ul>
+      </details>
     </div>
 
     <!-- 교시 승인(v8): 교시가 끝나면 여기 카드가 뜬다 — 시각 조정/승인/연강/건너뛰기. 대기 없으면 숨김 -->
@@ -278,6 +302,8 @@
       <button class="ghost" id="pushToggle">🔔 폰 알림 켜기</button>
     </div>
 
+    <button id="restartAppBtn" class="ghost" style="margin-top:0">앱 다시 시작</button>
+
     <button class="ghost" id="unpair">이 호실 연결 해제</button>
   </section>
 
@@ -308,6 +334,7 @@
     let weekData = {}, activeDay = "Mon", ws = null;
     let assetItems = [], assetLoading = false;
     let renderedSrcKey = "", audioReloading = false;
+    let currentTimeline = null, timelineRemainingMs = null, timelineReceivedAt = 0;
     const rstate = new Map(); // baseUrl → {online:null|bool, authFailed, summary, thumbUrl}
     // 로컬 파일로 열거나 URL에 ?demo=1을 붙인 디자인 점검용 화면. 실제 원격 연결·인증·저장값은 건드리지 않는다.
     const demoMode = location.protocol === "file:" || new URLSearchParams(location.search).has("demo");
@@ -681,7 +708,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets()]);
+      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -702,6 +729,26 @@
     $("startBtn").onclick = async () => {
       try { await api(cur, "/api/live/start", {method:"POST"}); toast("라이브 시작 요청"); }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    };
+    $("retryBtn").onclick = async () => {
+      try {
+        const r = await api(cur, "/api/live/retry", {method:"POST"});
+        const d = await r.json();
+        toast(d.ok ? "송출 복구를 요청했습니다." : (d.message || "지금은 복구를 요청할 수 없습니다."));
+      } catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    };
+    $("snapshotBtn").onclick = async () => {
+      try {
+        const r = await api(cur, "/api/snapshot.jpg");
+        if (r.status !== 200) { toast("아직 저장할 미리보기 화면이 없습니다."); return; }
+        const blob = await r.blob();
+        const link = document.createElement("a"), url = URL.createObjectURL(blob);
+        link.href = url;
+        link.download = "snapshot.jpg";
+        document.body.appendChild(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast("스냅샷을 저장했습니다.");
+      } catch(e){ toast("스냅샷 저장에 실패했습니다."); }
     };
     // 안전장치: 어떤 중지든 2초간 꾹 누른 뒤 확인 모달을 통과해야 실행된다(실수 방지).
     function makeHoldable(btnId, holdTimeMs, onTrigger) {
@@ -784,6 +831,19 @@
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
     });
 
+    makeHoldable("restartAppBtn", 2000, async () => {
+      const room = cur;
+      if (!await confirmAsk("앱을 다시 시작할까요?",
+        "현재 송출과 녹화를 안전하게 마감한 뒤 앱을 다시 시작합니다. 약 30초의 준비 시간이 지난 뒤 자동 송출이 다시 시작됩니다.",
+        "앱 다시 시작")) return;
+      if (cur !== room) return;
+      try {
+        const r = await api(room, "/api/app/restart", {method:"POST"});
+        const d = await r.json();
+        toast(d.ok ? "앱을 안전하게 다시 시작합니다." : (d.message || "재시작이 이미 진행 중입니다."));
+      } catch(e){ toast("앱 재시작 요청에 실패했습니다."); }
+    });
+
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (cur) syncLabel(cur, s.room);
@@ -810,10 +870,12 @@
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
       if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
       if (s.quality) renderQualityStatus(s.quality); // 적용 품질(진실)은 상태 푸시로 갱신된다
+      if (s.diagnostics) renderDiagnostics(s.diagnostics);
       renderSplits(s.splits || null); // 구서버(필드 없음)는 카드 영역을 통째로 숨긴다
       $("startBtn").disabled = s.state!=="Idle";
       $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
       $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
+      $("retryBtn").disabled = !(s.state==="Live" || s.state==="Retrying");
       $("todayDate").textContent = s.today.date;
       $("todayBadge").textContent = s.today.hasOverride ? "오늘 덮어쓰기 적용 중" : "요일 기본값 사용 중";
       const q=s.queue;
@@ -823,6 +885,41 @@
         const link = i.videoId ? ` <a href="https://youtu.be/${encodeURIComponent(i.videoId)}" target="_blank" style="color:var(--accent)">열기</a>`:"";
         return `<div class="qitem"><span>${esc(i.title)}</span><span class="pill ${cls}">${esc(i.status)}${link}</span></div>`;
       }).join("") : '<div class="muted">큐가 비어 있습니다.</div>';
+    }
+
+    // ---- 진단: 시간표 카운트다운 + 헬스 신호등 + 최근 경고/오류 ----
+    function renderTimeline(){
+      const box=$("diagTimeline"), t=currentTimeline;
+      if(!t || t.state==="none" || !t.targetLocal){
+        box.innerHTML='<span class="label">시간표 상태</span><b>오늘 남은 교시가 없습니다</b>';
+        return;
+      }
+      const left=Math.max(0, Math.ceil((timelineRemainingMs-(Date.now()-timelineReceivedAt))/1000));
+      const h=Math.floor(left/3600), m=Math.floor((left%3600)/60), s=left%60;
+      const clock=(h?String(h).padStart(2,"0")+":" : "")+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+      const label=t.state==="inPeriod" ? `${t.periodNumber}교시 종료까지` : `${t.periodNumber}교시 시작까지`;
+      box.innerHTML=`<span class="label">${esc(label)}</span><b>${clock}</b>`;
+    }
+    function renderDiagnostics(d){
+      currentTimeline=d.timeline || null;
+      const server=Date.parse(d.serverLocalTime||"");
+      const target=Date.parse(currentTimeline && currentTimeline.targetLocal || "");
+      timelineRemainingMs=Number.isFinite(server)&&Number.isFinite(target) ? target-server : 0;
+      timelineReceivedAt=Date.now();
+      renderTimeline();
+      $("diagClock").textContent=d.serverLocalTime ? `PC ${String(d.serverLocalTime).slice(11,16)}` : "PC 시간";
+      const active=d.activeHealth||[];
+      $("healthList").innerHTML=active.length ? active.map(x=>{
+        const level=String(x.severity||"warn").toLowerCase();
+        return `<div class="health-item"><i class="health-dot ${esc(level)}"></i><span><b>${esc(x.kind)}</b><br>${esc(x.message)}</span></div>`;
+      }).join("") : '<div class="muted">🟢 현재 감지된 문제 없음</div>';
+      const issues=d.recentIssues||[];
+      $("issueCount").textContent=issues.length ? `(${issues.length})` : "";
+      $("issueList").innerHTML=issues.length ? issues.map(x=>`<li>${esc(x)}</li>`).join("") : '<li class="muted">최근 경고·오류가 없습니다.</li>';
+    }
+    async function loadDiagnostics(){
+      const room=cur; const r=await api(room,"/api/diagnostics"); const d=await r.json();
+      if(cur===room) renderDiagnostics(d);
     }
 
     // ---- 교시 승인 (승인 기반 분할 v8) ----
@@ -1035,15 +1132,15 @@
     function rowsHtml(periods){
       return periods.map((p,idx)=>`<tr data-i="${idx}">
         <td><input class="time" value="${esc(p.no)}" inputmode="numeric" style="width:46px" data-f="no"></td>
-        <td><input class="time" value="${esc(p.start)}" data-f="start"></td>
-        <td><input class="time" value="${esc(p.end)}" data-f="end"></td>
+        <td><input type="time" class="time" value="${esc(String(p.start||"").slice(0,5))}" data-f="start"></td>
+        <td><input type="time" class="time" value="${esc(String(p.end||"").slice(0,5))}" data-f="end"></td>
         <td><button class="x" data-del="${idx}">✕</button></td></tr>`).join("");
     }
     function readRows(tbody){
       return [...tbody.querySelectorAll("tr")].map(tr=>({
         no: parseInt(tr.querySelector('[data-f=no]').value)||0,
-        start: tr.querySelector('[data-f=start]').value.trim(),
-        end: tr.querySelector('[data-f=end]').value.trim()
+        start: tr.querySelector('[data-f=start]').value.trim()+":00",
+        end: tr.querySelector('[data-f=end]').value.trim()+":00"
       })).filter(p=>p.no>0);
     }
     function wireDelete(tbody){ tbody.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{ b.closest("tr").remove(); }); }
@@ -1051,7 +1148,7 @@
     // ---- 오늘 시간표 ----
     let todayPeriods=[];
     function renderToday(){ $("todayRows").innerHTML=rowsHtml(todayPeriods); wireDelete($("todayRows")); }
-    $("addTodayRow").onclick=()=>{ todayPeriods=readRows($("todayRows")); todayPeriods.push({no:todayPeriods.length+1,start:"09:00:00",end:"09:50:00"}); renderToday(); };
+    $("addTodayRow").onclick=()=>{ todayPeriods=readRows($("todayRows")); todayPeriods.push({no:todayPeriods.length+1,start:"09:00",end:"09:50"}); renderToday(); };
     $("saveToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); toast("오늘 시간표를 저장했습니다."); };
     $("clearToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"DELETE"}); toast("기본값으로 되돌렸습니다."); loadToday().catch(()=>{}); };
     async function loadToday(){ const room=cur; const r=await api(room,"/api/schedule/today"); const d=await r.json(); if(cur!==room) return; todayPeriods=d.periods; renderToday(); }
@@ -1062,7 +1159,7 @@
       $("weekTabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{ weekData[activeDay]=readRows($("weekRows")); activeDay=b.dataset.d; renderTabs(); renderWeek(); });
     }
     function renderWeek(){ $("weekRows").innerHTML=rowsHtml(weekData[activeDay]||[]); wireDelete($("weekRows")); }
-    $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00:00",end:"09:50:00"}); weekData[activeDay]=cur2; renderWeek(); };
+    $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00",end:"09:50"}); weekData[activeDay]=cur2; renderWeek(); };
     $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
     async function loadWeek(){ const room=cur; const r=await api(room,"/api/schedule"); const d=await r.json(); if(cur!==room) return; weekData=d; renderTabs(); renderWeek(); }
 
@@ -1144,7 +1241,13 @@
     }
     async function loadAudio(){ const room=cur; const r=await api(room,"/api/audio"); const d=await r.json(); if(cur!==room) return; renderAudio(d); }
 
-    // 송출 미리보기: blob으로 받아 교체(204면 이전 프레임 유지, 깨진 이미지 방지)
+    // 송출 미리보기: WebSocket JPEG가 기본 경로이며, 연결 전/실패 시에만 HTTP 스냅샷으로 폴백한다.
+    function paintPreview(blob){
+      if(!blob || !blob.size || view!=="dash") return;
+      const img=$("preview"), old=img.src;
+      img.src=URL.createObjectURL(blob);
+      if(old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+    }
     async function refreshPreview(){
       if(view!=="dash" || !cur) return;
       const room=cur;
@@ -1155,19 +1258,21 @@
         const blob = await r.blob();
         if(!blob.size) return;
         if(view!=="dash" || cur!==room) return; // 받는 사이 다른 화면/호실로 이동함
-        const img = $("preview"), old = img.src;
-        img.src = URL.createObjectURL(blob);
-        if(old && old.startsWith("blob:")) URL.revokeObjectURL(old);
+        paintPreview(blob);
       }catch(e){}
     }
 
     function connectWs(){
-      if(!cur) return;
+      if(!cur || (ws && (ws.readyState===WebSocket.CONNECTING || ws.readyState===WebSocket.OPEN))) return;
       const room=cur;
       try {
         const wsBase = room.baseUrl.replace(/^http/i, "ws"); // http→ws, https→wss
         ws = new WebSocket(`${wsBase}/ws/status?token=${encodeURIComponent(room.token)}`);
-        ws.onmessage = e => { const m=JSON.parse(e.data); if(m.type==="levels") renderLevels(m); else renderStatus(m); };
+        ws.binaryType="arraybuffer";
+        ws.onmessage = e => {
+          if(typeof e.data!=="string") { paintPreview(new Blob([e.data], {type:"image/jpeg"})); return; }
+          const m=JSON.parse(e.data); if(m.type==="levels") renderLevels(m); else renderStatus(m);
+        };
         ws.onclose = () => { ws=null; setTimeout(()=>{ if(view==="dash" && cur===room) connectWs(); }, 4000); };
       } catch(e){ /* fall back to polling */ }
     }
@@ -1176,10 +1281,11 @@
     // ---- 주기 갱신 (화면 상태로 게이트: 중복 인터벌 없이 한 번만 등록) ----
     setInterval(()=>{ if(view==="dash" && cur && (!ws || ws.readyState!==1)) pollOnce().catch(()=>{}); }, 5000);
     setInterval(()=>{ if(view==="dash" && cur) loadAssets().catch(()=>{}); }, 15000);
-    setInterval(()=>{ refreshPreview(); }, 2000);
+    setInterval(()=>{ if(view==="dash" && (!ws || ws.readyState!==1)) refreshPreview(); }, 2000);
     setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
     setInterval(()=>{ if(view==="grid") refreshGridPreviews(); }, 10000);
     setInterval(tickSplitCountdowns, 1000); // 승인 카드 자동승인 카운트다운
+    setInterval(renderTimeline, 1000);
 
     // 하드웨어/제스처 뒤로가기: 그리드에서 들어간 하위 화면(상세·페어링)을 그리드 복귀로 되돌린다.
     // 단일 호실이거나 이미 그리드면 관여하지 않는다(항목이 그대로 pop돼 기존처럼 페이지를 떠난다).

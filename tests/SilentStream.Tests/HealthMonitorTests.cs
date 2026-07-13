@@ -532,6 +532,7 @@ public class HealthMonitorTests : IDisposable
         public Task StartAsync(CancellationToken ct) => Task.CompletedTask;
         public Task StopAsync() => Task.CompletedTask;
         public Task StopStreamingKeepRecordingAsync() => Task.CompletedTask;
+        public Task<bool> ForceRetryAsync() => Task.FromResult(false);
         public void Raise(StreamState state)
         {
             State = state;

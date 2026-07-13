@@ -81,6 +81,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     // encoder. The full StopAsync deliberately does NOT take this lock — it cancels the session
     // token instead, so it can never block behind a wedged swap.
     private readonly SemaphoreSlim _swapLock = new(1, 1);
+    // A single operator-triggered wake-up is enough to skip the current retry backoff. Keeping
+    // this bounded prevents repeated taps from accumulating retries for a future outage.
+    private readonly SemaphoreSlim _retryWakeSignal = new(0, 1);
 
     public StreamOrchestrator(
         IConfigStore configStore,
@@ -139,6 +142,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             }
             _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             SetState(StreamState.Warmup);
+        }
+        // A cancellation race during a previous session can leave an operator wake-up permit
+        // unused. It must never make a later, unrelated outage skip its first normal backoff.
+        while (_retryWakeSignal.Wait(0))
+        {
         }
         var token = _runCts!.Token;
 
@@ -341,6 +349,42 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     }
 
     /// <summary>
+    /// Lets a paired operator make recovery deterministic instead of waiting for the current
+    /// exponential-backoff timer. A live session gets one controlled in-place encoder rebuild
+    /// (same broadcast/watch URL); a retrying session wakes its existing connect loop immediately.
+    /// </summary>
+    public async Task<bool> ForceRetryAsync()
+    {
+        StreamState state;
+        lock (_gate)
+        {
+            state = State;
+        }
+
+        if (state == StreamState.Retrying)
+        {
+            try
+            {
+                _retryWakeSignal.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // One wake-up is already queued. The requested outcome is still satisfied.
+            }
+            _log.Info("원격 요청으로 송출 재시도를 즉시 진행합니다.");
+            return true;
+        }
+
+        if (state == StreamState.Live)
+        {
+            _log.Info("원격 요청으로 라이브 송출 경로를 재구성합니다.");
+            return await SwapLiveEncoderAsync(CurrentQuality).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Rebuilds the live encoder in place (적응형 품질 전환의 실행 단계): the broadcast, watch URL
     /// and <see cref="StreamState.Live"/> state are kept while the encoder restarts with freshly
     /// built options, and the local recording continues in a new part file. The intentional stop
@@ -483,7 +527,10 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                     recordingStarted = await StartRecordingOnlyAsync(ct).ConfigureAwait(false);
                 }
 
-                await Task.Delay(delay, ct).ConfigureAwait(false);
+                // A paired operator can skip a long exponential-backoff interval from the remote
+                // controller. WaitAsync(timeout) returns false for the normal timer path and true
+                // for the bounded wake signal; cancellation still tears down the session normally.
+                await _retryWakeSignal.WaitAsync(delay, ct).ConfigureAwait(false);
                 delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, _options.RetryMaxDelay.Ticks));
             }
         }

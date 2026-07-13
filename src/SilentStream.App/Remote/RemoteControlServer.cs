@@ -16,6 +16,7 @@ using Microsoft.Extensions.Logging;
 using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
+using SilentStream.Core.Logging;
 using SilentStream.Core.Models;
 using SilentStream.Core.Remote;
 using SilentStream.Core.Remote.WebPush;
@@ -59,6 +60,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IAdaptiveQualityController _quality;
     private readonly IPushSubscriptionStore _pushSubscriptions;
     private readonly IVapidKeyStore _vapidKeys;
+    private readonly RemoteAppRestartService _appRestart;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -103,6 +105,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IAdaptiveQualityController quality,
         IPushSubscriptionStore pushSubscriptions,
         IVapidKeyStore vapidKeys,
+        RemoteAppRestartService appRestart,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -121,6 +124,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _quality = quality;
         _pushSubscriptions = pushSubscriptions;
         _vapidKeys = vapidKeys;
+        _appRestart = appRestart;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -193,6 +197,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _orchestrator.QualityChanged += OnQualityChanged;
         _audioMixer.LevelsUpdated += OnLevels;
         _audioMixer.MicSignalChanged += OnMicSignal;
+        _health.HealthChanged += OnHealthChanged;
+        _preview.FrameUpdated += OnPreviewFrame;
         _splits.Changed += OnSplitsChanged; // 승인 카드 실시간 갱신 (생성/승인/연강/자동승인/컷 완료)
 
         await app.StartAsync(ct).ConfigureAwait(false);
@@ -297,6 +303,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _orchestrator.QualityChanged -= OnQualityChanged;
         _audioMixer.LevelsUpdated -= OnLevels;
         _audioMixer.MicSignalChanged -= OnMicSignal;
+        _health.HealthChanged -= OnHealthChanged;
+        _preview.FrameUpdated -= OnPreviewFrame;
 
         lock (_socketsGate)
         {
@@ -470,6 +478,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         });
 
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
+        app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
 
         // Download assets are deliberately catalogued independently from the short-lived upload
         // queue. A completed queue job is pruned after a while, but its local audio remains
@@ -686,6 +695,15 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 ? Results.StatusCode(StatusCodes.Status204NoContent)
                 : Results.Bytes(jpeg, "image/jpeg");
         });
+        // A saved inspection image is distinct from the live WebSocket preview: it carries a
+        // download filename and remains available as a one-shot fallback for old clients.
+        app.MapGet("/api/snapshot.jpg", () =>
+        {
+            var jpeg = _preview.GetLatestJpegFrame();
+            return jpeg is null
+                ? Results.StatusCode(StatusCodes.Status204NoContent)
+                : Results.File(jpeg, "image/jpeg", $"snapshot_{DateTime.Now:yyyyMMdd_HHmmss}.jpg");
+        });
 
         app.MapPost("/api/live/start", async () =>
         {
@@ -707,6 +725,26 @@ public sealed class RemoteControlServer : IRemoteControlServer
             var ok = state is StreamState.RecordingOnly or StreamState.Stopping or StreamState.Idle;
             return Results.Json(new { ok, state = state.ToString() }, Json);
         });
+        app.MapPost("/api/live/retry", async () =>
+        {
+            var ok = await _orchestrator.ForceRetryAsync().ConfigureAwait(false);
+            var state = _orchestrator.State;
+            return Results.Json(new
+            {
+                ok,
+                state = state.ToString(),
+                message = ok ? "송출 복구를 요청했습니다." : "현재 상태에서는 송출 복구를 요청할 수 없습니다."
+            }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+        });
+        app.MapPost("/api/app/restart", () =>
+        {
+            var ok = _appRestart.RequestRestart();
+            return Results.Json(new
+            {
+                ok,
+                message = ok ? "앱을 안전하게 다시 시작합니다." : "앱 재시작이 이미 진행 중입니다."
+            }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+        });
 
         app.Map("/ws/status", HandleWebSocketAsync);
     }
@@ -726,6 +764,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
             _sockets.Add(channel);
         }
         await SendStatusAsync(channel, ctx.RequestAborted).ConfigureAwait(false);
+        var preview = _preview.GetLatestJpegFrame();
+        if (preview is not null)
+        {
+            await SendBinaryAsync(channel, preview, ctx.RequestAborted).ConfigureAwait(false);
+        }
 
         try
         {
@@ -765,6 +808,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private void OnSplitsChanged(object? sender, EventArgs e) => BroadcastStatus();
 
+    private void OnHealthChanged(object? sender, HealthEvent e) => BroadcastStatus();
+
+    private void OnPreviewFrame() => BroadcastPreview();
+
     /// <summary>GET /api/splits body — also embedded in the status push as <c>splits</c>.</summary>
     private SplitRemote.SplitsDto BuildSplits()
     {
@@ -800,6 +847,47 @@ public sealed class RemoteControlServer : IRemoteControlServer
             }
         }
         BroadcastStatus(); // refresh the warning banner promptly
+    }
+
+    private void BroadcastPreview()
+    {
+        var jpeg = _preview.GetLatestJpegFrame();
+        if (jpeg is null)
+        {
+            return;
+        }
+
+        List<SocketChannel> channels;
+        lock (_socketsGate)
+        {
+            if (_sockets.Count == 0)
+            {
+                return;
+            }
+            channels = _sockets.ToList();
+        }
+
+        foreach (var channel in channels)
+        {
+            // Preview is a newest-frame-wins surface. A slow phone must never queue a growing
+            // chain of JPEGs behind status messages; drop frames while its previous one is sending.
+            if (Interlocked.Exchange(ref channel.PreviewSendInFlight, 1) == 0)
+            {
+                _ = SendPreviewAsync(channel, jpeg);
+            }
+        }
+    }
+
+    private async Task SendPreviewAsync(SocketChannel channel, byte[] jpeg)
+    {
+        try
+        {
+            await SendBinaryAsync(channel, jpeg).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref channel.PreviewSendInFlight, 0);
+        }
     }
 
     private void BroadcastLevels(AudioLevels levels)
@@ -908,7 +996,17 @@ public sealed class RemoteControlServer : IRemoteControlServer
         await SendRawAsync(channel, payload, ct).ConfigureAwait(false);
     }
 
-    private async Task SendRawAsync(SocketChannel channel, byte[] payload, CancellationToken ct = default)
+    private Task SendRawAsync(SocketChannel channel, byte[] payload, CancellationToken ct = default) =>
+        SendAsync(channel, payload, WebSocketMessageType.Text, ct);
+
+    private Task SendBinaryAsync(SocketChannel channel, byte[] payload, CancellationToken ct = default) =>
+        SendAsync(channel, payload, WebSocketMessageType.Binary, ct);
+
+    private async Task SendAsync(
+        SocketChannel channel,
+        byte[] payload,
+        WebSocketMessageType messageType,
+        CancellationToken ct = default)
     {
         // Serialize writes per socket: concurrent SendAsync on one WebSocket (status + levels
         // frames from different producer threads) throws InvalidOperationException and aborts it.
@@ -924,7 +1022,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         {
             if (channel.Socket.State == WebSocketState.Open)
             {
-                await channel.Socket.SendAsync(payload, WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                await channel.Socket.SendAsync(payload, messageType, true, ct).ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (
@@ -1009,12 +1107,20 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     // ---- status DTO ----
 
+    private RemoteDiagnosticsDto BuildDiagnostics(DateTime nowLocal) =>
+        RemoteDiagnostics.Build(
+            nowLocal,
+            _scheduleStore.ResolveForDate(DateOnly.FromDateTime(nowLocal)),
+            _health.ActiveEvents,
+            InMemoryLogSink.Snapshot());
+
     private object BuildStatus()
     {
         var state = _orchestrator.State;
         var recording = _recording.GetStatus();
         var jobs = _uploadQueue.Snapshot();
-        var today = DateOnly.FromDateTime(DateTime.Now);
+        var now = DateTime.Now;
+        var today = DateOnly.FromDateTime(now);
         var quality = _orchestrator.CurrentQuality;
         string[] silentMics;
         lock (_silentMicsGate)
@@ -1069,6 +1175,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 hasOverride = _scheduleStore.GetOverride(today) is not null,
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             },
+            diagnostics = BuildDiagnostics(now),
             // 승인 기반 분할(v8): 승인 카드 + 연강 체인 + 최근 이력. 구버전 페이지는 이 필드를
             // 모른 채 무시하고, 새 페이지는 null-guard로 구서버와도 호환된다.
             splits = BuildSplits(),
@@ -1338,5 +1445,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         public WebSocket Socket { get; } = socket;
 
         public SemaphoreSlim SendLock { get; } = new(1, 1);
+
+        public int PreviewSendInFlight;
     }
 }

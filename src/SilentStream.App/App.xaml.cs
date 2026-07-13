@@ -47,6 +47,8 @@ public partial class App : Application
         collection.AddSingleton<IAudioMixer, WasapiAudioMixer>();
         // 송출 미리보기: 캡처 프레임을 저레이트 JPEG 썸네일로 제공(제어창 + 폰).
         collection.AddSingleton<IPreviewProvider, FramePreviewService>();
+        // 원격 재시작은 앱 종료 순서와 단일 인스턴스 가드를 알아야 하므로 WPF 계층에서만 구현한다.
+        collection.AddSingleton<RemoteAppRestartService>();
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());

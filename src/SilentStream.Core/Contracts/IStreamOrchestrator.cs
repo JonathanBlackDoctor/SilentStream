@@ -41,4 +41,11 @@ public interface IStreamOrchestrator
     /// when recording is disabled (nothing to keep).
     /// </summary>
     Task StopStreamingKeepRecordingAsync();
+
+    /// <summary>
+    /// Expedites a pending reconnect, or rebuilds the active live encoder once to recover its
+    /// ingest path. Returns false when the pipeline is not in a state that can be recovered
+    /// without changing the operator's intent (for example, Idle or recording-only).
+    /// </summary>
+    Task<bool> ForceRetryAsync();
 }
