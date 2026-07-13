@@ -16,6 +16,12 @@ public static class RemoteCors
     /// <summary>Methods the remote API uses.</summary>
     public const string AllowMethods = "GET, POST, PUT, DELETE, OPTIONS";
 
+    /// <summary>
+    /// Response metadata readable by the cross-origin phone UI. Download buttons use the
+    /// Content-Disposition filename rather than exposing a server-side path.
+    /// </summary>
+    public const string ExposeHeaders = "Content-Disposition";
+
     /// <summary>Preflight cache lifetime (seconds) so 5–10 s grid polling isn't one OPTIONS per poll.</summary>
     public const string MaxAgeSeconds = "600";
 

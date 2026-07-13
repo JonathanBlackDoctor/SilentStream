@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Models;
@@ -44,7 +45,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IStreamOrchestrator _orchestrator;
     private readonly IPeriodScheduleStore _scheduleStore;
     private readonly PeriodScheduler _scheduler;
+    private readonly ISplitApprovalService _splits;
     private readonly IUploadQueue _uploadQueue;
+    private readonly IPeriodAssetCatalog _periodAssets;
+    private readonly IYouTubeCaptionService _captions;
     private readonly IRecordingManager _recording;
     private readonly IAudioMixer _audioMixer;
     private readonly IPreviewProvider _preview;
@@ -76,7 +80,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IStreamOrchestrator orchestrator,
         IPeriodScheduleStore scheduleStore,
         PeriodScheduler scheduler,
+        ISplitApprovalService splits,
         IUploadQueue uploadQueue,
+        IPeriodAssetCatalog periodAssets,
+        IYouTubeCaptionService captions,
         IRecordingManager recording,
         IAudioMixer audioMixer,
         IPreviewProvider preview,
@@ -89,7 +96,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _orchestrator = orchestrator;
         _scheduleStore = scheduleStore;
         _scheduler = scheduler;
+        _splits = splits;
         _uploadQueue = uploadQueue;
+        _periodAssets = periodAssets;
+        _captions = captions;
         _recording = recording;
         _audioMixer = audioMixer;
         _preview = preview;
@@ -163,6 +173,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _orchestrator.QualityChanged += OnQualityChanged;
         _audioMixer.LevelsUpdated += OnLevels;
         _audioMixer.MicSignalChanged += OnMicSignal;
+        _splits.Changed += OnSplitsChanged; // 승인 카드 실시간 갱신 (생성/승인/연강/자동승인/컷 완료)
 
         await app.StartAsync(ct).ConfigureAwait(false);
         _app = app;
@@ -260,6 +271,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             return;
         }
         _app = null;
+        _splits.Changed -= OnSplitsChanged;
         _orchestrator.StateChanged -= OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated -= OnMetrics;
         _orchestrator.QualityChanged -= OnQualityChanged;
@@ -334,6 +346,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 headers.AccessControlAllowOrigin = origin;
                 headers.AccessControlAllowHeaders = RemoteCors.AllowHeaders;
                 headers.AccessControlAllowMethods = RemoteCors.AllowMethods;
+                headers.AccessControlExposeHeaders = RemoteCors.ExposeHeaders;
                 headers.AccessControlMaxAge = RemoteCors.MaxAgeSeconds;
                 headers.Vary = "Origin"; // reflected origin → responses must not be cross-origin cached
 
@@ -427,6 +440,71 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
 
+        // Download assets are deliberately catalogued independently from the short-lived upload
+        // queue. A completed queue job is pruned after a while, but its local audio remains
+        // available to the paired operator. No caller-controlled file path is ever accepted.
+        app.MapGet("/api/period-assets", () => Results.Json(BuildPeriodAssets(), Json));
+        app.MapGet("/api/period-assets/{id}/audio", (string id) =>
+        {
+            var asset = _periodAssets.Find(id);
+            var audioPath = asset is null ? null : GetSafeAssetAudioPath(asset.AudioPath);
+            if (asset is null || audioPath is null)
+            {
+                return Results.Json(new { error = "다운로드할 로컬 음성 파일이 없습니다." }, Json,
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+
+            return Results.File(audioPath, "audio/mp4", PeriodAssetDownloadName(asset, "m4a"),
+                enableRangeProcessing: true);
+        });
+        app.MapGet("/api/period-assets/{id}/captions", async Task<IResult> (string id, HttpContext context) =>
+        {
+            var asset = _periodAssets.Find(id);
+            if (asset is null)
+            {
+                return Results.Json(new { error = "교시 자료를 찾을 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+            if (string.IsNullOrWhiteSpace(asset.VideoId))
+            {
+                return Results.Json(new { error = "YouTube 업로드가 완료된 뒤 자막을 받을 수 있습니다." }, Json,
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            UpdateCaptionStatusSafely(asset.Id, PeriodAssetCaptionStatus.Downloading);
+            try
+            {
+                // YouTube retains the source caption track; we only pass the requested SRT through
+                // to this authorized request and do not cache its text locally.
+                var caption = await _captions
+                    .DownloadPreferredSrtAsync(asset.VideoId, "ko", context.RequestAborted)
+                    .ConfigureAwait(false);
+                if (caption is null)
+                {
+                    UpdateCaptionStatusSafely(asset.Id, PeriodAssetCaptionStatus.Unavailable,
+                        message: "YouTube 자막이 아직 준비되지 않았습니다.");
+                    return Results.Json(new { error = "YouTube 자막이 아직 준비되지 않았습니다." }, Json,
+                        statusCode: StatusCodes.Status404NotFound);
+                }
+
+                UpdateCaptionStatusSafely(asset.Id, PeriodAssetCaptionStatus.Available, caption.Language);
+                return Results.File(caption.Srt, "application/x-subrip; charset=utf-8",
+                    PeriodAssetDownloadName(asset, "srt"));
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"교시 자막 다운로드 실패({asset.PeriodNumber}교시): {ex.Message}");
+                UpdateCaptionStatusSafely(asset.Id, PeriodAssetCaptionStatus.Failed,
+                    message: "YouTube 자막 권한 또는 처리 상태를 확인해주세요.");
+                return Results.Json(new { error = "자막을 받지 못했습니다. PC에서 YouTube 자막 권한을 승인했는지 확인해주세요." }, Json,
+                    statusCode: StatusCodes.Status502BadGateway);
+            }
+        });
+
         // 멀티 호실 그리드 카드용 경량 요약(Phase 2). 시간표/업로드 큐 등 무거운 부분은 /api/status에만 둔다.
         app.MapGet("/api/summary", () => Results.Json(BuildSummary(), Json));
 
@@ -477,6 +555,30 @@ public sealed class RemoteControlServer : IRemoteControlServer
             _scheduler.NotifyScheduleChanged();
             _log.Info($"오늘({today:yyyy-MM-dd}) 시간표 덮어쓰기를 해제했습니다(원격).");
             return Results.Json(new { ok = true }, Json);
+        });
+
+        // ---- 승인 기반 교시 분할 (v8): 승인 카드 조회 + 승인/연강/건너뛰기/연강 취소 ----
+        app.MapGet("/api/splits", () => Results.Json(BuildSplits(), Json));
+        app.MapPost("/api/splits/cancel-merge", () =>
+        {
+            var result = SplitRemote.CancelMerge(_splits, BuildSplits);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
+        });
+        app.MapPost("/api/splits/{id}/approve", async (string id, HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<SplitRemote.ApproveRequest>(ctx).ConfigureAwait(false);
+            var result = SplitRemote.Approve(_splits, id, body, BuildSplits);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
+        });
+        app.MapPost("/api/splits/{id}/merge", (string id) =>
+        {
+            var result = SplitRemote.Merge(_splits, id, BuildSplits);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
+        });
+        app.MapPost("/api/splits/{id}/skip", (string id) =>
+        {
+            var result = SplitRemote.Skip(_splits, id, BuildSplits);
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
         });
 
         // ---- audio mixer (다중 채널 + 증폭 + 실시간 미터) ----
@@ -612,6 +714,16 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private void OnStateOrMetricsChanged(object? sender, StreamState state) => BroadcastStatus();
 
     private void OnQualityChanged(object? sender, QualityStatus quality) => BroadcastStatus();
+
+    private void OnSplitsChanged(object? sender, EventArgs e) => BroadcastStatus();
+
+    /// <summary>GET /api/splits body — also embedded in the status push as <c>splits</c>.</summary>
+    private SplitRemote.SplitsDto BuildSplits()
+    {
+        var config = _configStore.Load();
+        return SplitRemote.BuildDto(_splits, _scheduleStore, config.Periods, config.DeviceName,
+            DateTime.Now);
+    }
 
     // ---- audio levels + mic-signal push ----
 
@@ -781,6 +893,72 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
     }
 
+    // ---- period download assets ----
+
+    private object BuildPeriodAssets() => new
+    {
+        items = _periodAssets.Snapshot().Take(200).Select(asset => new
+        {
+            id = asset.Id,
+            date = asset.Date.ToString("yyyy-MM-dd"),
+            period = asset.PeriodNumber,
+            title = asset.Title,
+            videoId = asset.VideoId,
+            audioAvailable = GetSafeAssetAudioPath(asset.AudioPath) is not null,
+            captionStatus = asset.CaptionStatus,
+            captionLanguage = asset.CaptionLanguage,
+            captionMessage = asset.CaptionMessage
+        })
+    };
+
+    private void UpdateCaptionStatusSafely(string id, string status, string? language = null, string? message = null)
+    {
+        try
+        {
+            _periodAssets.MarkCaptionStatus(id, status, language, message);
+        }
+        catch (Exception ex)
+        {
+            // A transient catalogue issue must not prevent an otherwise successful file response.
+            _log.Warn($"교시 자막 상태 저장 실패: {ex.Message}");
+        }
+    }
+
+    private static string? GetSafeAssetAudioPath(string? candidate)
+    {
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        try
+        {
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(AppPaths.PeriodAudioDir)) +
+                       Path.DirectorySeparatorChar;
+            var fullPath = Path.GetFullPath(candidate);
+            return fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(Path.GetExtension(fullPath), ".m4a", StringComparison.OrdinalIgnoreCase) &&
+                   File.Exists(fullPath)
+                ? fullPath
+                : null;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private static string PeriodAssetDownloadName(PeriodAsset asset, string extension)
+    {
+        var fallback = $"{asset.Date:yyyy-MM-dd}_{asset.PeriodNumber}교시";
+        var stem = string.IsNullOrWhiteSpace(asset.Title) ? fallback : asset.Title.Trim();
+        var invalid = Path.GetInvalidFileNameChars();
+        var safe = new string(stem.Select(ch => invalid.Contains(ch) || char.IsControl(ch) ? '_' : ch).ToArray())
+            .Trim()
+            .TrimEnd('.');
+        return string.IsNullOrWhiteSpace(safe) ? fallback + "." + extension : safe + "." + extension;
+    }
+
     // ---- status DTO ----
 
     private object BuildStatus()
@@ -843,6 +1021,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 hasOverride = _scheduleStore.GetOverride(today) is not null,
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             },
+            // 승인 기반 분할(v8): 승인 카드 + 연강 체인 + 최근 이력. 구버전 페이지는 이 필드를
+            // 모른 채 무시하고, 새 페이지는 null-guard로 구서버와도 호환된다.
+            splits = BuildSplits(),
             queue = new
             {
                 pending = jobs.Count(j => j.Status == UploadJobStatus.Pending),
@@ -888,6 +1069,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             freeBytes = recording.FreeDiskBytes,
             qualityLevel = quality.Level,   // 그리드 카드의 "절약" 칩용 (0 = 원본)
             qualityName = quality.LevelName,
+            // 그리드 "승인 대기 N" 칩 + 일괄 승인 대상 판별용
+            pendingSplits = _splits.Snapshot().Count(s => s.Status == PendingSplitStatus.Pending),
             issues = _health.ActiveEvents.Select(e => new
             {
                 kind = e.Kind.ToString(),

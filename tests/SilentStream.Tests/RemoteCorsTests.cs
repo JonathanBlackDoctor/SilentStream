@@ -57,4 +57,10 @@ public class RemoteCorsTests
             Assert.Contains(method, RemoteCors.AllowMethods);
         }
     }
+
+    [Fact]
+    public void Download_filename_is_exposed_to_cross_origin_phone_pages()
+    {
+        Assert.Contains("Content-Disposition", RemoteCors.ExposeHeaders);
+    }
 }
