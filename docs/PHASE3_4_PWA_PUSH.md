@@ -63,23 +63,29 @@ aes128gcm 암호화 → `POST <endpoint>` (`Authorization: vapid …`, `Content-
 - `WebPushNotifier`가 오프라인 스텁으로 헤더를 정확히 싣고, 410 응답에 구독을 정리한다.
 - **전 신규 테스트 그린 + 기존 테스트 회귀 없음.**
 
-## 4. 배선 체크리스트 (병렬 세션 착지 후 — 이 브랜치에서 미실행)
+## 4. 배선 체크리스트 — **완료 (커밋 62aa63e)**
 
-> 아래는 공유 파일을 건드리므로 "교시 승인" 6부작이 끝난 뒤 메인 브랜치에서 적용한다.
+> 병렬 "교시 승인" 6부작 + oauth_expiring 착지 후, 아래를 메인 브랜치에서 적용 완료. 빌드 0/0·400 테스트 그린.
 
-1. **DI 등록** (`App.xaml.cs`): `IVapidKeyStore→VapidKeyStore(AppPaths…)`, `IPushSubscriptionStore→PushSubscriptionStore(AppPaths…)`,
-   `WebPushNotifier`를 `INotifier` 팬아웃에 추가(텔레그램과 나란히). `HttpClient`는 텔레그램처럼 생성자 기본값.
-2. **`AppPaths.cs`**: `PushSubscriptionsFile`, `VapidKeysFile` 추가(선택 — 현재는 스토어가 파일명을 내부 보유).
-3. **정적 파일 서빙** (`RemoteControlServer.cs`): `/manifest.webmanifest`, `/service-worker.js`, `/icon-*.png` 라우트.
-   서비스워커는 **루트 스코프**로 서빙해야 `push` 수신 범위가 전체가 된다(경로 주의).
-4. **REST 엔드포인트** (`RemoteControlServer.cs`, `PushRemote` 사용):
-   `GET /api/push/vapid` → 공개키, `POST /api/push/subscribe`, `DELETE /api/push/subscribe`. 인증은 기존 원격 토큰 게이트 뒤.
-5. **CSP**: index.html의 CSP에 서비스워커/매니페스트 허용 확인(같은 출처라 대개 OK).
-6. **`App.csproj`**: 신규 정적 파일을 출력에 복사(현재 index.html 번들 방식과 동일하게).
-7. **index.html**: `<link rel="manifest">`, 서비스워커 등록, "폰 알림 켜기" 버튼 →
-   `Notification.requestPermission` → `PushManager.subscribe({applicationServerKey})` → `POST /api/push/subscribe`.
-8. **HTTPS 전제**: 서비스워커·Web Push는 보안 컨텍스트 필수 — Cloudflare 호스트네임(HTTPS)에서만 동작, LAN 평문 http는 불가.
-   (텔레그램 푸시가 LAN 폴백을 계속 담당.)
+1. ✅ **DI 등록** (`ServiceCollectionExtensions.cs`, App.xaml.cs 아님): `IPushSubscriptionStore→PushSubscriptionStore(AppPaths.PushSubscriptionsFile)`,
+   `IVapidKeyStore→VapidKeyStore(AppPaths.VapidKeysFile, ITokenProtector)`, `WebPushNotifier`를 2번째 `INotifier`로 등록 →
+   `HealthNotificationService`가 `IEnumerable<INotifier>`로 텔레그램과 함께 팬아웃. `HttpClient`는 생성자 기본값.
+2. ✅ **`AppPaths.cs`**: `PushSubscriptionsFile`, `VapidKeysFile` 추가.
+3. ✅ **정적 파일 서빙** (`RemoteControlServer.cs`): `/manifest.webmanifest`·`/service-worker.js`·`/icon.svg`·`/icon-*.png` 라우트
+   (임베디드 리소스, `Results.Content`/`Results.Bytes`). `/api`·`/ws` 밖이라 무인증. 서비스워커는 루트에서 서빙 → 스코프 "/".
+4. ✅ **REST 엔드포인트** (`RemoteControlServer.cs`, `PushRemote`): `GET /api/push/vapid`, `POST/DELETE /api/push/subscribe` —
+   기존 원격 토큰 게이트 뒤(splits 패턴 그대로).
+5. ✅ **CSP**: index.html에 CSP 없음 → 서비스워커/매니페스트 제약 없음(같은 출처).
+6. ✅ **`App.csproj`**: 신규 정적 파일 6종을 `<EmbeddedResource>`로 추가(index.html과 동일 번들 방식).
+7. ✅ **index.html**: `<link rel="manifest">`+아이콘+theme-color, 서비스워커 등록, 상세 뷰에 "폰 알림" 카드
+   (`Notification.requestPermission` → `PushManager.subscribe({applicationServerKey})` → `POST /api/push/subscribe`, 해제도 지원).
+   미지원·평문 컨텍스트에선 카드 숨김.
+8. **HTTPS 전제(런타임 성질)**: 서비스워커·Web Push는 보안 컨텍스트 필수 — Cloudflare 호스트네임(HTTPS)에서만 동작,
+   LAN 평문 http는 불가(텔레그램이 LAN 폴백 담당). **다중 호실**: 브라우저 구독은 서비스워커당 1개라 마지막 켠 호실
+   알림만 옴 — 전 호실 알림엔 공유 VAPID 키 배포가 필요(후속 과제).
+
+**잔여 = 실기기 런타임 검증만**: HTTPS(Cloudflare) + 실제 폰에서 ①"폰 알림 켜기" → 구독 저장 ②상태 변화(무음/송출끊김)
+발생 시 잠금화면 푸시 수신 ③알림 탭 → 컨트롤러 포커스 ④"폰 알림 끄기" → 구독 제거. (앱 자동송출 성질상 개발 PC 실행은 보류.)
 
 ## 5. Phase 4 백로그 (미착수 — 대부분 index.html/서버 편집 필요, §4와 함께)
 
