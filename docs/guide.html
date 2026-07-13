@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f8fb">
+  <meta name="description" content="Media Capture Helper 설치, YouTube 연결, 녹화, 원격 제어, 문제 해결을 위한 사용 안내입니다.">
+  <title>Media Capture Helper — 사용 안내</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23245bc7'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='white' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23e65d62'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/site.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Media Capture Helper 홈">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span data-site-text="brandName">Media Capture Helper</span>
+      </a>
+      <nav class="header-nav" aria-label="주요 메뉴">
+        <a href="index.html">다운로드</a>
+        <a data-site-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a>
+        <a class="button small-button" data-site-href="downloadSetupUrl" href="#" download aria-label="Windows용 설치 파일 다운로드">
+          <svg class="download-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span class="button-label">다운로드</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="guide-hero" aria-labelledby="guide-title">
+      <div class="container narrow">
+        <p class="eyebrow">사용 안내</p>
+        <h1 id="guide-title">설치부터 필요한 설정까지, 순서대로 안내합니다.</h1>
+        <p><span data-site-text="brandName">Media Capture Helper</span>는 PC 화면과 소리를 본인 YouTube 채널에 일부 공개로 송출하고, 같은 내용을 로컬에도 백업 녹화합니다. 처음에는 설치와 YouTube 연결만 확인하면 됩니다.</p>
+        <nav class="guide-links" aria-label="안내 목차">
+          <a href="#install">설치·첫 실행</a>
+          <a href="#daily">일상 사용·제어판</a>
+          <a href="#recording">녹화·교시 VOD</a>
+          <a href="#remote">폰 원격 제어</a>
+          <a href="#maintenance">설정·관리</a>
+          <a href="#troubleshooting">문제 해결·이용 안내</a>
+        </nav>
+      </div>
+    </section>
+
+    <div class="guide">
+      <div class="container narrow">
+        <section class="guide-section" id="install" aria-labelledby="install-title">
+          <p class="eyebrow">1. 설치·첫 실행</p>
+          <h2 id="install-title">처음 한 번만 차례대로 확인하세요</h2>
+          <p class="lead">설치가 끝난 뒤에는 PC를 켜는 것만으로 송출과 녹화가 시작됩니다. YouTube 로그인과 캡처 동의는 최초 1회에만 필요합니다.</p>
+
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><th scope="row">운영체제</th><td><strong>Windows 10 또는 Windows 11, 64비트</strong> 전용입니다.</td></tr>
+                <tr><th scope="row">인터넷</th><td>송출과 업로드에는 필요합니다. 연결이 끊겨도 로컬 녹화는 계속됩니다.</td></tr>
+                <tr><th scope="row">YouTube 채널</th><td>라이브 스트리밍이 활성화된 본인 채널이 필요합니다. 최초 활성화에는 최대 24시간이 걸릴 수 있습니다.</td></tr>
+                <tr><th scope="row">녹화 저장 공간</th><td>기본 보존 한도는 100GB입니다. 여유 공간이 부족하면 녹화를 일시 중지할 수 있으므로 넉넉한 드라이브를 권장합니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>설치 순서</h3>
+          <ol class="numbered">
+            <li><a data-site-href="downloadSetupUrl" href="#" download>Windows 설치 파일</a>을 다운로드해 실행합니다.</li>
+            <li>화면에 보이는 사용 안내와 동의 내용을 읽고 진행합니다.</li>
+            <li>설치가 끝나면 프로그램이 실행되고, 화면·오디오 캡처와 본인 YouTube 채널 송출에 대한 안내가 한 번 표시됩니다.</li>
+            <li>처음 송출할 때 열리는 브라우저에서 <strong>본인 Google 계정</strong>으로 로그인합니다. 이후 인증 정보는 이 PC에서 안전하게 저장·갱신됩니다.</li>
+          </ol>
+
+          <div class="notice">
+            <div class="notice-icon" aria-hidden="true">!</div>
+            <div><h3>Windows 보안 경고가 보일 때</h3><p>서명되지 않은 개인 배포 프로그램은 Windows SmartScreen 경고가 표시될 수 있습니다. GitHub 공식 릴리스에서 받은 파일인지 확인한 뒤 <strong>[추가 정보] → [실행]</strong>을 선택하세요.</p></div>
+          </div>
+
+          <h3 id="youtube">YouTube 연결</h3>
+          <p>처음 송출할 때만 브라우저가 열립니다. 본인 Google 계정으로 로그인한 뒤, 사용할 채널을 선택하면 됩니다. 채널의 <strong>YouTube Studio → 라이브 스트리밍</strong>이 미리 활성화되어 있어야 하며, 처음 활성화하는 경우 반영까지 최대 24시간이 걸릴 수 있습니다.</p>
+          <div class="notice info">
+            <div class="notice-icon" aria-hidden="true">i</div>
+            <div><h3>무엇에 동의하나요?</h3><p>주 모니터 화면과 시스템 소리·마이크를 캡처해 본인 YouTube 채널로 일부 공개 송출하고, 같은 내용을 로컬 폴더에 백업 녹화한다는 내용입니다. 동의하지 않으면 프로그램은 시작하지 않습니다.</p></div>
+          </div>
+        </section>
+
+        <section class="guide-section" id="daily" aria-labelledby="daily-title">
+          <p class="eyebrow">2. 일상 사용·제어판</p>
+          <h2 id="daily-title">평소에는 PC를 켜는 것만으로 충분합니다</h2>
+          <p class="lead">준비가 완료되면 약 30초 뒤 자동으로 송출과 녹화가 시작됩니다. 라이브는 기본적으로 일부 공개(Unlisted)로 생성되어 링크를 아는 사람만 시청할 수 있습니다.</p>
+
+          <h3>상태 확인</h3>
+          <p>화면 왼쪽 위의 작은 상태 점으로 현재 상태를 빠르게 확인할 수 있습니다.</p>
+          <div class="status-list" aria-label="상태 표시 의미">
+            <span class="status"><i aria-hidden="true"></i>초록: 정상 송출 중</span>
+            <span class="status wait"><i aria-hidden="true"></i>노랑: 연결·준비 중</span>
+            <span class="status error"><i aria-hidden="true"></i>빨강: 오류·재시도 중, 녹화는 계속</span>
+          </div>
+          <ul>
+            <li>PC를 종료하면 방송이 종료되고 현재 녹화 파일이 안전하게 마감됩니다.</li>
+            <li>네트워크가 잠시 끊겨도 녹화는 계속되며, 연결이 복구되면 송출을 자동으로 다시 시도합니다.</li>
+            <li>라이브 URL은 알림을 받은 사람에게만 공유하세요.</li>
+          </ul>
+
+          <h3>제어판 열기</h3>
+          <p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>를 누르면 제어판을 열 수 있습니다. 평소에는 열 필요가 없지만, 상태 확인이나 세부 설정을 바꿀 때 사용합니다.</p>
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><th scope="row">상태·성능</th><td>LIVE/연결 중/재시도 상태, 수동 시작·중지, 업로드 속도, FPS, CPU·GPU 사용량을 확인합니다.</td></tr>
+                <tr><th scope="row">오디오</th><td>시스템 소리와 마이크의 장치를 따로 고르고, 볼륨·증폭·음소거를 조절합니다.</td></tr>
+                <tr><th scope="row">녹화</th><td>현재 파일명, 누적 사용량, 남은 디스크 공간과 녹화 폴더를 확인합니다.</td></tr>
+                <tr><th scope="row">설정</th><td>호실명, 자동 시작 방식, 단축키, 녹화 보존 기간과 용량 한도를 바꿉니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <details>
+            <summary>송출 품질과 자원 사용량은 어떻게 조절되나요?</summary>
+            <div class="details-body"><p>기본값은 네트워크와 컴퓨터 상태에 맞춰 품질을 자동 조절합니다. 제어판에서 표준·절약 같은 품질 단계를 선택하거나 CPU/GPU 자원 사용 한도를 정할 수 있습니다. 제한 변경은 다음 세션부터 적용될 수 있습니다.</p></div>
+          </details>
+        </section>
+
+        <section class="guide-section" id="recording" aria-labelledby="recording-title">
+          <p class="eyebrow">3. 녹화·교시 VOD</p>
+          <h2 id="recording-title">녹화본은 PC에 남고, 필요하면 교시별로 업로드됩니다</h2>
+          <p class="lead">송출과 로컬 녹화는 함께 시작하지만, 네트워크 문제로 송출이 멈춰도 녹화는 독립적으로 이어집니다.</p>
+
+          <div class="table-wrap">
+            <table>
+              <tbody>
+                <tr><th scope="row">기본 위치</th><td><code>%USERPROFILE%\Videos\MediaCaptureHelper</code> — 제어판에서 변경할 수 있습니다.</td></tr>
+                <tr><th scope="row">파일 구성</th><td>부팅부터 종료까지가 하나의 파일이며, 인코더가 다시 시작되면 <code>_part2</code> 파일이 추가될 수 있습니다.</td></tr>
+                <tr><th scope="row">자동 정리</th><td>기본 7일이 지난 파일과 100GB 한도를 넘는 오래된 파일부터 자동으로 정리합니다. 두 값은 변경할 수 있습니다.</td></tr>
+                <tr><th scope="row">안전 장치</th><td>여유 디스크 공간이 5GB 미만이면 녹화를 일시 중지합니다. 갑작스러운 전원 차단 뒤에도 파일을 재생할 수 있도록 처리합니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>호실명으로 여러 PC의 제목 구분하기</h3>
+          <p>여러 PC가 같은 YouTube 채널로 송출한다면 제어판 <strong>설정 → 호실명</strong>에 예를 들어 <code>201호</code>를 입력하세요. 이후 라이브와 교시 VOD 제목 앞에 <code>[201호]</code>가 자동으로 붙습니다. 하나의 공유 채널을 쓸 때는 브랜드 계정을 만들고 각 운영자 계정에 관리자 권한을 부여하는 방식을 권장합니다.</p>
+
+          <details>
+            <summary>교시 자동 분할 VOD 업로드 설정</summary>
+            <div class="details-body">
+              <p>하루 종일 이어지는 라이브는 그대로 두고, 녹화본만 시간표에 맞춰 교시별로 잘라 <strong>일부 공개 VOD</strong>로 자동 업로드할 수 있습니다. 쉬는 시간은 업로드하지 않으며, 라이브·녹화 파이프라인을 다시 인코딩하지 않습니다.</p>
+              <ol>
+                <li>폰 원격 제어에서 요일별 기본 시간표를 입력합니다. 단축수업일에는 그날만 덮어쓰는 시간표를 사용할 수 있습니다.</li>
+                <li>교시가 끝나면 녹화본의 해당 구간을 무손실로 잘라 업로드 대기열에 넣습니다. 키프레임 기준 때문에 시작점이 최대 약 2초 차이 날 수 있습니다.</li>
+                <li>VOD 제목의 기본 형식은 <code>[{호실}] {교시}교시 - {yyyy-MM-dd}</code>입니다. 호실명이 비어 있으면 그 부분은 표시되지 않습니다.</li>
+              </ol>
+              <div class="notice"><div class="notice-icon" aria-hidden="true">!</div><div><h3>YouTube 업로드 한도</h3><p>YouTube Data API의 기본 일일 한도에서는 영상 업로드가 약 6건까지 가능합니다. 7교시 이상인 날의 초과분은 대기열에 보존됐다가 다음 날 자동 업로드됩니다. 모든 교시를 당일에 올려야 한다면 Google Cloud Console에서 할당량 증설을 신청하세요.</p></div></div>
+            </div>
+          </details>
+        </section>
+
+        <section class="guide-section" id="remote" aria-labelledby="remote-title">
+          <p class="eyebrow">4. 폰 원격 제어</p>
+          <h2 id="remote-title">폰 브라우저로 상태를 확인하고 시간표를 편집할 수 있습니다</h2>
+          <p class="lead">같은 Wi‑Fi 또는 Tailscale 네트워크에서 폰 브라우저로 접속해 라이브 시작·중지, 상태와 업로드 진행 확인, 교시 시간표 입력을 할 수 있습니다. 폰에 별도 앱을 설치할 필요는 없습니다.</p>
+
+          <h3>같은 네트워크에서 연결하기</h3>
+          <ol class="numbered">
+            <li>제어판 설정에서 폰 원격 제어를 켭니다. 기본 LAN 포트는 <code>8787</code>입니다.</li>
+            <li>폰 브라우저에서 <code>http://&lt;PC의 LAN IP&gt;:8787</code>로 접속합니다. PC IP는 제어판 로그 또는 <code>ipconfig</code>에서 확인할 수 있습니다.</li>
+            <li>제어판에 표시된 6자리 PIN을 입력하면 연결됩니다. 한 번 연결한 폰은 다음부터 PIN 없이 접속할 수 있습니다.</li>
+          </ol>
+          <div class="notice info"><div class="notice-icon" aria-hidden="true">i</div><div><h3>외부 접속은 Tailscale을 권장합니다</h3><p>LAN 모드는 같은 Wi‑Fi 안에서만 쓰세요. 집 밖에서 접속해야 한다면 PC와 폰을 같은 Tailscale 네트워크에 연결하고 <code>remote.mode</code>를 <code>tailscale</code>로 바꾸는 방식을 권장합니다. 공인 IP 직접 노출이나 포트 포워딩은 권장하지 않습니다.</p></div></div>
+
+          <details>
+            <summary>Tailscale로 집 밖에서 연결하기</summary>
+            <div class="details-body"><ol><li>PC와 폰에 <a href="https://tailscale.com" target="_blank" rel="noopener">Tailscale</a>을 설치하고 같은 계정으로 로그인합니다.</li><li><code>%AppData%\MediaCaptureHelper\config.json</code>의 <code>remote.mode</code>를 <code>tailscale</code>로 바꾼 뒤 프로그램을 다시 시작합니다.</li><li>폰 브라우저에서 <code>http://&lt;PC의 Tailscale IP&gt;:8787</code>로 접속해 PIN을 입력합니다.</li></ol></div>
+          </details>
+          <details>
+            <summary>고정 HTTPS 주소가 필요한 경우: Cloudflare Tunnel</summary>
+            <div class="details-body"><p>매번 같은 외부 주소가 필요하다면 Cloudflare Tunnel을 사용할 수 있습니다. 토큰은 민감 정보이므로 공유하거나 공개 저장소에 올리지 마세요.</p><ol><li>Cloudflare에 로그인하고 사용할 도메인을 연결하거나 등록합니다.</li><li><strong>Zero Trust → Networks → Tunnels</strong>에서 새 터널을 만들고 커넥터로 <strong>Cloudflared</strong>를 선택합니다.</li><li>터널의 공개 호스트 이름을 추가해 서비스 유형은 <code>HTTP</code>, 대상은 <code>localhost:8787</code>로 지정합니다.</li><li>발급된 터널 토큰과 고정 호스트 이름을 아래처럼 설정 파일에 입력한 뒤 프로그램을 다시 시작합니다.</li><li>외부 브라우저에서 고정 HTTPS 주소로 접속하고, 처음 한 번만 제어판의 6자리 PIN을 입력합니다.</li></ol><pre><code>"remote": {
+  "mode": "cloudflare",
+  "port": 8787,
+  "cloudflareTunnelToken": "Cloudflare에서_받은_터널_토큰",
+  "cloudflareHostname": "remote.example.com"
+}</code></pre></div>
+          </details>
+        </section>
+
+        <section class="guide-section" id="maintenance" aria-labelledby="maintenance-title">
+          <p class="eyebrow">5. 설정·관리</p>
+          <h2 id="maintenance-title">필요한 설정은 제어판에서, 고급 설정은 파일에서</h2>
+          <p class="lead">대부분의 값은 제어판과 폰 원격 화면에서 바꾸면 됩니다. 직접 설정 파일을 편집할 때는 프로그램을 종료한 뒤 UTF-8 형식으로 저장하세요.</p>
+
+          <h3>알림 받기 (선택)</h3>
+          <p>텔레그램 알림을 설정하면 마이크 음소거, 송출 끊김, 디스크 공간 부족, 업로드 실패 같은 문제를 바로 받을 수 있습니다. Telegram의 <strong>@BotFather</strong>에서 봇 토큰을 만들고, 알림을 받을 채팅 ID와 함께 제어판 설정에 입력한 뒤 테스트 알림으로 확인하세요. 봇 토큰은 비밀번호처럼 취급해야 합니다.</p>
+
+          <details>
+            <summary>config.json 주요 항목</summary>
+            <div class="details-body">
+              <p>설정 파일은 <code>%AppData%\MediaCaptureHelper\config.json</code>에 있습니다. 시간표는 폰 원격 화면에서 입력하면 자동으로 채워집니다.</p>
+              <pre><code>{
+  "deviceName": "201호",
+  "youtube": { "titleTemplate": "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}" },
+  "periods": {
+    "weekdayDefaults": { "Mon": [{ "no": 1, "start": "09:00:00", "end": "09:50:00" }] },
+    "overrides": { "2026-07-14": [{ "no": 1, "start": "09:00:00", "end": "09:30:00" }] },
+    "titleTemplate": "[{호실}] {교시}교시 - {yyyy-MM-dd}",
+    "vodPrivacy": "unlisted",
+    "uploadTiming": "immediate-throttled"
+  },
+  "remote": { "mode": "off", "port": 8787 }
+}</code></pre>
+              <p><code>uploadTiming</code>은 기본값인 <code>immediate-throttled</code> 외에, 방과 후 일괄 업로드를 위한 <code>after-hours</code>로 바꿀 수 있습니다.</p>
+            </div>
+          </details>
+
+          <div class="guide-grid">
+            <article class="info-card"><h3>자동 업데이트</h3><p>프로그램은 주기적으로 새 버전을 확인합니다. 다운로드된 업데이트는 보통 다음 재시작 때 적용되므로, 진행 중인 송출을 즉시 끊지 않습니다.</p></article>
+            <article class="info-card"><h3>제거</h3><p>Windows <strong>설정 → 앱</strong>에서 Media Capture Helper를 제거합니다. 자동 시작과 원격 방화벽 규칙은 함께 해제되며, 녹화 파일과 설정은 자동 삭제되지 않습니다.</p></article>
+          </div>
+        </section>
+
+        <section class="guide-section" id="troubleshooting" aria-labelledby="trouble-title">
+          <p class="eyebrow">6. 문제 해결·이용 안내</p>
+          <h2 id="trouble-title">문제가 생겨도 먼저 이 항목을 확인하세요</h2>
+          <div class="faq">
+            <details><summary>상태 점이 계속 노란색이에요</summary><div class="details-body"><p>인터넷 연결과 YouTube 라이브 스트리밍 활성화 상태를 확인하세요. 채널을 처음 활성화했다면 최대 24시간 동안 준비 중일 수 있습니다.</p></div></details>
+            <details><summary>상태 점이 계속 빨간색이에요</summary><div class="details-body"><p><code>%AppData%\MediaCaptureHelper\logs\</code>의 최신 로그를 확인하세요. 프로그램은 자동으로 재연결을 계속 시도하며, 로컬 녹화는 유지됩니다.</p></div></details>
+            <details><summary>Google 로그인 브라우저가 열리지 않아요</summary><div class="details-body"><p><code>%AppData%\MediaCaptureHelper\client_secret.json</code> 파일이 있는지 확인하세요. 파일의 내용이나 OAuth 토큰을 타인에게 공유하지 마세요.</p></div></details>
+            <details><summary>마이크 소리가 들리지 않아요</summary><div class="details-body"><p>제어판의 오디오 영역에서 마이크 장치와 볼륨, 음소거 상태를 확인하세요. 마이크가 없어도 시스템 소리는 별도로 송출할 수 있습니다.</p></div></details>
+            <details><summary>송출은 끊겼는데 녹화는 계속돼요</summary><div class="details-body"><p>네트워크 문제가 있을 때 예상되는 동작입니다. 인터넷이 복구되면 송출을 자동으로 다시 시도하며, 그동안 로컬 녹화본은 계속 남습니다.</p></div></details>
+            <details><summary>게임 전체 화면이 검게 나와요</summary><div class="details-body"><p>자동 재초기화가 끝날 때까지 기다리거나, 게임을 창 모드 또는 테두리 없는 전체 화면으로 바꿔 보세요.</p></div></details>
+            <details><summary>단축키가 작동하지 않아요</summary><div class="details-body"><p>다른 프로그램이 같은 조합을 사용하고 있을 수 있습니다. 제어판 설정에서 다른 단축키로 변경하세요.</p></div></details>
+          </div>
+
+          <h3 id="legal">이용 안내</h3>
+          <div class="notice danger"><div class="notice-icon" aria-hidden="true">!</div><div><h3>본인 소유 또는 관리 권한이 있는 PC에서만 사용하세요</h3><p>이 도구는 본인의 화면과 음성을 기록·방송하는 용도로만 사용합니다. 타인의 화면·음성·개인정보를 동의 없이 캡처하거나 감시·스토킹 목적으로 사용하는 것은 금지됩니다.</p></div></div>
+          <details>
+            <summary>전체 이용 조건 요약</summary>
+            <div class="details-body"><ol><li><strong>동작:</strong> 주 모니터 화면과 시스템·마이크 오디오를 캡처해 사용자가 직접 연결한 YouTube 채널로 일부 공개 송출하고, 로컬에 백업 녹화합니다.</li><li><strong>데이터:</strong> 녹화 파일은 사용자가 지정한 로컬 폴더에 저장됩니다. OAuth 토큰은 이 PC에서 보호되며, 개발자에게 자동 전송되지 않습니다.</li><li><strong>사용자 책임:</strong> 화면·음성·개인정보 및 방송 내용의 적법한 수집·공유 책임은 사용자에게 있습니다. 관련 법령과 플랫폼 정책을 지켜야 합니다.</li><li><strong>제거와 철회:</strong> 동의하지 않으면 프로그램을 종료하거나 제거할 수 있습니다. 제거해도 녹화 파일과 설정은 자동 삭제되지 않으므로 필요한 경우 직접 삭제하세요.</li></ol></div>
+          </details>
+          <div class="inline-links"><a class="button" href="index.html">다운로드 페이지로 돌아가기</a><a class="button secondary" data-site-href="releasesPageUrl" href="#" target="_blank" rel="noopener">모든 릴리스 보기</a></div>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"></span><span data-site-text="brandName">Media Capture Helper</span></a>
+      <span>Windows 10/11 (64비트) · 본인 소유 또는 관리 권한이 있는 PC용</span>
+      <nav class="footer-links" aria-label="푸터 메뉴"><a href="index.html">다운로드</a><a data-site-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a></nav>
+      <span>© <span data-current-year>2026</span></span>
+    </div>
+  </footer>
+</body>
+</html>
