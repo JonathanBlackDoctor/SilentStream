@@ -37,6 +37,13 @@
     .qitem { display:flex; justify-content:space-between; border-bottom:1px solid #26384b; padding:8px 0; font-size:13px; }
     .pill { font-size:11px; padding:3px 8px; border-radius:10px; background:#283747; }
     .pill.done { color:#b3f2d0; background:#1b4933; } .pill.pending { color:#f6de96; background:#594c1f; } .pill.failed { color:#ffbec1; background:#5a2a31; }
+    .asset { border-bottom:1px solid #26384b; padding:11px 0; }
+    .asset:last-child { border-bottom:none; }
+    .asset-head { display:flex; justify-content:space-between; gap:9px; align-items:flex-start; }
+    .asset-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; }
+    .asset-meta { margin-top:3px; color:var(--muted); font-size:11px; }
+    .asset-actions { display:flex; gap:7px; margin-top:9px; }
+    .asset-actions button { width:auto; flex:1; margin:0; padding:8px 9px; font-size:12px; }
     .x { color:var(--red); background:none; width:auto; padding:4px 8px; margin:0; font-size:18px; }
     .hidden { display:none; }
     #toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); background:#253547; border:1px solid #405b76;
@@ -71,6 +78,22 @@
     .command-actions .btnrow { margin-top:8px; }
     .command-actions .stopHalf { color:#ffe1ae; background:#513b1d; border:1px solid #806135; }
     .action-hint { margin:9px 1px 0; color:#92a6bd; font-size:11px; line-height:1.45; }
+    /* ---- 교시 승인 카드 (승인 기반 분할 v8): 경계 도달 시 최상단에 뜨는 1차 상호작용 ---- */
+    .split-card { border-color:#4d7fb4; background:linear-gradient(140deg,#1b3049,#131c29 70%); }
+    .split-card .win { display:flex; align-items:center; justify-content:center; gap:7px; margin:3px 0 10px; }
+    .split-card .win input[type=time] { flex:0 1 128px; width:auto; padding:8px 4px; font-size:16px; font-weight:700; text-align:center; }
+    .split-card .win .arrow { color:#7f95ad; font-size:15px; }
+    .split-card .ptitle { margin:0 0 10px; color:#9db1c8; font-size:12px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .chiprow { display:flex; gap:6px; margin-bottom:10px; }
+    .chiprow button { width:auto; flex:1; margin:0; padding:9px 0; color:#c8d9ec; background:#1d2c3e; border:1px solid #3a5674; font-size:13px; }
+    .split-actions { display:flex; gap:7px; }
+    .split-actions button { margin:0; }
+    .split-actions .ok { flex:2.2; min-height:46px; }
+    .split-actions .ghost { flex:1; }
+    .split-count { margin:9px 0 0; color:var(--yellow); font-size:12px; text-align:center; }
+    .split-count.manual { color:var(--muted); }
+    .split-note { border:1px solid #3a5674; border-radius:11px; background:#16232f; padding:10px 12px; margin-bottom:10px; font-size:13px; color:#c8d9ec; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+    .split-note button { width:auto; margin:0; padding:6px 11px; font-size:12px; }
     .card-lead { display:flex; align-items:center; justify-content:space-between; gap:9px; margin-bottom:12px; }
     .card-lead h2 { margin:0; } .card-lead small { color:#8499af; font-size:11px; }
     .quality-card .row { padding:0; } .quality-card .tabs { margin:12px 0 5px; }
@@ -142,6 +165,7 @@
     <div id="mixedWarn" class="warn hidden"></div>
     <div class="gridbar">
       <label class="toggle"><input type="checkbox" id="problemOnly" /> ⚠ 문제만 보기</label>
+      <button id="bulkApprove" class="hidden">일괄 승인</button>
       <button id="addRoomBtn" class="ghost">+ 호실 추가</button>
     </div>
     <div id="cards" class="cards"></div>
@@ -175,6 +199,9 @@
         <p class="action-hint">방송 중지는 녹화를 유지합니다. 전체 중지는 송출과 녹화를 모두 종료합니다.</p>
       </div>
     </div>
+
+    <!-- 교시 승인(v8): 교시가 끝나면 여기 카드가 뜬다 — 시각 조정/승인/연강/건너뛰기. 대기 없으면 숨김 -->
+    <div id="splitArea" class="hidden"></div>
 
     <!-- 송출 품질 (적응형 품질): 현재 단계 표시 + 프리셋 수동 고정/자동 복귀 -->
     <div class="card quality-card">
@@ -236,6 +263,12 @@
       <div id="qList"></div>
     </div>
 
+    <div class="card">
+      <h2>교시 자료 <span class="muted">음성 · YouTube 자막</span></h2>
+      <p class="muted" style="margin-top:0">음성은 이 PC의 원본 녹화에서 내보냅니다. 자막은 업로드한 채널에서 준비된 자막만 받을 수 있습니다.</p>
+      <div id="assetList"><div class="muted">교시 자료를 불러오는 중입니다.</div></div>
+    </div>
+
     <button class="ghost" id="unpair">이 호실 연결 해제</button>
   </section>
 
@@ -264,6 +297,7 @@
     let view = "";           // "pair" | "grid" | "dash"
     let pairTarget = null;   // 재페어링 대상 호실(토큰 만료), 없으면 null
     let weekData = {}, activeDay = "Mon", ws = null;
+    let assetItems = [], assetLoading = false;
     let renderedSrcKey = "", audioReloading = false;
     const rstate = new Map(); // baseUrl → {online:null|bool, authFailed, summary, thumbUrl}
     // 로컬 파일로 열거나 URL에 ?demo=1을 붙인 디자인 점검용 화면. 실제 원격 연결·인증·저장값은 건드리지 않는다.
@@ -498,6 +532,7 @@
           paintBadge(badge, s.state, s.badge);
           off.classList.add("hidden");
           const parts = [];
+          if (s.pendingSplits > 0) parts.push("⏱ 승인 대기 " + s.pendingSplits + "건");
           if (s.micWarning) parts.push("⚠ 무음");
           const issueCount = (s.issues||[]).filter(x => /^(warn|critical)$/i.test(x.severity)).length;
           if (issueCount) parts.push("문제 " + issueCount + "건");
@@ -512,7 +547,39 @@
         if (!hide) visible++;
       });
       $("noProblem").classList.toggle("hidden", !(filter && visible === 0 && rooms.length > 0));
+      // 승인 대기가 있는 호실이 하나라도 있으면 일괄 승인 버튼 노출
+      const waiting = rooms.reduce((n, room) => {
+        const s = stateOf(room).summary;
+        return n + (s && s.pendingSplits ? s.pendingSplits : 0);
+      }, 0);
+      const ba = $("bulkApprove");
+      ba.classList.toggle("hidden", waiting === 0);
+      if (waiting > 0) ba.textContent = `⏱ 대기 ${waiting}건 일괄 승인`;
     }
+    // 그리드 일괄 승인: 모든 호실의 승인 대기 컷을 기본(제안) 시각 그대로 승인한다.
+    // 시각을 고쳐야 하면 호실 카드로 들어가 개별 승인 — 여기서는 손대지 않은 값만 일괄 처리.
+    $("bulkApprove").onclick = async () => {
+      if (!await confirmAsk("대기 중인 교시를 모두 승인할까요?",
+        "모든 호실의 승인 대기 컷을 제안된 시각 그대로 잘라 업로드합니다.\n시각을 고치려면 호실 카드에 들어가 개별 승인하세요.",
+        "일괄 승인")) return;
+      let ok = 0, fail = 0;
+      await Promise.allSettled(rooms.map(async room => {
+        const st = stateOf(room);
+        if (!st.summary || !st.summary.pendingSplits) return;
+        try {
+          const d = await (await api(room, "/api/splits")).json();
+          for (const p of (d.pending || []).filter(x => x.status === "pending")){
+            try {
+              const r = await api(room, `/api/splits/${encodeURIComponent(p.id)}/approve`,
+                { method:"POST", body:"{}" });
+              if ((await r.json()).ok) ok++; else fail++;
+            } catch(e){ fail++; }
+          }
+        } catch(e){ fail++; }
+      }));
+      toast(fail ? `승인 ${ok}건 · 실패 ${fail}건 — 실패 호실은 개별 확인하세요` : `승인 ${ok}건 완료`);
+      pollGrid();
+    };
     let gridBusy = false;
     async function pollGrid(){
       if (gridBusy) return; // 죽은 호실 타임아웃 대기가 겹쳐도 갱신 주기가 밀리지 않게
@@ -569,6 +636,8 @@
       bb.disabled = false;
       bb.classList.toggle("hidden", rooms.length < 2);
       $("roomName").textContent = room.label || "연결된 강의실";
+      renderedSplitKey = ""; // 다른 호실의 승인 카드가 남지 않게 강제 재렌더
+      $("splitArea").classList.add("hidden");
       startDash();
     }
     function openDemo(){
@@ -583,7 +652,12 @@
         quality:{ levelName:"표준", mode:"auto", level:0, current:{ width:1920, height:1080, fps:30, videoBitrateKbps:6200 } },
         today:{ date:"2026-07-13", hasOverride:false },
         queue:{ pending:0, uploading:1, completed:14, failed:0,
-          items:[{ title:"201호 · 1교시", status:"uploading" },{ title:"201호 · 전일 6교시", status:"completed", videoId:"" }] }
+          items:[{ title:"201호 · 1교시", status:"uploading" },{ title:"201호 · 전일 6교시", status:"completed", videoId:"" }] },
+        splits:{ requireApproval:true, autoApproveMinutes:15, chain:null, recent:[],
+          pending:[{ id:"demo-split", date:"2026-07-13", periods:[2], label:"2교시",
+            start:"2026-07-13T09:25:00", end:"2026-07-13T10:25:00",
+            proposedTitle:"[201호] 2교시 - 2026-07-13", autoApproveInSec:754, executeAt:null,
+            canMerge:true, status:"pending", title:null, failReason:null }] }
       });
       renderAudio({
         micWarning:false, silent:[],
@@ -597,7 +671,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality()]);
+      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -669,6 +743,7 @@
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
       if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
       if (s.quality) renderQualityStatus(s.quality); // 적용 품질(진실)은 상태 푸시로 갱신된다
+      renderSplits(s.splits || null); // 구서버(필드 없음)는 카드 영역을 통째로 숨긴다
       $("startBtn").disabled = s.state!=="Idle";
       $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
       $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
@@ -681,6 +756,213 @@
         const link = i.videoId ? ` <a href="https://youtu.be/${encodeURIComponent(i.videoId)}" target="_blank" style="color:var(--accent)">열기</a>`:"";
         return `<div class="qitem"><span>${esc(i.title)}</span><span class="pill ${cls}">${esc(i.status)}${link}</span></div>`;
       }).join("") : '<div class="muted">큐가 비어 있습니다.</div>';
+    }
+
+    // ---- 교시 승인 (승인 기반 분할 v8) ----
+    // 상태 푸시(1~2초)마다 다시 그리면 조작 중인 시각 입력이 초기화되므로, 구성(항목/상태)이
+    // 바뀔 때만 재렌더링하고 카운트다운은 data-deadline을 1초 틱으로만 갱신한다.
+    let renderedSplitKey = "";
+    const hhmm = iso => (iso || "").slice(11, 16);
+    function renderSplits(sp){
+      const area = $("splitArea");
+      const active = sp ? (sp.pending || []) : [];
+      const failed = sp ? (sp.recent || []).filter(r => r.status === "failed").slice(0, 2) : [];
+      const chain = sp ? sp.chain : null;
+      const key = JSON.stringify([active.map(p => p.id + p.status + p.end + p.canMerge),
+                                  chain && chain.periods, failed.map(f => f.id)]);
+      if (key === renderedSplitKey){
+        // 구성이 같으면 서버가 다시 계산한 자동승인 잔여초만 이어받는다(재렌더 없이 — 입력 보존).
+        active.forEach(p => {
+          const el = area.querySelector(`.split-count[data-sid="${p.id}"]`);
+          if (el && p.autoApproveInSec != null) el.dataset.deadline = Date.now() + p.autoApproveInSec * 1000;
+        });
+        return;
+      }
+      renderedSplitKey = key;
+      const parts = [];
+      if (chain){
+        const nextTxt = chain.nextPeriod ? `${chain.nextPeriod}교시가 끝나면` : "다음 교시가 끝나면";
+        parts.push(`<div class="split-note"><span>🔗 <b>${esc(chain.label)}</b> 연강 대기 — ${nextTxt} 합쳐진 승인 카드가 뜹니다.</span><button class="ghost" data-act="cancel-merge">연강 취소</button></div>`);
+      }
+      failed.forEach(f =>
+        parts.push(`<div class="warn">${esc(f.label)} 컷 실패 — ${esc(f.failReason || "로그를 확인하세요.")}</div>`));
+      active.forEach(p => {
+        if (p.status === "approved"){
+          const when = p.executeAt ? hhmm(p.executeAt) + "에 잘라 올립니다" : "잘라 올리는 중";
+          parts.push(`<div class="split-note"><span>✅ <b>${esc(p.label)}</b> 승인됨 — ${esc(when)}</span></div>`);
+          return;
+        }
+        const count = p.autoApproveInSec != null
+          ? `<p class="split-count" data-sid="${esc(p.id)}" data-deadline="${Date.now() + p.autoApproveInSec * 1000}"></p>`
+          : `<p class="split-count manual">수동 승인 대기 — 승인 전에는 업로드하지 않습니다</p>`;
+        parts.push(`<div class="card split-card">
+          <div class="card-lead"><h2>교시 승인 대기</h2><small>${esc(p.label)} · PC 시각 기준</small></div>
+          <div class="win">
+            <input type="time" step="60" value="${hhmm(p.start)}" data-orig="${hhmm(p.start)}" data-tstart="${esc(p.id)}">
+            <span class="arrow">→</span>
+            <input type="time" step="60" value="${hhmm(p.end)}" data-orig="${hhmm(p.end)}" data-tend="${esc(p.id)}">
+          </div>
+          <p class="ptitle">${esc(p.proposedTitle)}</p>
+          <div class="chiprow">
+            <button data-chip="-10" data-for="${esc(p.id)}">-10분</button>
+            <button data-chip="-5" data-for="${esc(p.id)}">-5분</button>
+            <button data-chip="5" data-for="${esc(p.id)}">+5분</button>
+            <button data-chip="10" data-for="${esc(p.id)}">+10분</button>
+          </div>
+          <div class="split-actions">
+            <button class="ok" data-act="approve" data-sid="${esc(p.id)}">✓ 승인 · 업로드</button>
+            <button class="ghost" data-act="merge" data-sid="${esc(p.id)}" ${p.canMerge ? "" : "disabled"}>연강</button>
+            <button class="ghost" data-act="skip" data-sid="${esc(p.id)}">건너뛰기</button>
+          </div>
+          ${count}
+        </div>`);
+      });
+      area.innerHTML = parts.join("");
+      area.classList.toggle("hidden", parts.length === 0);
+      tickSplitCountdowns();
+    }
+    function tickSplitCountdowns(){
+      document.querySelectorAll(".split-count[data-deadline]").forEach(el => {
+        const left = Math.max(0, Math.round((+el.dataset.deadline - Date.now()) / 1000));
+        el.textContent = left > 0
+          ? `조작이 없으면 ${Math.floor(left/60)}:${String(left%60).padStart(2,"0")} 후 이 시각대로 자동 승인됩니다`
+          : "자동 승인 처리 중…";
+      });
+    }
+    // 칩(-10/-5/+5/+10분)은 종료 시각만 굴린다 — 수업이 당겨지거나 길어진 경계 이동의 주 사용례.
+    function rollTime(input, deltaMin){
+      const [h, m] = (input.value || input.dataset.orig || "00:00").split(":").map(Number);
+      const total = Math.min(23*60+59, Math.max(0, h*60 + m + deltaMin));
+      input.value = `${String(Math.floor(total/60)).padStart(2,"0")}:${String(total%60).padStart(2,"0")}`;
+    }
+    async function splitAction(act, id, body){
+      if (demoMode){ toast("데모 모드 — 실제 동작은 하지 않습니다."); return; }
+      const room = cur;
+      try {
+        const path = act === "cancel-merge" ? "/api/splits/cancel-merge"
+                                            : `/api/splits/${encodeURIComponent(id)}/${act}`;
+        const r = await api(room, path, { method:"POST", body: body ? JSON.stringify(body) : null });
+        const d = await r.json();
+        if (cur !== room) return;
+        if (!d.ok) toast(d.error || "처리하지 못했습니다.");
+        else if (act === "approve") toast(d.applied === "scheduled" ? "승인 — 그 시각이 되면 잘라 올립니다"
+                                                                    : "승인 — 잘라서 업로드 큐에 넣습니다");
+        else if (act === "merge") toast("연강으로 표시 — 다음 교시가 끝나면 합쳐집니다");
+        else if (act === "skip") toast("이 교시 VOD를 건너뜁니다");
+        else toast("연강을 취소했습니다");
+        if (d.splits) renderSplits(d.splits); // WS 푸시를 기다리지 않고 즉시 반영
+      } catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
+    }
+    $("splitArea").onclick = async e => {
+      const btn = e.target.closest("button");
+      if (!btn || btn.disabled) return;
+      if (btn.dataset.chip){
+        const end = $("splitArea").querySelector(`input[data-tend="${btn.dataset.for}"]`);
+        if (end) rollTime(end, +btn.dataset.chip);
+        return;
+      }
+      const act = btn.dataset.act, id = btn.dataset.sid;
+      if (!act) return;
+      if (act === "approve"){
+        // 조작한 시각만 보낸다 — 손대지 않은 필드는 서버의 제안값 그대로.
+        const start = $("splitArea").querySelector(`input[data-tstart="${id}"]`);
+        const end = $("splitArea").querySelector(`input[data-tend="${id}"]`);
+        const body = {};
+        if (start && start.value && start.value !== start.dataset.orig) body.start = start.value;
+        if (end && end.value && end.value !== end.dataset.orig) body.end = end.value;
+        await splitAction("approve", id, body);
+      } else if (act === "merge"){
+        const room = cur;
+        if (!await confirmAsk("다음 교시와 연강으로 합칠까요?",
+          "이 교시는 아직 자르지 않고, 다음 교시가 끝날 때 하나의 영상으로 승인 요청이 옵니다.\n(두 교시 사이에 쉬는 시간·점심이 있으면 그 구간도 영상에 포함됩니다.)",
+          "연강")) return;
+        if (cur !== room) return;
+        await splitAction("merge", id);
+      } else if (act === "skip"){
+        const room = cur;
+        if (!await confirmAsk("이 교시 VOD를 건너뛸까요?",
+          "이 구간은 잘라 올리지 않습니다. 로컬 녹화 원본은 그대로 남습니다.",
+          "건너뛰기")) return;
+        if (cur !== room) return;
+        await splitAction("skip", id);
+      } else if (act === "cancel-merge"){
+        await splitAction("cancel-merge", null);
+      }
+    };
+
+    function captionLabel(asset){
+      switch(asset.captionStatus){
+        case "available": return asset.captionLanguage ? `자막 준비 (${asset.captionLanguage})` : "자막 준비";
+        case "downloading": return "자막 확인 중";
+        case "unavailable": return "자막 처리 중";
+        case "failed": return "자막 재시도 가능";
+        default: return asset.videoId ? "자막 확인 가능" : "업로드 완료 대기";
+      }
+    }
+    function renderAssets(items){
+      const list=$("assetList");
+      if(!list) return;
+      list.innerHTML = items.length ? items.map(asset=>{
+        const audioDisabled = asset.audioAvailable ? "" : " disabled";
+        const captionDisabled = asset.videoId ? "" : " disabled";
+        const message = asset.captionMessage ? ` · ${esc(asset.captionMessage)}` : "";
+        return `<div class="asset">
+          <div class="asset-head"><span class="asset-title">${esc(asset.title)}</span><span class="pill">${esc(asset.captionStatus||"pending")}</span></div>
+          <div class="asset-meta">${esc(asset.date)} · ${esc(asset.period)}교시 · ${captionLabel(asset)}${message}</div>
+          <div class="asset-actions">
+            <button class="ghost" data-asset-download="audio" data-asset-id="${esc(asset.id)}"${audioDisabled}>음성 받기</button>
+            <button class="ghost" data-asset-download="captions" data-asset-id="${esc(asset.id)}"${captionDisabled}>자막 받기</button>
+          </div>
+        </div>`;
+      }).join("") : '<div class="muted">아직 생성된 교시 자료가 없습니다.</div>';
+      list.querySelectorAll("[data-asset-download]").forEach(button=>{
+        button.onclick=()=>downloadAsset(button.dataset.assetId, button.dataset.assetDownload);
+      });
+    }
+    async function loadAssets(){
+      if(assetLoading || !cur) return;
+      assetLoading = true;
+      const room=cur;
+      try{
+        const r=await api(room,"/api/period-assets");
+        const d=await r.json();
+        if(cur!==room) return;
+        assetItems=Array.isArray(d.items) ? d.items : [];
+        renderAssets(assetItems);
+      }catch(e){}
+      finally{ assetLoading=false; }
+    }
+    function filenameFromResponse(response, fallback){
+      const value=response.headers.get("Content-Disposition") || "";
+      const encoded=value.match(/filename\*=UTF-8''([^;]+)/i);
+      if(encoded){ try { return decodeURIComponent(encoded[1]); } catch(e){} }
+      const plain=value.match(/filename="?([^";]+)"?/i);
+      return plain ? plain[1] : fallback;
+    }
+    async function downloadAsset(id, kind){
+      if(!cur || !id) return;
+      const room=cur;
+      const label=kind==="audio" ? "음성" : "자막";
+      if(kind==="captions") toast("처음 사용 시 PC에서 YouTube 자막 권한을 승인해주세요.");
+      try{
+        const r=await api(room,`/api/period-assets/${encodeURIComponent(id)}/${kind}`,{signal:timeoutSignal(300000)});
+        if(!r.ok){
+          let message="다운로드하지 못했습니다.";
+          try { const body=await r.json(); message=body.error||message; } catch(e){}
+          toast(message); loadAssets().catch(()=>{}); return;
+        }
+        const blob=await r.blob();
+        if(!blob.size){ toast("받을 파일이 비어 있습니다."); return; }
+        const url=URL.createObjectURL(blob);
+        const a=document.createElement("a");
+        a.href=url; a.download=filenameFromResponse(r, kind==="audio" ? "audio.m4a" : "captions.srt");
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(()=>URL.revokeObjectURL(url),1000);
+        toast(label+" 파일을 받았습니다.");
+        loadAssets().catch(()=>{});
+      }catch(e){
+        if(cur===room) toast(label+" 다운로드에 실패했습니다.");
+      }
     }
 
     function rowsHtml(periods){
@@ -826,9 +1108,11 @@
 
     // ---- 주기 갱신 (화면 상태로 게이트: 중복 인터벌 없이 한 번만 등록) ----
     setInterval(()=>{ if(view==="dash" && cur && (!ws || ws.readyState!==1)) pollOnce().catch(()=>{}); }, 5000);
+    setInterval(()=>{ if(view==="dash" && cur) loadAssets().catch(()=>{}); }, 15000);
     setInterval(()=>{ refreshPreview(); }, 2000);
     setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
     setInterval(()=>{ if(view==="grid") refreshGridPreviews(); }, 10000);
+    setInterval(tickSplitCountdowns, 1000); // 승인 카드 자동승인 카운트다운
 
     // 하드웨어/제스처 뒤로가기: 그리드에서 들어간 하위 화면(상세·페어링)을 그리드 복귀로 되돌린다.
     // 단일 호실이거나 이미 그리드면 관여하지 않는다(항목이 그대로 pop돼 기존처럼 페이지를 떠난다).
