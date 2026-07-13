@@ -64,7 +64,12 @@ jobs:
         run: |
           $v = "${{ github.ref_name }}" -replace '^v', ''
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "Release version: $v"
+          # 프리릴리스 판별: 태그에 SemVer 프리릴리스 접미사(예: v0.3.0-rc.1)가 있으면 GitHub
+          # 릴리스를 pre-release 로 게시한다. 앱 자동업데이트는 GithubSource(prerelease:false)라
+          # pre-release 를 건너뛰므로, 현장 배포본(정식 릴리스)에 영향 없이 RC 를 올려 검증 가능.
+          $pre = if ($v -match '-') { 'true' } else { 'false' }
+          "pre=$pre" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "Release version: $v (prerelease=$pre)"
 
       # 1) WPF 호스트를 self-contained 로 publish (대상 PC에 .NET/ASP.NET Core 런타임 불필요).
       - name: Publish app (self-contained, win-x64)
@@ -163,5 +168,6 @@ jobs:
           --repoUrl https://github.com/${{ github.repository }}
           --token $env:GITHUB_TOKEN
           --publish
+          --pre ${{ steps.ver.outputs.pre }}
           --releaseName "Media Capture Helper ${{ steps.ver.outputs.version }}"
           --tag ${{ github.ref_name }}
