@@ -18,4 +18,10 @@ public interface IPushSubscriptionStore
 
     /// <summary>Removes the subscription with this endpoint; returns false if it was not present.</summary>
     bool Remove(string endpoint);
+
+    /// <summary>
+    /// Removes every subscription and returns the number cleared. Used only after the VAPID
+    /// application-server key rotates, because those subscriptions can no longer be encrypted.
+    /// </summary>
+    int Clear();
 }

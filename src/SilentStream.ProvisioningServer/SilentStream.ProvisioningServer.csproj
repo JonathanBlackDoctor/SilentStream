@@ -6,4 +6,8 @@
     <AssemblyName>MediaCaptureHelper.ProvisioningServer</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\SilentStream.Core\SilentStream.Core.csproj" />
+  </ItemGroup>
+
 </Project>

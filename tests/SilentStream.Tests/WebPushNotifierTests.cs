@@ -124,10 +124,17 @@ public class WebPushNotifierTests
             _items.Add(s);
         }
         public bool Remove(string endpoint) => _items.RemoveAll(x => x.Endpoint == endpoint) > 0;
+        public int Clear()
+        {
+            var count = _items.Count;
+            _items.Clear();
+            return count;
+        }
     }
 
     private sealed class FixedKeys(VapidKeys keys) : IVapidKeyStore
     {
         public VapidKeys GetOrCreate() => keys;
+        public VapidKeyInstallResult Install(VapidKeys candidate) => VapidKeyInstallResult.Unchanged;
     }
 }

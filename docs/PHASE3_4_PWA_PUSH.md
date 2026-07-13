@@ -81,8 +81,23 @@ aes128gcm 암호화 → `POST <endpoint>` (`Authorization: vapid …`, `Content-
    (`Notification.requestPermission` → `PushManager.subscribe({applicationServerKey})` → `POST /api/push/subscribe`, 해제도 지원).
    미지원·평문 컨텍스트에선 카드 숨김.
 8. **HTTPS 전제(런타임 성질)**: 서비스워커·Web Push는 보안 컨텍스트 필수 — Cloudflare 호스트네임(HTTPS)에서만 동작,
-   LAN 평문 http는 불가(텔레그램이 LAN 폴백 담당). **다중 호실**: 브라우저 구독은 서비스워커당 1개라 마지막 켠 호실
-   알림만 옴 — 전 호실 알림엔 공유 VAPID 키 배포가 필요(후속 과제).
+   LAN 평문 http는 불가(텔레그램이 LAN 폴백 담당).
+
+## 4.1 다중 호실 공유 VAPID — 구현 완료 (실기기 검증 대기)
+
+- 프로비저닝 서버의 비공개 `rooms.json` 최상위 `sharedVapid`는 모든 등록 호실에 같은 VAPID 키쌍을 배포한다.
+  신규 claim은 키를 즉시 받고, 기존 설치는 `roomId + installationId + DPAPI 복호화 터널 토큰`으로 인증한
+  갱신 API에서만 키를 받는다. 키는 계속 `vapid_keys.json`에 DPAPI로 저장되고 `config.json`에는 기록하지 않는다.
+- 키 설치는 검증·원자 교체한다. 실제 키 교체 때만 기존 `push_subscriptions.json`을 비워 이전 키로 암호화된
+  푸시가 남지 않게 하며, 폰에서 알림을 다시 켜야 한다.
+- PWA는 하나의 서비스워커 구독의 application-server key를 모든 호실과 비교해 같은 키의 호실에 모두 등록한다.
+  등록/해제 결과는 `성공 N / 대상 M`과 실패 호실명으로 표시한다. 호실 키가 다르거나 연결할 수 없으면 기존
+  브라우저 구독을 무조건 끊지 않고 `호실 업데이트·재연결 필요`로 보여 준다. 따라서 이 상태를 "전체 알림"으로
+  표시하지 않는다.
+- 프로비저닝되지 않은 단일 호실과 quick-tunnel 설치는 로컬 VAPID 키를 유지한다. 이들은 다중 호실 전체 알림
+  대상에는 포함되지 않는다.
+
+운영 준비·키 생성 절차는 [프로비저닝 서버 README](../src/SilentStream.ProvisioningServer/README.md)를 따른다.
 
 **잔여 = 실기기 런타임 검증만**: HTTPS(Cloudflare) + 실제 폰에서 ①"폰 알림 켜기" → 구독 저장 ②상태 변화(무음/송출끊김)
 발생 시 잠금화면 푸시 수신 ③알림 탭 → 컨트롤러 포커스 ④"폰 알림 끄기" → 구독 제거. (앱 자동송출 성질상 개발 PC 실행은 보류.)
@@ -101,5 +116,5 @@ aes128gcm 암호화 → `POST <endpoint>` (`Authorization: vapid …`, `Content-
   JPEG를 `/ws/status`에 바이너리 프레임으로 전송한다. WebSocket이 끊긴 경우에만 기존 HTTP 프리뷰
   폴링으로 폴백한다.
 
-**검증 상태:** Core 단위 테스트 405개 통과, 전체 솔루션 빌드 경고/오류 0. 실제 Cloudflare 폰에서
-진단 갱신·프리뷰 프레임·스냅샷·강제 복구·안전 재시작은 별도 실기기 확인이 필요하다.
+**검증 상태:** Core 및 프로비저닝 단위 테스트와 Windows 오디오 회귀 테스트를 자동화했다. 실제 Cloudflare 폰에서
+다중 호실 알림·진단 갱신·프리뷰 프레임·스냅샷·강제 복구·안전 재시작은 별도 실기기 확인이 필요하다.

@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using SilentStream.Core.Remote.WebPush;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -11,6 +12,16 @@ var builder = WebApplication.CreateBuilder(args);
 if (args is ["hash-code", var code])
 {
     Console.WriteLine(ActivationCodeHasher.Hash(code));
+    return;
+}
+
+// Generates the one shared VAPID keypair copied into the server-only rooms.json document.
+// It deliberately prints the private scalar only for this explicit administrator command.
+if (args is ["generate-vapid"])
+{
+    var keys = VapidKeyMaterial.Generate();
+    Console.WriteLine(JsonSerializer.Serialize(new SharedVapidKey(
+        keys.PublicKeyBase64Url, Base64Url.Encode(keys.PrivateKey)), new JsonSerializerOptions { WriteIndented = true }));
     return;
 }
 
@@ -59,7 +70,8 @@ app.MapPost("/api/claims", (ClaimRequest? request, RoomRegistry rooms, IOptions<
                 cloudflareHostname = result.Assignment.CloudflareHostname,
                 cloudflareTunnelToken = result.Assignment.CloudflareTunnelToken,
                 port = result.Assignment.Port,
-                cloudflareProtocol = result.Assignment.CloudflareProtocol
+                cloudflareProtocol = result.Assignment.CloudflareProtocol,
+                sharedVapid = result.Assignment.SharedVapid
             }),
             ClaimResultKind.UnknownRoom => Error("선택한 호실을 찾을 수 없습니다.", StatusCodes.Status404NotFound),
             ClaimResultKind.InvalidCode => Error("등록 코드가 올바르지 않습니다.", StatusCodes.Status403Forbidden),
@@ -70,6 +82,36 @@ app.MapPost("/api/claims", (ClaimRequest? request, RoomRegistry rooms, IOptions<
     catch (InvalidOperationException ex)
     {
         log.LogError(ex, "호실 프로비저닝 요청을 처리하지 못했습니다.");
+        return Error("호실 설정 서버가 아직 준비되지 않았습니다.", StatusCodes.Status503ServiceUnavailable);
+    }
+});
+
+// Updates installed versions that predate shared multi-room push. The per-room tunnel token is
+// already held DPAPI-protected by that exact installation, making it a high-entropy proof without
+// reopening the one-time enrollment-code UI after every release.
+app.MapPost("/api/assignments/refresh-vapid", (VapidRefreshRequest? request, RoomRegistry rooms, ILogger<Program> log) =>
+{
+    if (request is null || !RoomRegistry.IsValidId(request.RoomId) ||
+        !RoomRegistry.IsSafeDeviceValue(request.InstallationId) || !RoomRegistry.IsSafeSecret(request.TunnelToken))
+    {
+        return Error("등록 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    }
+
+    try
+    {
+        var result = rooms.RefreshSharedVapid(request);
+        return result.Kind switch
+        {
+            VapidRefreshResultKind.Success => Results.Ok(new { sharedVapid = result.SharedVapid }),
+            VapidRefreshResultKind.NotConfigured => Results.NoContent(),
+            _ => Error("등록 정보를 확인할 수 없습니다.", StatusCodes.Status401Unauthorized)
+        };
+    }
+    catch (InvalidOperationException ex)
+    {
+        // Never include the request or tunnel token in logs; only server-side configuration faults
+        // are useful to the operator here.
+        log.LogError(ex, "공유 알림 키 갱신 요청을 처리하지 못했습니다.");
         return Error("호실 설정 서버가 아직 준비되지 않았습니다.", StatusCodes.Status503ServiceUnavailable);
     }
 });
@@ -188,7 +230,27 @@ public sealed class RoomRegistry
             return new ClaimResult(ClaimResultKind.Success, new ProvisioningAssignment(
                 room.Id, room.DisplayName, room.CloudflareHostname, room.CloudflareTunnelToken,
                 room.Port is >= 1 and <= 65535 ? room.Port : 8787,
-                NormalizeProtocol(room.CloudflareProtocol)));
+                NormalizeProtocol(room.CloudflareProtocol), GetSharedVapidLocked(document)));
+        }
+    }
+
+    public VapidRefreshResult RefreshSharedVapid(VapidRefreshRequest request)
+    {
+        lock (_gate)
+        {
+            var document = LoadLocked();
+            var room = document.Rooms.FirstOrDefault(r =>
+                string.Equals(r.Id, request.RoomId, StringComparison.OrdinalIgnoreCase));
+            if (room is null || !string.Equals(room.ClaimedInstallationId, request.InstallationId, StringComparison.Ordinal) ||
+                !FixedTimeEquals(room.CloudflareTunnelToken, request.TunnelToken))
+            {
+                return new VapidRefreshResult(VapidRefreshResultKind.Unauthorized);
+            }
+
+            var shared = GetSharedVapidLocked(document);
+            return shared is null
+                ? new VapidRefreshResult(VapidRefreshResultKind.NotConfigured)
+                : new VapidRefreshResult(VapidRefreshResultKind.Success, shared);
         }
     }
 
@@ -217,6 +279,9 @@ public sealed class RoomRegistry
     public static bool IsSafeDeviceValue(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value.Length <= 128 &&
         value.All(c => !char.IsControl(c));
+
+    public static bool IsSafeSecret(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 4096 && value.All(c => !char.IsControl(c));
 
     private RoomDocument LoadLocked()
     {
@@ -255,10 +320,36 @@ public sealed class RoomRegistry
         "auto" => "auto",
         _ => "http2"
     };
+
+    private static SharedVapidKey? GetSharedVapidLocked(RoomDocument document)
+    {
+        if (document.SharedVapid is null)
+        {
+            return null; // shared push remains optional for legacy / single-room deployments
+        }
+        if (!document.SharedVapid.TryGetKeys(out _))
+        {
+            throw new InvalidOperationException("공유 VAPID 키가 올바르지 않습니다.");
+        }
+        return document.SharedVapid;
+    }
+
+    private static bool FixedTimeEquals(string expected, string supplied)
+    {
+        var a = Encoding.UTF8.GetBytes(expected);
+        var b = Encoding.UTF8.GetBytes(supplied);
+        return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
+    }
 }
 
 public sealed class RoomDocument
 {
+    /// <summary>
+    /// One VAPID identity shared by every room in this deployment. The private key is server-only
+    /// configuration and is returned solely through a successful claim/refresh over HTTPS.
+    /// </summary>
+    public SharedVapidKey? SharedVapid { get; set; }
+
     public List<RoomSecret> Rooms { get; set; } = new();
 }
 
@@ -288,13 +379,16 @@ public sealed class RoomSecret
 
 public sealed record ClaimRequest(string RoomId, string InstallationId, string MachineName, string? ActivationCode);
 
+public sealed record VapidRefreshRequest(string RoomId, string InstallationId, string TunnelToken);
+
 public sealed record ProvisioningAssignment(
     string RoomId,
     string DisplayName,
     string CloudflareHostname,
     string CloudflareTunnelToken,
     int Port,
-    string CloudflareProtocol);
+    string CloudflareProtocol,
+    SharedVapidKey? SharedVapid);
 
 public enum ClaimResultKind
 {
@@ -305,6 +399,41 @@ public enum ClaimResultKind
 }
 
 public sealed record ClaimResult(ClaimResultKind Kind, ProvisioningAssignment? Assignment = null);
+
+public enum VapidRefreshResultKind
+{
+    Success,
+    NotConfigured,
+    Unauthorized
+}
+
+public sealed record VapidRefreshResult(VapidRefreshResultKind Kind, SharedVapidKey? SharedVapid = null);
+
+/// <summary>
+/// Base64url representation of an RFC 8292 P-256 VAPID keypair. This lives only in the server's
+/// non-versioned room document and in a Windows user's DPAPI-protected local VAPID store.
+/// </summary>
+public sealed record SharedVapidKey(string PublicKey, string PrivateKey)
+{
+    public bool TryGetKeys(out VapidKeys keys)
+    {
+        if (string.IsNullOrWhiteSpace(PublicKey) || string.IsNullOrWhiteSpace(PrivateKey))
+        {
+            keys = null!;
+            return false;
+        }
+        try
+        {
+            keys = new VapidKeys(Base64Url.Decode(PublicKey), Base64Url.Decode(PrivateKey));
+            return VapidKeyMaterial.IsValid(keys);
+        }
+        catch (FormatException)
+        {
+            keys = null!;
+            return false;
+        }
+    }
+}
 
 /// <summary>PBKDF2 hashes per-room enrollment codes; the server never stores a usable code.</summary>
 public static class ActivationCodeHasher

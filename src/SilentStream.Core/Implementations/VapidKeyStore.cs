@@ -32,6 +32,30 @@ public sealed class VapidKeyStore : IVapidKeyStore
         }
     }
 
+    public VapidKeyInstallResult Install(VapidKeys keys)
+    {
+        if (!VapidKeyMaterial.IsValid(keys))
+        {
+            return VapidKeyInstallResult.Invalid;
+        }
+
+        lock (_gate)
+        {
+            var existing = _cached ??= Load();
+            if (existing is not null &&
+                CryptographicOperations.FixedTimeEquals(existing.PublicKey, keys.PublicKey) &&
+                CryptographicOperations.FixedTimeEquals(existing.PrivateKey, keys.PrivateKey))
+            {
+                return VapidKeyInstallResult.Unchanged;
+            }
+
+            var replacement = new VapidKeys(keys.PublicKey.ToArray(), keys.PrivateKey.ToArray());
+            Persist(replacement);
+            _cached = replacement;
+            return VapidKeyInstallResult.Replaced;
+        }
+    }
+
     private VapidKeys? Load()
     {
         if (!File.Exists(_keyFile))
@@ -47,7 +71,8 @@ public sealed class VapidKeyStore : IVapidKeyStore
             }
             var publicKey = Base64Url.Decode(stored.PublicKey);
             var privateKey = Base64Url.Decode(_protector.Unprotect(stored.PrivateKeyEnc));
-            return new VapidKeys(publicKey, privateKey);
+            var keys = new VapidKeys(publicKey, privateKey);
+            return VapidKeyMaterial.IsValid(keys) ? keys : null;
         }
         catch
         {
@@ -57,14 +82,7 @@ public sealed class VapidKeyStore : IVapidKeyStore
 
     private VapidKeys Generate()
     {
-        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        var p = ecdsa.ExportParameters(includePrivateParameters: true);
-        var publicKey = new byte[65];
-        publicKey[0] = 0x04;
-        LeftPad(p.Q.X!, 32).CopyTo(publicKey, 1);
-        LeftPad(p.Q.Y!, 32).CopyTo(publicKey, 33);
-
-        var keys = new VapidKeys(publicKey, LeftPad(p.D!, 32));
+        var keys = VapidKeyMaterial.Generate();
         Persist(keys);
         return keys;
     }
@@ -78,17 +96,6 @@ public sealed class VapidKeyStore : IVapidKeyStore
         var tmp = _keyFile + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(stored));
         File.Move(tmp, _keyFile, overwrite: true);
-    }
-
-    private static byte[] LeftPad(byte[] value, int length)
-    {
-        if (value.Length == length)
-        {
-            return value;
-        }
-        var padded = new byte[length];
-        value.CopyTo(padded, length - value.Length);
-        return padded;
     }
 
     private sealed record StoredKeys(string PublicKey, string PrivateKeyEnc);

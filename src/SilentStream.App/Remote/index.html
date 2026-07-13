@@ -300,6 +300,7 @@
     <div class="card hidden" id="pushCard">
       <div class="card-lead"><h2>폰 알림</h2><small>상태 변화를 잠금화면으로</small></div>
       <button class="ghost" id="pushToggle">🔔 폰 알림 켜기</button>
+      <small class="muted" id="pushScope"></small>
     </div>
 
     <button id="restartAppBtn" class="ghost" style="margin-top:0">앱 다시 시작</button>
@@ -1291,8 +1292,9 @@
     // 단일 호실이거나 이미 그리드면 관여하지 않는다(항목이 그대로 pop돼 기존처럼 페이지를 떠난다).
     // ---- 폰 알림 (PWA Web Push, 원격 컨트롤러 개선 Phase 3) ----
     // 서비스워커·푸시는 보안 컨텍스트(HTTPS)에서만 동작 → LAN 평문이나 미지원 브라우저에서는 카드가 숨는다.
-    // (그 경우 텔레그램 알림이 계속 담당한다.) 브라우저 구독은 서비스워커당 1개라, 다중 호실이면 마지막으로
-    // 켠 호실의 알림만 온다 — 모든 호실 알림엔 공유 VAPID 키 배포가 필요(후속 과제, docs/PHASE3_4_PWA_PUSH.md).
+    // (그 경우 텔레그램 알림이 계속 담당한다.) 브라우저 구독은 서비스워커당 1개이므로,
+    // 공유 VAPID 키가 같은 호실에 그 하나의 구독을 모두 등록한다. 키가 다른 호실은 기존 구독을
+    // 폐기하지 않고, 결과에 별도로 표시해 전체 알림으로 오인하지 않게 한다.
     const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
     let swReg = null;
 
@@ -1312,6 +1314,51 @@
       try { return swReg ? await swReg.pushManager.getSubscription() : null; } catch(e){ return null; }
     }
 
+    function pushRoomName(room){ return room.label || room.baseUrl; }
+
+    function sameVapidKey(subscription, publicKey){
+      const serverKey = subscription?.options?.applicationServerKey;
+      if (!serverKey || !publicKey) return false;
+      const current = new Uint8Array(serverKey);
+      const expected = urlBase64ToUint8Array(publicKey);
+      return current.length === expected.length && current.every((value, index) => value === expected[index]);
+    }
+
+    function setPushScope(message){
+      const scope = $("pushScope");
+      if (scope) scope.textContent = message || "";
+    }
+
+    function formatPushRooms(rooms){ return rooms.map(x => pushRoomName(x.room || x)).join(", "); }
+
+    async function getPushTargets(){
+      const results = await Promise.all(rooms.map(async room => {
+        try {
+          const response = await api(room, "/api/push/vapid");
+          if (!response.ok) throw new Error("vapid");
+          const publicKey = (await response.json()).publicKey;
+          if (typeof publicKey !== "string" || !publicKey) throw new Error("vapid");
+          return { room, publicKey };
+        } catch(e) { return { room, error: true }; }
+      }));
+      const current = results.find(result => result.room === cur);
+      if (!current || current.error) throw new Error("current-vapid");
+      return {
+        publicKey: current.publicKey,
+        compatible: results.filter(result => !result.error && result.publicKey === current.publicKey),
+        mismatched: results.filter(result => !result.error && result.publicKey !== current.publicKey),
+        unavailable: results.filter(result => result.error),
+        total: rooms.length
+      };
+    }
+
+    function pushSummary(success, total, mismatched, unavailable){
+      const details = [];
+      if (mismatched.length) details.push(`키 불일치: ${formatPushRooms(mismatched)} (호실 업데이트·재연결 필요)`);
+      if (unavailable.length) details.push(`연결 실패: ${formatPushRooms(unavailable)}`);
+      return `폰 알림 등록: 성공 ${success} / 대상 ${total}` + (details.length ? `. ${details.join(" / ")}` : "");
+    }
+
     async function refreshPushButton(){
       const card = $("pushCard"), btn = $("pushToggle");
       if (!card) return;
@@ -1325,35 +1372,64 @@
     async function enablePush(){
       if (!swReg) await registerServiceWorker();
       if (!swReg){ toast("이 브라우저·연결에서는 알림을 쓸 수 없습니다 (HTTPS 필요)."); return; }
-      const room = cur;
       if (await Notification.requestPermission() !== "granted"){ toast("알림 권한이 거부되었습니다."); return; }
-      let key;
-      try { key = (await (await api(room, "/api/push/vapid")).json()).publicKey; }
+      let targets;
+      try { targets = await getPushTargets(); }
       catch(e){ toast("서버에서 알림 키를 받지 못했습니다."); return; }
-      // 기존 구독이 다른 호실(다른 VAPID 키)로 돼 있으면 교체해야 한다.
-      const existing = await currentPushSub();
-      if (existing){ try { await existing.unsubscribe(); } catch(e){} }
-      let sub;
+
+      let sub = await currentPushSub();
+      if (sub && !sameVapidKey(sub, targets.publicKey)){
+        // 호실 사이 키가 맞지 않는 상태에서는 이미 다른 호실에 쓰이는 구독을 임의로 끊지 않는다.
+        if (targets.mismatched.length || targets.unavailable.length){
+          const message = pushSummary(0, targets.total, targets.mismatched, targets.unavailable);
+          setPushScope(message); toast(message); return;
+        }
+        try {
+          if (!await sub.unsubscribe()) throw new Error("unsubscribe");
+          sub = null;
+        } catch(e){ toast("기존 폰 알림 구독을 바꾸지 못했습니다."); return; }
+      }
+
       try {
-        sub = await swReg.pushManager.subscribe({
-          userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(key)
+        if (!sub) sub = await swReg.pushManager.subscribe({
+          userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(targets.publicKey)
         });
       } catch(e){ toast("구독에 실패했습니다."); return; }
-      try {
-        const res = await api(room, "/api/push/subscribe", { method:"POST", body: JSON.stringify(sub) });
-        if (cur === room){ toast(res.ok ? "폰 알림을 켰습니다." : "서버 등록에 실패했습니다."); refreshPushButton(); }
-      } catch(e){ if (cur === room) toast("서버 등록에 실패했습니다."); }
+
+      const registrations = await Promise.all(targets.compatible.map(async target => {
+        try {
+          const response = await api(target.room, "/api/push/subscribe", { method:"POST", body: JSON.stringify(sub) });
+          return { ...target, success: response.ok };
+        } catch(e) { return { ...target, success: false }; }
+      }));
+      const failed = registrations.filter(result => !result.success);
+      const message = pushSummary(
+        registrations.length - failed.length,
+        targets.total,
+        targets.mismatched,
+        [...targets.unavailable, ...failed]);
+      setPushScope(message); toast(message); refreshPushButton();
     }
 
     async function disablePush(){
-      const room = cur;
       const sub = await currentPushSub();
-      if (sub){
-        const endpoint = sub.endpoint;
-        try { await sub.unsubscribe(); } catch(e){}
-        try { await api(room, "/api/push/subscribe", { method:"DELETE", body: JSON.stringify({ endpoint }) }); } catch(e){}
-      }
-      toast("폰 알림을 껐습니다.");
+      if (!sub){ setPushScope("폰 알림 구독이 없습니다."); refreshPushButton(); return; }
+      const endpoint = sub.endpoint;
+      const removals = await Promise.all(rooms.map(async room => {
+        try {
+          const response = await api(room, "/api/push/subscribe", { method:"DELETE", body: JSON.stringify({ endpoint }) });
+          return { room, success: response.ok };
+        } catch(e) { return { room, success: false }; }
+      }));
+      const failedRemovals = removals.filter(result => !result.success);
+      let browserUnsubscribeFailed = false;
+      try { await sub.unsubscribe(); } catch(e) { browserUnsubscribeFailed = true; }
+      const failures = browserUnsubscribeFailed
+        ? [...failedRemovals, { room: { label:"브라우저 구독" }, success:false }]
+        : failedRemovals;
+      const message = `폰 알림 해제: 성공 ${removals.length - failedRemovals.length} / 대상 ${rooms.length}`
+        + (failures.length ? `. 실패: ${formatPushRooms(failures)}` : "");
+      setPushScope(message); toast(message);
       refreshPushButton();
     }
 

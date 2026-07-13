@@ -1,4 +1,8 @@
 {
+  "sharedVapid": {
+    "publicKey": "PASTE_THE_PUBLIC_KEY_FROM_GENERATE_VAPID_HERE",
+    "privateKey": "PASTE_THE_PRIVATE_KEY_FROM_GENERATE_VAPID_HERE"
+  },
   "rooms": [
     {
       "id": "m111",

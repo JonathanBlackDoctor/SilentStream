@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using SilentStream.Core.Provisioning;
+using SilentStream.Core.Remote.WebPush;
 using Xunit;
 
 namespace SilentStream.Tests;
@@ -47,6 +48,44 @@ public sealed class RoomProvisioningClientTests
         Assert.Equal("single-room-token", assignment.CloudflareTunnelToken);
         Assert.Equal(HttpMethod.Post, captured?.Method);
         Assert.Equal("/base/api/claims", captured?.RequestUri?.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task Claim_accepts_a_valid_optional_shared_vapid_key()
+    {
+        var keys = VapidKeyMaterial.Generate();
+        using var http = new HttpClient(new StubHandler(_ => Json($$"""
+            { "roomId": "m111", "displayName": "M111", "cloudflareHostname": "m111.silentstream.win",
+              "cloudflareTunnelToken": "single-room-token", "port": 8787, "cloudflareProtocol": "http2",
+              "sharedVapid": { "publicKey": "{{keys.PublicKeyBase64Url}}", "privateKey": "{{Base64Url.Encode(keys.PrivateKey)}}" } }
+            """)));
+        using var client = new RoomProvisioningClient(new Uri("https://provision.example/"), http);
+
+        var assignment = await client.ClaimAsync(new ProvisioningClaimRequest("m111", "install-1", "M111-PC", null));
+
+        Assert.NotNull(assignment.SharedVapid);
+        Assert.True(assignment.SharedVapid!.TryGetKeys(out var provisioned));
+        Assert.Equal(keys.PublicKey, provisioned.PublicKey);
+    }
+
+    [Fact]
+    public async Task Refresh_posts_tunnel_proof_and_returns_shared_vapid_only()
+    {
+        HttpRequestMessage? captured = null;
+        var keys = VapidKeyMaterial.Generate();
+        using var http = new HttpClient(new StubHandler(request =>
+        {
+            captured = request;
+            return Json($$"""{ "sharedVapid": { "publicKey": "{{keys.PublicKeyBase64Url}}", "privateKey": "{{Base64Url.Encode(keys.PrivateKey)}}" } }""");
+        }));
+        using var client = new RoomProvisioningClient(new Uri("https://provision.example/base/"), http);
+
+        var key = await client.RefreshSharedVapidAsync(new ProvisioningVapidRefreshRequest("m111", "install-1", "tunnel-secret"));
+
+        Assert.NotNull(key);
+        Assert.True(key!.TryGetKeys(out _));
+        Assert.Equal(HttpMethod.Post, captured?.Method);
+        Assert.Equal("/base/api/assignments/refresh-vapid", captured?.RequestUri?.AbsolutePath);
     }
 
     [Theory]

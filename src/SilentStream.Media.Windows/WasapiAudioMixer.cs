@@ -20,10 +20,10 @@ namespace SilentStream.Media.Windows;
 public sealed class WasapiAudioMixer : IAudioMixer
 {
     private static readonly WaveFormat MixFormat = WaveFormat.CreateIeeeFloatWaveFormat(48000, 2);
-    private const int OutputSampleRate = 48000;
-    private const int OutputChannels = 2;
-    private const int FramesPerChunk = OutputSampleRate / 50;          // 20 ms
-    private const int SamplesPerChunk = FramesPerChunk * OutputChannels;
+    private const int OutputSampleRate = ClockedPcmChunker.SampleRate;
+    private const int OutputChannels = ClockedPcmChunker.Channels;
+    private const int FramesPerChunk = ClockedPcmChunker.FramesPerChunk;
+    private const int SamplesPerChunk = ClockedPcmChunker.SamplesPerChunk;
 
     private const int LevelEmitIntervalMs = 60;                       // ~16 Hz meter updates
     private const double SilenceThresholdDb = -60;                    // below this a mic reads "no signal"
@@ -395,7 +395,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
     private void PumpLoop(CancellationToken ct)
     {
         var floatBuffer = new float[SamplesPerChunk];
-        var pcmBuffer = new byte[SamplesPerChunk * 2];
+        var pcmBuffer = new byte[ClockedPcmChunker.PcmBytesPerChunk];
         var clock = Stopwatch.StartNew();
         long emittedFrames = 0;
 
@@ -412,30 +412,12 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 continue;
             }
 
-            var mixer = _mixer;
-            if (mixer is null)
-            {
-                emittedFrames += FramesPerChunk; // keep the clock advancing while idle
-                continue;
-            }
-
-            var read = mixer.Read(floatBuffer, 0, SamplesPerChunk);
-            for (var i = 0; i < read; i++)
-            {
-                var sample = Math.Clamp(floatBuffer[i], -1f, 1f);
-                var value = (short)(sample * short.MaxValue);
-                pcmBuffer[i * 2] = (byte)value;
-                pcmBuffer[i * 2 + 1] = (byte)(value >> 8);
-            }
-            _masterLevel.AccumulateFloat(floatBuffer, read);
+            var byteCount = ClockedPcmChunker.FillPcm16Stereo(_mixer, floatBuffer, pcmBuffer);
+            _masterLevel.AccumulateFloat(floatBuffer, SamplesPerChunk);
             emittedFrames += FramesPerChunk;
-
-            if (read > 0)
-            {
-                SamplesAvailable?.Invoke(this, new AudioBuffer(
-                    OutputSampleRate, OutputChannels, DateTime.UtcNow,
-                    new ReadOnlyMemory<byte>(pcmBuffer, 0, read * 2)));
-            }
+            SamplesAvailable?.Invoke(this, new AudioBuffer(
+                OutputSampleRate, OutputChannels, DateTime.UtcNow,
+                new ReadOnlyMemory<byte>(pcmBuffer, 0, byteCount)));
         }
     }
 

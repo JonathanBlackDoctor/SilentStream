@@ -64,4 +64,16 @@ public class PushSubscriptionStoreTests : IDisposable
 
         Assert.Empty(new PushSubscriptionStore(_file).GetAll());
     }
+
+    [Fact]
+    public void Clear_removes_every_subscription_and_persists_the_empty_set()
+    {
+        var store = new PushSubscriptionStore(_file);
+        store.Add(Sub("https://push/1"));
+        store.Add(Sub("https://push/2"));
+
+        Assert.Equal(2, store.Clear());
+        Assert.Empty(store.GetAll());
+        Assert.Empty(new PushSubscriptionStore(_file).GetAll());
+    }
 }

@@ -71,7 +71,15 @@ public partial class App : Application
         // New installer flow: when the release contains a non-secret provisioning bootstrap,
         // choose a room once and fetch only that room's tunnel settings over HTTPS. Existing
         // deployments are marked complete by the v9 config migration, so updates never reopen it.
-        EnsureRoomProvisioning(_services, configStore, log);
+        var newlyProvisionedVapid = EnsureRoomProvisioning(_services, configStore, log);
+        if (newlyProvisionedVapid is not null)
+        {
+            InstallProvisionedVapid(_services, newlyProvisionedVapid, log);
+        }
+        else
+        {
+            SynchronizeProvisionedVapid(_services, configStore, log);
+        }
         config = configStore.Load();
 
         // 첫 실행: 연결된 모든 실제 마이크를 믹서 소스로 시드한다(시스템 + 마이크 전부). 기본값이
@@ -193,19 +201,19 @@ public partial class App : Application
     /// incomplete. A missing/invalid bootstrap is a non-fatal packaging issue, never a reason to
     /// stop unattended local recording.
     /// </summary>
-    private static void EnsureRoomProvisioning(
+    private static ProvisioningVapidKey? EnsureRoomProvisioning(
         IServiceProvider services, IConfigStore configStore, ILogService log)
     {
         var config = configStore.Load();
         if (config.Provisioning.Completed)
         {
-            return;
+            return null;
         }
 
         var bootstrap = ProvisioningBootstrapLoader.TryLoad();
         if (bootstrap is null)
         {
-            return; // this installer was deliberately built without room provisioning enabled
+            return null; // this installer was deliberately built without room provisioning enabled
         }
 
         // Persist the random identifier before the server claim. This lets the same PC retry a
@@ -226,7 +234,7 @@ public partial class App : Application
             if (dialog.Assignment is not { } assignment)
             {
                 log.Info("호실 자동 설정을 나중으로 미뤘습니다. 원격 제어는 아직 꺼져 있습니다.");
-                return;
+                return null;
             }
 
             // Encrypt before ConfigStore.Update so the plaintext assignment token never appears in
@@ -247,12 +255,92 @@ public partial class App : Application
                 c.Provisioning.CompletedAtUtc = DateTimeOffset.UtcNow;
             });
             log.Info($"호실 자동 설정 완료: {assignment.DisplayName} ({assignment.RoomId}).");
+            return assignment.SharedVapid;
         }
         catch (Exception ex)
         {
             // The dialog already displays expected service errors. This catches packaging, DPAPI,
             // and UI failures so a classroom PC can still record locally rather than fail startup.
             log.Warn($"호실 자동 설정을 적용하지 못했습니다(원격 제어는 꺼진 상태로 시작): {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Obtains the optional shared VAPID identity for installations provisioned by an older
+    /// release. The request is bounded so a temporarily unreachable provisioning server never
+    /// delays unattended capture for more than a few seconds.
+    /// </summary>
+    private static void SynchronizeProvisionedVapid(
+        IServiceProvider services, IConfigStore configStore, ILogService log)
+    {
+        var config = configStore.Load();
+        var bootstrap = ProvisioningBootstrapLoader.TryLoad();
+        if (bootstrap is null || !config.Provisioning.Completed ||
+            string.IsNullOrWhiteSpace(config.Provisioning.RoomId) ||
+            string.IsNullOrWhiteSpace(config.Provisioning.InstallationId))
+        {
+            return;
+        }
+
+        try
+        {
+            var token = !string.IsNullOrWhiteSpace(config.Remote.CloudflareTunnelTokenEnc)
+                ? services.GetRequiredService<ITokenProtector>().Unprotect(config.Remote.CloudflareTunnelTokenEnc)
+                : config.Remote.CloudflareTunnelToken;
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return; // legacy quick-tunnel / non-provisioned remote stays on its local VAPID key
+            }
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            using var client = new RoomProvisioningClient(bootstrap.ServiceUrl);
+            var shared = client.RefreshSharedVapidAsync(new ProvisioningVapidRefreshRequest(
+                config.Provisioning.RoomId, config.Provisioning.InstallationId, token), cts.Token)
+                .GetAwaiter().GetResult();
+            if (shared is not null)
+            {
+                InstallProvisionedVapid(services, shared, log);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            log.Info("공유 폰 알림 키 갱신이 지연되어 이번 시작에서는 건너뜁니다.");
+        }
+        catch (Exception ex)
+        {
+            // Remote monitoring is optional: a provisioning hiccup must never block capture,
+            // recording, or the existing per-room notification path.
+            log.Warn($"공유 폰 알림 키 갱신 실패(기존 알림 설정 유지): {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Installs trusted provisioning material directly into the existing DPAPI-backed VAPID file.
+    /// Browser subscriptions encrypt to the old application-server key, so only an actual key
+    /// rotation clears their local server copies and asks the operator to reconnect the phone.
+    /// </summary>
+    private static void InstallProvisionedVapid(
+        IServiceProvider services, ProvisioningVapidKey provisioned, ILogService log)
+    {
+        if (!provisioned.TryGetKeys(out var keys))
+        {
+            log.Warn("공유 폰 알림 키 형식이 올바르지 않아 기존 키를 유지합니다.");
+            return;
+        }
+
+        var keyStore = services.GetRequiredService<IVapidKeyStore>();
+        var subscriptions = services.GetRequiredService<IPushSubscriptionStore>();
+        switch (ProvisionedVapidInstaller.Install(keyStore, subscriptions, keys, out var removed))
+        {
+            case VapidKeyInstallResult.Replaced:
+            {
+                log.Info($"공유 폰 알림 키를 적용했습니다. 기존 구독 {removed}개를 정리했으므로 폰에서 알림을 다시 켜세요.");
+                break;
+            }
+            case VapidKeyInstallResult.Invalid:
+                log.Warn("공유 폰 알림 키 검증에 실패해 기존 키를 유지합니다.");
+                break;
         }
     }
 

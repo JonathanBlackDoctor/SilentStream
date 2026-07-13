@@ -50,6 +50,21 @@ public sealed class PushSubscriptionStore : IPushSubscriptionStore
         }
     }
 
+    public int Clear()
+    {
+        lock (_gate)
+        {
+            var list = Load();
+            var removed = list.Count;
+            if (removed > 0)
+            {
+                list.Clear();
+                Persist(list);
+            }
+            return removed;
+        }
+    }
+
     private List<StoredPushSubscription> Load()
     {
         if (_cache is not null)

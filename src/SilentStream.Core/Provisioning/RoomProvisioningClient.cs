@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SilentStream.Core.Remote.WebPush;
 
 namespace SilentStream.Core.Provisioning;
 
@@ -28,6 +29,32 @@ public sealed record ProvisioningClaimRequest(
     string? ActivationCode);
 
 /// <summary>
+/// The shared VAPID identity returned only by the trusted provisioning service. It stays in
+/// memory until the host installs it into the separate DPAPI-protected VAPID store.
+/// </summary>
+public sealed record ProvisioningVapidKey(string PublicKey, string PrivateKey)
+{
+    public bool TryGetKeys(out VapidKeys keys)
+    {
+        if (string.IsNullOrWhiteSpace(PublicKey) || string.IsNullOrWhiteSpace(PrivateKey))
+        {
+            keys = null!;
+            return false;
+        }
+        try
+        {
+            keys = new VapidKeys(Base64Url.Decode(PublicKey), Base64Url.Decode(PrivateKey));
+            return VapidKeyMaterial.IsValid(keys);
+        }
+        catch (FormatException)
+        {
+            keys = null!;
+            return false;
+        }
+    }
+}
+
+/// <summary>
 /// The single-room assignment returned over HTTPS. It exists only in memory until the WPF host
 /// immediately DPAPI-protects <see cref="CloudflareTunnelToken"/> before writing config.json.
 /// </summary>
@@ -37,7 +64,14 @@ public sealed record ProvisioningAssignment(
     string CloudflareHostname,
     string CloudflareTunnelToken,
     int Port,
-    string CloudflareProtocol);
+    string CloudflareProtocol,
+    ProvisioningVapidKey? SharedVapid);
+
+/// <summary>
+/// Proof used by an already-provisioned installation to retrieve only the shared VAPID key.
+/// The caller takes the per-room tunnel token from its DPAPI-protected local configuration.
+/// </summary>
+public sealed record ProvisioningVapidRefreshRequest(string RoomId, string InstallationId, string TunnelToken);
 
 /// <summary>Server-reported provisioning error suitable for a concise setup dialog.</summary>
 public sealed class RoomProvisioningException : Exception
@@ -135,9 +169,43 @@ public sealed class RoomProvisioningClient : IDisposable
             "auto" => "auto",
             _ => "http2"
         };
+        var sharedVapid = ParseSharedVapid(assignment.SharedVapid);
         return new ProvisioningAssignment(
             assignment.RoomId!, assignment.DisplayName!.Trim(), assignment.CloudflareHostname!.Trim(),
-            assignment.CloudflareTunnelToken!, port, protocol);
+            assignment.CloudflareTunnelToken!, port, protocol, sharedVapid);
+    }
+
+    /// <summary>
+    /// Retrieves the optional shared VAPID identity for an installation that was provisioned by
+    /// an older release. The refresh request intentionally proves possession of the room's tunnel
+    /// token instead of reopening the enrollment-code flow on every update.
+    /// </summary>
+    public async Task<ProvisioningVapidKey?> RefreshSharedVapidAsync(
+        ProvisioningVapidRefreshRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (!IsValidId(request.RoomId) || string.IsNullOrWhiteSpace(request.InstallationId) ||
+            !IsSafeSecret(request.TunnelToken))
+        {
+            throw new ArgumentException("호실 또는 설치 식별자가 올바르지 않습니다.", nameof(request));
+        }
+
+        var body = new VapidRefreshWireRequest(
+            request.RoomId.Trim(), request.InstallationId.Trim(), request.TunnelToken);
+        using var response = await _http.PostAsJsonAsync(new Uri(_baseUri, "api/assignments/refresh-vapid"), body, Json, ct)
+            .ConfigureAwait(false);
+        if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+        {
+            return null; // server has not enabled shared multi-room push yet
+        }
+        if (!response.IsSuccessStatusCode)
+        {
+            throw await ToExceptionAsync(response, ct).ConfigureAwait(false);
+        }
+
+        var payload = await response.Content.ReadFromJsonAsync<VapidRefreshWireResponse>(Json, ct).ConfigureAwait(false);
+        return ParseSharedVapid(payload?.SharedVapid)
+            ?? throw new RoomProvisioningException("서버가 받은 공유 알림 키가 올바르지 않습니다.");
     }
 
     public void Dispose()
@@ -194,6 +262,28 @@ public sealed class RoomProvisioningClient : IDisposable
         !string.IsNullOrWhiteSpace(value) && value.Length <= 253 &&
         Uri.CheckHostName(value.Trim()) is UriHostNameType.Dns;
 
+    private static bool IsSafeSecret(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && value.Length <= 4096 && value.All(c => !char.IsControl(c));
+
+    private static ProvisioningVapidKey? ParseSharedVapid(SharedVapidWire? wire)
+    {
+        if (wire is null)
+        {
+            return null;
+        }
+        if (string.IsNullOrWhiteSpace(wire.PublicKey) || string.IsNullOrWhiteSpace(wire.PrivateKey))
+        {
+            throw new RoomProvisioningException("서버가 받은 공유 알림 키가 올바르지 않습니다.");
+        }
+
+        var key = new ProvisioningVapidKey(wire.PublicKey, wire.PrivateKey);
+        if (!key.TryGetKeys(out _))
+        {
+            throw new RoomProvisioningException("서버가 받은 공유 알림 키가 올바르지 않습니다.");
+        }
+        return key;
+    }
+
     private sealed record CatalogResponse(bool RequiresActivationCode, List<RoomWire>? Rooms);
 
     private sealed record RoomWire(string? Id, string? Name);
@@ -206,7 +296,14 @@ public sealed class RoomProvisioningClient : IDisposable
         string? CloudflareHostname,
         string? CloudflareTunnelToken,
         int Port,
-        string? CloudflareProtocol);
+        string? CloudflareProtocol,
+        SharedVapidWire? SharedVapid);
+
+    private sealed record SharedVapidWire(string? PublicKey, string? PrivateKey);
+
+    private sealed record VapidRefreshWireRequest(string RoomId, string InstallationId, string TunnelToken);
+
+    private sealed record VapidRefreshWireResponse(SharedVapidWire? SharedVapid);
 
     private sealed record ErrorResponse(string? Error);
 }

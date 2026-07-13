@@ -1,6 +1,7 @@
 using System.Text;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
+using SilentStream.Core.Provisioning;
 using SilentStream.Core.Remote.WebPush;
 using Xunit;
 
@@ -53,6 +54,62 @@ public class VapidKeyStoreTests : IDisposable
         var onDisk = File.ReadAllText(_file);
         // The raw private scalar must never appear verbatim; only its protected form is persisted.
         Assert.DoesNotContain(Base64Url.Encode(keys.PrivateKey), onDisk);
+    }
+
+    [Fact]
+    public void Valid_provisioned_key_replaces_local_key_and_survives_restart()
+    {
+        var store = new VapidKeyStore(_file, _protector);
+        var local = store.GetOrCreate();
+        var provisioned = VapidKeyMaterial.Generate();
+
+        Assert.Equal(VapidKeyInstallResult.Replaced, store.Install(provisioned));
+        Assert.NotEqual(local.PublicKeyBase64Url, store.GetOrCreate().PublicKeyBase64Url);
+
+        var reloaded = new VapidKeyStore(_file, _protector).GetOrCreate();
+        Assert.Equal(provisioned.PublicKey, reloaded.PublicKey);
+        Assert.Equal(provisioned.PrivateKey, reloaded.PrivateKey);
+        Assert.Equal(VapidKeyInstallResult.Unchanged, store.Install(provisioned));
+    }
+
+    [Fact]
+    public void Invalid_provisioned_material_is_rejected_without_replacing_current_key()
+    {
+        var store = new VapidKeyStore(_file, _protector);
+        var original = store.GetOrCreate();
+        var mismatched = VapidKeyMaterial.Generate() with { PrivateKey = VapidKeyMaterial.Generate().PrivateKey };
+
+        Assert.Equal(VapidKeyInstallResult.Invalid, store.Install(mismatched));
+        Assert.Equal(original.PublicKeyBase64Url, store.GetOrCreate().PublicKeyBase64Url);
+    }
+
+    [Fact]
+    public void Malformed_curve_point_is_rejected_without_throwing()
+    {
+        var store = new VapidKeyStore(_file, _protector);
+        var original = store.GetOrCreate();
+        var invalidPoint = new byte[65];
+        invalidPoint[0] = 0x04;
+
+        Assert.Equal(VapidKeyInstallResult.Invalid, store.Install(new VapidKeys(invalidPoint, new byte[32])));
+        Assert.Equal(original.PublicKeyBase64Url, store.GetOrCreate().PublicKeyBase64Url);
+    }
+
+    [Fact]
+    public void Shared_key_rotation_clears_all_stored_browser_subscriptions()
+    {
+        var keys = new VapidKeyStore(_file, _protector);
+        _ = keys.GetOrCreate();
+        var subscriptions = new PushSubscriptionStore(Path.Combine(_dir, "subscriptions.json"));
+        subscriptions.Add(new StoredPushSubscription("https://push.example/one", "p256dh", "auth"));
+        subscriptions.Add(new StoredPushSubscription("https://push.example/two", "p256dh", "auth"));
+
+        var result = ProvisionedVapidInstaller.Install(
+            keys, subscriptions, VapidKeyMaterial.Generate(), out var removed);
+
+        Assert.Equal(VapidKeyInstallResult.Replaced, result);
+        Assert.Equal(2, removed);
+        Assert.Empty(subscriptions.GetAll());
     }
 
     private sealed class Base64Protector : ITokenProtector

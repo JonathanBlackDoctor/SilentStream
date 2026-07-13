@@ -11,4 +11,19 @@ public interface IVapidKeyStore
 {
     /// <summary>Returns the persisted keypair, creating and saving one on first call.</summary>
     VapidKeys GetOrCreate();
+
+    /// <summary>
+    /// Atomically installs a VAPID keypair received from trusted room provisioning. Invalid or
+    /// mismatched P-256 material is rejected; callers clear stale browser subscriptions only
+    /// when the returned result is <see cref="VapidKeyInstallResult.Replaced"/>.
+    /// </summary>
+    VapidKeyInstallResult Install(VapidKeys keys);
+}
+
+/// <summary>Outcome of installing provisioning-supplied VAPID material.</summary>
+public enum VapidKeyInstallResult
+{
+    Invalid,
+    Unchanged,
+    Replaced
 }
