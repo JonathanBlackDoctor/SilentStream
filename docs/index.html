@@ -1,817 +1,147 @@
 <!doctype html>
-<html lang="ko" data-theme="dark">
+<html lang="ko">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<meta name="color-scheme" content="dark light" />
-<meta name="description" content="Media Capture Helper — PC를 켜두면 화면과 소리가 자동으로 내 유튜브(일부 공개)로 송출되고 로컬에도 백업 녹화되는 Windows 프로그램. 다운로드·설치·설정·사용법 안내." />
-<title>Media Capture Helper — 다운로드 · 설치 · 사용 안내</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='14'%20fill='%233a86ff'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='12'%20fill='%23fff'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='5.5'%20fill='%23e74c3c'/%3E%3C/svg%3E" />
-
-<!--
-  이 파일은 "한 곳"에서만 고치면 전체가 바뀝니다.
-  아래 <script>의 CONFIG 객체가 브랜드명·버전·다운로드 URL·경로의 단일 출처입니다.
-  다운로드 링크는 GitHub 최신 릴리스(releases/latest)의 자산에 자동 연결됩니다.
--->
-
-<style>
-  :root{
-    --bg:#15171c; --card:#1f232b; --card2:#191d24; --line:#2c313b; --fg:#e6e8ec; --muted:#8b929e;
-    --accent:#3a86ff; --accent-fg:#ffffff; --green:#2ecc40; --yellow:#f1c40f; --red:#e74c3c;
-    --code:#0e1014; --ghost:#333a46;
-    --shadow:0 8px 30px rgba(0,0,0,.35);
-    --radius:14px;
-  }
-  :root[data-theme="light"]{
-    --bg:#f5f7fa; --card:#ffffff; --card2:#f0f2f6; --line:#e2e6ec; --fg:#1a1c20; --muted:#5b626d;
-    --accent:#2f6fe0; --accent-fg:#ffffff; --green:#1f9e33; --yellow:#b7900f; --red:#d13b2d;
-    --code:#f1f3f7; --ghost:#e6eaf1;
-    --shadow:0 8px 30px rgba(20,30,50,.10);
-  }
-
-  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
-  html{scroll-behavior:smooth;}
-  @media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto;} *{transition:none!important;} }
-  body{
-    margin:0; background:var(--bg); color:var(--fg);
-    font:16px/1.65 -apple-system,"Segoe UI",Roboto,"Malgun Gothic","Apple SD Gothic Neo",sans-serif;
-    -webkit-font-smoothing:antialiased;
-  }
-  a{color:var(--accent); text-decoration:none;}
-  a:hover{text-decoration:underline;}
-  h1,h2,h3{line-height:1.3; font-weight:700;}
-  code,kbd,pre{font-family:ui-monospace,"Cascadia Code",Consolas,"D2Coding",monospace;}
-  kbd{background:var(--code); border:1px solid var(--line); border-bottom-width:2px; border-radius:6px;
-      padding:1px 7px; font-size:.85em; white-space:nowrap;}
-  :focus-visible{outline:3px solid var(--accent); outline-offset:2px; border-radius:6px;}
-
-  /* skip link */
-  .skip{position:absolute; left:-999px; top:0; background:var(--accent); color:#fff; padding:10px 16px; z-index:100; border-radius:0 0 8px 0;}
-  .skip:focus{left:0;}
-
-  /* header */
-  header.top{position:sticky; top:0; z-index:40; background:color-mix(in srgb,var(--bg) 88%, transparent);
-    backdrop-filter:saturate(150%) blur(10px); border-bottom:1px solid var(--line);}
-  .topbar{max-width:1120px; margin:0 auto; display:flex; align-items:center; gap:12px; padding:10px 18px;}
-  .brand{display:flex; align-items:center; gap:10px; font-weight:700; font-size:17px;}
-  .brand .tile{width:26px; height:26px; border-radius:8px; background:var(--accent); position:relative; flex:0 0 auto;}
-  .brand .tile::after{content:""; position:absolute; inset:0; margin:auto; width:9px; height:9px; border-radius:50%; background:#fff;}
-  .brand .tile::before{content:""; position:absolute; inset:0; margin:auto; width:4px; height:4px; border-radius:50%; background:var(--red); z-index:1;}
-  .grow{flex:1;}
-  .toolbtn{background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:9px; padding:7px 12px; font:inherit; font-size:14px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;}
-  .toolbtn:hover{border-color:var(--accent);}
-  .toc-toggle{display:none;}
-  .progress{position:absolute; left:0; bottom:-1px; height:3px; width:0; background:var(--accent); transition:width .1s linear;}
-
-  /* layout */
-  .wrap{max-width:1120px; margin:0 auto; display:grid; grid-template-columns:230px 1fr; gap:34px; padding:26px 18px 80px;}
-  nav.toc{position:sticky; top:70px; align-self:start; max-height:calc(100vh - 90px); overflow:auto; font-size:14px; padding-right:6px;}
-  nav.toc ol{list-style:none; margin:0; padding:0;}
-  nav.toc a{display:block; color:var(--muted); padding:6px 10px; border-radius:8px; border-left:2px solid transparent;}
-  nav.toc a:hover{color:var(--fg); background:var(--card2); text-decoration:none;}
-  nav.toc a.active{color:var(--accent); border-left-color:var(--accent); background:var(--card2); font-weight:600;}
-  main{min-width:0;}
-
-  section{scroll-margin-top:74px; margin-bottom:38px;}
-  section > h2{font-size:23px; margin:0 0 6px; display:flex; align-items:center; gap:9px;}
-  .lead{color:var(--muted); margin:.2em 0 1.1em; font-size:16px;}
-  h3{font-size:17px; margin:22px 0 8px;}
-  .num{display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:9px; background:var(--accent); color:#fff; font-size:15px; flex:0 0 auto;}
-
-  .card{background:var(--card); border:1px solid var(--line); border-radius:var(--radius); padding:18px 20px; box-shadow:var(--shadow);}
-  .grid{display:grid; gap:14px;}
-  .g3{grid-template-columns:repeat(3,1fr);}
-  .g2{grid-template-columns:repeat(2,1fr);}
-
-  /* hero */
-  .hero{display:grid; grid-template-columns:1.15fr .85fr; gap:30px; align-items:center; padding:30px 0 6px;}
-  .hero h1{font-size:34px; margin:0 0 10px;}
-  .hero .tagline{color:var(--muted); font-size:18px; margin:0 0 22px;}
-  .cta{display:flex; flex-wrap:wrap; gap:12px; align-items:center;}
-  .btn{display:inline-flex; align-items:center; gap:10px; background:var(--accent); color:var(--accent-fg); font:inherit; font-weight:700;
-    font-size:17px; border:none; border-radius:12px; padding:15px 24px; cursor:pointer; box-shadow:var(--shadow);}
-  .btn:hover{filter:brightness(1.07); text-decoration:none;}
-  .btn.sec{background:var(--card); color:var(--fg); border:1px solid var(--line); font-size:15px; padding:13px 18px; box-shadow:none;}
-  .btn svg{flex:0 0 auto;}
-  .trust{color:var(--muted); font-size:13.5px; margin-top:12px; display:flex; align-items:center; gap:7px; flex-wrap:wrap;}
-  .trust .dot{color:var(--green);}
-
-  /* status legend */
-  .legend{display:flex; gap:10px; flex-wrap:wrap; margin:6px 0;}
-  .chip{display:inline-flex; align-items:center; gap:8px; background:var(--card); border:1px solid var(--line); border-radius:999px; padding:6px 14px; font-size:14px;}
-  .sdot{width:11px; height:11px; border-radius:50%; flex:0 0 auto; box-shadow:0 0 0 3px color-mix(in srgb,currentColor 22%, transparent);}
-  .s-g{color:var(--green); background:var(--green);} .s-y{color:var(--yellow); background:var(--yellow);} .s-r{color:var(--red); background:var(--red);}
-
-  /* callouts */
-  .callout{border-radius:12px; padding:14px 16px 14px 16px; margin:14px 0; border:1px solid var(--line); border-left-width:4px; display:flex; gap:12px; background:var(--card2);}
-  .callout .ic{flex:0 0 auto; width:22px; height:22px; margin-top:1px;}
-  .callout h4{margin:0 0 4px; font-size:15px;}
-  .callout p, .callout ul{margin:4px 0;}
-  .callout.info{border-left-color:var(--accent);}
-  .callout.ok{border-left-color:var(--green);}
-  .callout.warn{border-left-color:var(--yellow);}
-  .callout.danger{border-left-color:var(--red);}
-  .callout.info .ic{color:var(--accent);} .callout.ok .ic{color:var(--green);}
-  .callout.warn .ic{color:var(--yellow);} .callout.danger .ic{color:var(--red);}
-
-  /* steps */
-  .steps{list-style:none; margin:0; padding:0;}
-  .steps > li{display:flex; gap:14px; padding:0 0 18px; position:relative;}
-  .steps > li:not(:last-child)::before{content:""; position:absolute; left:14px; top:34px; bottom:0; width:2px; background:var(--line);}
-  .steps .body{padding-top:2px;}
-  .steps .body b{display:block; margin-bottom:2px;}
-
-  /* flow strip */
-  .flow{display:flex; gap:8px; flex-wrap:wrap; align-items:stretch;}
-  .flow .f{flex:1 1 120px; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:11px 12px; font-size:13.5px; position:relative;}
-  .flow .f .n{color:var(--accent); font-weight:700; font-size:12px;}
-
-  /* tables */
-  .tw{overflow-x:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--line); border-radius:12px; margin:12px 0;}
-  table{border-collapse:collapse; width:100%; font-size:14.5px; min-width:420px;}
-  th,td{padding:10px 13px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top;}
-  th{background:var(--card2); font-weight:600; white-space:nowrap;}
-  tr:last-child td{border-bottom:none;}
-  td code{background:var(--code); padding:1px 6px; border-radius:5px;}
-
-  /* code block */
-  .codeblock{position:relative; background:var(--code); border:1px solid var(--line); border-radius:12px; margin:12px 0;}
-  .codeblock pre{margin:0; padding:15px 16px; overflow-x:auto; font-size:13.5px; line-height:1.6;}
-  .copybtn{position:absolute; top:8px; right:8px; background:var(--ghost); color:var(--fg); border:none; border-radius:7px; padding:5px 11px; font:inherit; font-size:12.5px; cursor:pointer;}
-  .copybtn:hover{background:var(--accent); color:#fff;}
-
-  /* details */
-  details{background:var(--card); border:1px solid var(--line); border-radius:12px; margin:12px 0; overflow:hidden;}
-  details > summary{cursor:pointer; padding:14px 18px; font-weight:600; list-style:none; display:flex; align-items:center; gap:10px;}
-  details > summary::-webkit-details-marker{display:none;}
-  details > summary::before{content:"▸"; color:var(--accent); transition:transform .15s;}
-  details[open] > summary::before{transform:rotate(90deg);}
-  details .dbody{padding:0 18px 16px;}
-
-  /* device mocks */
-  .phone{width:270px; max-width:100%; margin:0 auto; background:#0d0f13; border:9px solid #24272e; border-radius:32px; padding:12px 10px; box-shadow:var(--shadow);}
-  .phone .scr{background:#15171c; border-radius:20px; padding:12px 11px; color:#e6e8ec; font-size:12.5px;}
-  .phone h5{margin:0 0 10px; font-size:13.5px; display:flex; align-items:center; gap:6px;}
-  .mock-card{background:#1f232b; border:1px solid #2c313b; border-radius:10px; padding:10px 11px; margin-bottom:9px;}
-  .mock-card .ch{font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#8b929e; margin:0 0 7px;}
-  .mrow{display:flex; justify-content:space-between; padding:2px 0; font-size:12px;}
-  .mrow .k{color:#8b929e;}
-  .mbadge{background:#2ecc40; color:#062; font-weight:700; border-radius:20px; padding:2px 10px; font-size:11px;}
-  .meter{height:7px; background:#0e1014; border-radius:5px; overflow:hidden; margin:5px 0;}
-  .meter > i{display:block; height:100%; border-radius:5px;}
-  .mpin{font-size:26px; letter-spacing:.35em; text-align:center; padding:8px 0; color:#e6e8ec;}
-  .mbtns{display:flex; gap:7px;} .mbtn{flex:1; text-align:center; background:#3a86ff; color:#fff; border-radius:8px; padding:8px 0; font-weight:600; font-size:12px;}
-  .mbtn.stop{background:#e74c3c;} .mbtn.g{background:#333a46;}
-  .pill{font-size:10px; padding:1px 8px; border-radius:10px; background:#333a46;}
-  .pill.done{background:#1d4d27;} .pill.pending{background:#5a4a12;}
-  .qp{display:flex; gap:5px; margin-top:4px;} .qp b{flex:1; text-align:center; border-radius:7px; padding:5px 0; font-size:11px; background:#262b34; font-weight:500;}
-  .qp b.on{background:#3a86ff; color:#fff;}
-
-  /* window mock (control panel / smartscreen) */
-  .winmock{background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; box-shadow:var(--shadow); font-size:13.5px;}
-  .winmock .bar{background:var(--card2); border-bottom:1px solid var(--line); padding:9px 13px; display:flex; align-items:center; gap:8px; font-weight:600;}
-  .winmock .bar .dots{display:flex; gap:5px;} .winmock .bar .dots i{width:10px; height:10px; border-radius:50%; background:var(--line);}
-  .winmock .wbody{padding:14px 15px;}
-  .region{border:1px dashed var(--line); border-radius:9px; padding:9px 11px; margin:8px 0; position:relative;}
-  .region .tag{position:absolute; top:-9px; left:10px; background:var(--card); padding:0 7px; font-size:11px; color:var(--accent); font-weight:600;}
-  .badge2{display:inline-block; background:var(--green); color:#062; font-weight:700; border-radius:20px; padding:3px 12px; font-size:12.5px;}
-  .btnface{display:inline-block; border:1px solid var(--line); border-radius:7px; padding:4px 12px; background:var(--card2); font-size:12.5px; margin-right:5px;}
-
-  /* smartscreen mock */
-  .ss{max-width:420px; background:#e9eef6; color:#1a2230; border-radius:8px; overflow:hidden; border:1px solid #c7d0dd; box-shadow:var(--shadow);}
-  .ss .h{background:#2b579a; color:#fff; padding:12px 16px; font-weight:700;}
-  .ss .b{padding:16px; font-size:13.5px;}
-  .ss .b .more{color:#2b579a; text-decoration:underline; font-weight:600;}
-  .ss .btns{display:flex; justify-content:flex-end; gap:8px; margin-top:14px;}
-  .ss .btns span{border:1px solid #b7c1d1; background:#f6f8fb; border-radius:5px; padding:6px 16px; font-size:13px;}
-  .ss .btns span.run{background:#0f6cbd; color:#fff; border-color:#0f6cbd;}
-
-  .muted{color:var(--muted);}
-  .small{font-size:13.5px;}
-  .center{text-align:center;}
-  hr.sep{border:none; border-top:1px solid var(--line); margin:30px 0;}
-  .example{background:var(--code); border-radius:8px; padding:8px 12px; display:inline-block; font-family:ui-monospace,Consolas,monospace; font-size:13.5px;}
-
-  /* back to top */
-  #totop{position:fixed; right:20px; bottom:20px; z-index:30; background:var(--accent); color:#fff; border:none; width:46px; height:46px; border-radius:50%; font-size:20px; cursor:pointer; box-shadow:var(--shadow); opacity:0; pointer-events:none; transition:opacity .2s;}
-  #totop.show{opacity:1; pointer-events:auto;}
-
-  #toast{position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:var(--fg); color:var(--bg); padding:10px 18px; border-radius:9px; opacity:0; transition:opacity .3s; pointer-events:none; z-index:60; font-size:14px;}
-  #toast.show{opacity:1;}
-
-  footer{border-top:1px solid var(--line); background:var(--card2);}
-  .foot{max-width:1120px; margin:0 auto; padding:26px 18px; color:var(--muted); font-size:14px; display:flex; flex-wrap:wrap; gap:14px 26px; align-items:center;}
-
-  /* responsive */
-  @media (max-width:1000px){
-    .wrap{grid-template-columns:1fr; gap:0;}
-    nav.toc{position:static; max-height:none; margin-bottom:18px; border:1px solid var(--line); border-radius:12px; background:var(--card); padding:6px;}
-    nav.toc.collapsed ol{display:none;}
-    .toc-toggle{display:inline-flex;}
-    .hero{grid-template-columns:1fr; text-align:left;}
-    .hero .phonewrap{order:-1;}
-    .g3,.g2{grid-template-columns:1fr;}
-  }
-  @media (max-width:560px){
-    .hero h1{font-size:27px;} .topbar{padding:9px 14px;} .wrap{padding:16px 14px 90px;}
-    .btn{width:100%; justify-content:center;}
-    .stickydl{position:fixed; left:0; right:0; bottom:0; z-index:35; padding:10px 12px; background:color-mix(in srgb,var(--bg) 92%, transparent); backdrop-filter:blur(8px); border-top:1px solid var(--line); display:block;}
-    .stickydl .btn{margin:0;}
-    #totop{bottom:74px;}
-  }
-  @media (min-width:561px){ .stickydl{display:none;} }
-
-  /* print */
-  @media print{
-    header.top,nav.toc,#totop,.toolbtn,.copybtn,.stickydl,#toast{display:none!important;}
-    .wrap{display:block; max-width:none;} body{background:#fff; color:#000;}
-    details{border:none;} details > summary{display:none;} details .dbody{padding:0;}
-    .card,.callout,.winmock,.phone{box-shadow:none;}
-    a[href^="http"]::after{content:" (" attr(href) ")"; font-size:11px; color:#555;}
-  }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f8fb">
+  <meta name="description" content="Media Capture Helper 다운로드 — PC를 켜면 화면과 소리를 YouTube에 일부 공개로 송출하고 로컬에도 백업 녹화하는 Windows 프로그램입니다.">
+  <title>Media Capture Helper — Windows용 다운로드</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23245bc7'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='white' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23e65d62'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/site.css">
+  <script src="assets/site.js" defer></script>
 </head>
 <body>
-<a class="skip" href="#main">본문 바로가기</a>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
 
-<header class="top">
-  <div class="topbar">
-    <div class="brand"><span class="tile" aria-hidden="true"></span><span data-cfg="brandName">Media Capture Helper</span></div>
-    <span class="grow"></span>
-    <button class="toolbtn toc-toggle" id="tocToggle" aria-expanded="false">☰ 목차</button>
-    <button class="toolbtn" id="themeBtn" aria-label="밝게/어둡게 전환"><span id="themeIc">🌙</span><span id="themeTx">어둡게</span></button>
-    <a class="toolbtn" data-cfg-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a>
-  </div>
-  <div class="progress" id="progress"></div>
-</header>
-
-<div class="wrap">
-  <nav class="toc" id="toc" aria-label="목차">
-    <ol>
-      <li><a href="#top">소개 &amp; 다운로드</a></li>
-      <li><a href="#about">이 프로그램은?</a></li>
-      <li><a href="#quickstart">빠른 시작</a></li>
-      <li><a href="#requirements">시스템 요구사항</a></li>
-      <li><a href="#download">다운로드</a></li>
-      <li><a href="#install">설치하기</a></li>
-      <li><a href="#first-run">최초 실행 · 동의</a></li>
-      <li><a href="#youtube">YouTube 연결</a></li>
-      <li><a href="#daily">매일 사용법</a></li>
-      <li><a href="#control-panel">제어판 둘러보기</a></li>
-      <li><a href="#quality">송출 품질(자동 절약)</a></li>
-      <li><a href="#room-name">호실명으로 제목 구분</a></li>
-      <li><a href="#periods">교시 자동 분할 VOD</a></li>
-      <li><a href="#telegram">텔레그램 알림</a></li>
-      <li><a href="#remote">폰 원격 제어</a></li>
-      <li><a href="#remote-cloudflare">외부 접속(고급)</a></li>
-      <li><a href="#recordings">녹화 파일 관리</a></li>
-      <li><a href="#update">자동 업데이트 · 제거</a></li>
-      <li><a href="#faq">문제 해결 / FAQ</a></li>
-      <li><a href="#appendix">부록</a></li>
-      <li><a href="#legal">이용약관</a></li>
-    </ol>
-  </nav>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="Media Capture Helper 홈">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span data-site-text="brandName">Media Capture Helper</span>
+      </a>
+      <nav class="header-nav" aria-label="주요 메뉴">
+        <a href="guide.html">사용 안내</a>
+        <a data-site-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a>
+        <a class="button small-button" data-site-href="downloadSetupUrl" href="#" download aria-label="Windows용 설치 파일 다운로드">
+          <svg class="download-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span class="button-label">다운로드</span>
+        </a>
+      </nav>
+    </div>
+  </header>
 
   <main id="main">
-
-    <!-- 1. HERO -->
-    <section id="top">
-      <div class="hero">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="container hero-grid">
         <div>
-          <h1><span data-cfg="brandName">Media Capture Helper</span></h1>
-          <p class="tagline">PC를 켜두기만 하면 화면과 소리가 <b>자동으로 내 유튜브(일부 공개)</b>로 송출되고, 동시에 <b>로컬에도 백업 녹화</b>됩니다. OBS 없이, 설치 후 별도 조작 없이.</p>
-          <div class="cta">
-            <a class="btn" id="dlMain" data-cfg-href="downloadSetupUrl" href="#" download>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <p class="eyebrow">Windows 10 / 11 · 64비트</p>
+          <h1 id="hero-title">PC를 켜두면, 기록과 송출이 자동으로 시작됩니다.</h1>
+          <p class="hero-copy"><strong data-site-text="brandName">Media Capture Helper</strong>는 화면과 소리를 본인 YouTube 채널에 일부 공개로 송출하고, 동시에 PC에 백업 녹화하는 Windows 프로그램입니다. OBS를 따로 열거나 매번 방송을 시작할 필요가 없습니다.</p>
+          <div class="hero-actions">
+            <a class="button" data-site-href="downloadSetupUrl" href="#" download>
+              <svg class="download-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
               Windows용 다운로드
             </a>
-            <a class="btn sec" data-cfg-href="downloadPortableUrl" href="#">무설치(포터블) 버전</a>
+            <a class="button secondary" href="guide.html">설치·사용 안내 보기</a>
           </div>
-          <div class="trust">
-            <span class="dot">●</span> GitHub 공식 릴리스에서 직접 내려받습니다 · 최신 버전 자동 연결 ·
-            <a data-cfg-href="releasesPageUrl" href="#" target="_blank" rel="noopener">모든 버전 보기</a>
-          </div>
-          <p class="small muted" style="margin-top:14px">Windows 10/11 (64비트) 전용 · 별도 런타임 설치 불필요 · 한국어</p>
+          <p class="hero-note">본인 소유 또는 관리 권한이 있는 PC의 기록·방송 목적에만 사용할 수 있습니다.</p>
         </div>
-        <div class="phonewrap">
-          <!-- 폰 원격 목업 (실제 UI를 CSS로 재현) -->
-          <div class="phone" role="img" aria-label="폰 원격 제어 화면 예시">
-            <div class="scr">
-              <h5>📡 <span data-cfg="brandName">Media Capture Helper</span> 원격 <span class="muted">· 201호</span></h5>
-              <div class="mock-card">
-                <p class="ch">상태</p>
-                <div class="mrow"><span class="k">송출</span><span class="mbadge">LIVE</span></div>
-                <div class="mrow"><span class="k">업로드</span><span>4,820 kbps</span></div>
-                <div class="mrow"><span class="k">FPS</span><span>30 fps</span></div>
-                <div class="mrow"><span class="k">CPU / GPU</span><span>18% / 24%</span></div>
-                <div class="mbtns" style="margin-top:8px"><span class="mbtn">라이브 시작</span><span class="mbtn stop">중지</span></div>
-              </div>
-              <div class="mock-card">
-                <p class="ch">오디오</p>
-                <div class="mrow"><span class="k">시스템 소리</span></div>
-                <div class="meter"><i style="width:62%;background:#2ecc40"></i></div>
-                <div class="mrow"><span class="k">마이크 1</span></div>
-                <div class="meter"><i style="width:34%;background:#2ecc40"></i></div>
-              </div>
-              <div class="mock-card">
-                <p class="ch">업로드 큐</p>
-                <div class="mrow"><span>1교시 - 2026-07-13</span><span class="pill done">완료</span></div>
-                <div class="mrow"><span>2교시 - 2026-07-13</span><span class="pill pending">대기</span></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </section>
 
-    <!-- 2. ABOUT -->
-    <section id="about">
-      <h2>이 프로그램은?</h2>
-      <p class="lead">복잡한 방송 프로그램(OBS) 없이, PC를 켜두는 것만으로 수업/현장을 자동으로 기록·방송하도록 만든 도구입니다.</p>
-      <div class="grid g3">
-        <div class="card"><h3 style="margin-top:0">🔴 자동 송출</h3><p class="small">PC를 켜면 약 30초 뒤 알아서 유튜브 <b>라이브(일부 공개)</b>가 시작됩니다. 별도 클릭이 필요 없습니다.</p></div>
-        <div class="card"><h3 style="margin-top:0">💾 로컬 백업 녹화</h3><p class="small">같은 화면을 내 PC 폴더에도 저장합니다. 인터넷이 끊겨도 <b>녹화는 계속</b>됩니다.</p></div>
-        <div class="card"><h3 style="margin-top:0">📱 폰에서 확인·제어</h3><p class="small">폰 브라우저로 상태 확인, 시작/중지, 교시 시간표 입력을 할 수 있습니다(앱 설치 불필요).</p></div>
-      </div>
-      <h3>화면 좌측 상단의 작은 점 = 상태 신호등</h3>
-      <div class="legend">
-        <span class="chip"><span class="sdot s-g"></span> 🟢 정상 송출 중</span>
-        <span class="chip"><span class="sdot s-y"></span> 🟡 연결 중 · 준비 중</span>
-        <span class="chip"><span class="sdot s-r"></span> 🔴 오류 · 재시도 중 (녹화는 계속)</span>
-      </div>
-      <div class="callout info">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
-        <div><p style="margin:0"><b>본인 소유 PC의 자기 기록·방송 목적 전용</b>입니다. 타인의 화면·음성을 동의 없이 촬영하는 용도로는 사용할 수 없습니다(<a href="#legal">이용약관</a>).</p></div>
-      </div>
-    </section>
-
-    <!-- 3. QUICKSTART -->
-    <section id="quickstart">
-      <h2>빠른 시작</h2>
-      <p class="lead">처음 한 번만 아래 흐름을 따라 하면, 그다음부터는 PC를 켜는 것만으로 끝납니다.</p>
-      <div class="flow">
-        <div class="f"><div class="n">1</div>다운로드</div>
-        <div class="f"><div class="n">2</div>실행 → 보안 경고 통과</div>
-        <div class="f"><div class="n">3</div>사용 동의</div>
-        <div class="f"><div class="n">4</div>자동 설치(마법사 없음)</div>
-        <div class="f"><div class="n">5</div>약 30초 후 자동 송출</div>
-        <div class="f"><div class="n">6</div>(최초 1회) 유튜브 로그인</div>
-      </div>
-      <p class="small muted" style="margin-top:10px">각 단계의 자세한 설명은 아래 <a href="#install">설치하기</a>부터 이어집니다.</p>
-    </section>
-
-    <!-- 4. REQUIREMENTS -->
-    <section id="requirements">
-      <h2>시스템 요구사항</h2>
-      <div class="tw"><table>
-        <tr><th>운영체제</th><td><b>Windows 10 / 11 (64비트)</b> 전용</td></tr>
-        <tr><th>런타임</th><td>설치 불필요 — .NET 8 · FFmpeg · cloudflared가 <b>모두 포함(자체 포함 배포)</b>되어 있습니다.</td></tr>
-        <tr><th>그래픽카드</th><td>필수 아님. NVIDIA(NVENC) → AMD(AMF) → Intel(QSV) → CPU(x264) 순으로 <b>자동 선택</b>됩니다. GPU가 있으면 CPU 부담이 줄어듭니다.</td></tr>
-        <tr><th>디스크</th><td>녹화 저장용 여유 큰 드라이브 권장(기본 한도 100GB, 여유 5GB 미만이면 녹화 자동 일시정지).</td></tr>
-        <tr><th>계정</th><td>라이브가 가능한 <b>YouTube 채널</b>(<a href="#youtube">아래 사전 활성화</a> 참고).</td></tr>
-        <tr><th>인터넷</th><td>송출/업로드에 필요. 끊겨도 녹화는 계속되고, 복구되면 자동 재연결됩니다.</td></tr>
-      </table></div>
-    </section>
-
-    <!-- 5. DOWNLOAD -->
-    <section id="download">
-      <h2>다운로드</h2>
-      <p class="lead">아래 버튼은 항상 <b>최신 버전</b>을 GitHub 공식 릴리스에서 바로 내려받습니다.</p>
-      <div class="card">
-        <div class="cta">
-          <a class="btn" data-cfg-href="downloadSetupUrl" href="#" download>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-            설치 파일(Setup.exe) — 권장
+        <aside class="download-card" id="download" aria-labelledby="download-title">
+          <p class="eyebrow">공식 릴리스</p>
+          <h2 id="download-title">Windows 설치 파일</h2>
+          <p class="muted small">한 번 다운로드하면 설치와 이후 업데이트를 간편하게 진행할 수 있습니다.</p>
+          <a class="button" data-site-href="downloadSetupUrl" href="#" download>
+            <svg class="download-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            Setup.exe 다운로드
           </a>
-          <a class="btn sec" data-cfg-href="downloadPortableUrl" href="#">무설치 포터블(zip)</a>
-        </div>
-        <p class="small muted" style="margin-top:14px">
-          · <b>설치 파일</b>: 더블클릭 한 번으로 설치·자동 실행. 자동 업데이트가 적용됩니다.<br>
-          · <b>포터블</b>: 압축을 풀고 실행. 설치 없이 쓰고 싶을 때.<br>
-          · <a data-cfg-href="releasesPageUrl" href="#" target="_blank" rel="noopener">모든 버전 · 릴리스 노트 보기 →</a>
-        </p>
-      </div>
-      <div class="callout warn">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
-        <div><h4>다운로드 시 보안 경고가 뜨는 것은 정상입니다</h4><p class="small" style="margin:0">개인이 만든 서명 없는 프로그램이라 Windows가 경고를 표시합니다. 아래 <a href="#install">설치하기</a>의 안내대로 <b>[추가 정보] → [실행]</b>을 누르면 됩니다.</p></div>
+          <p class="small muted">다운로드는 GitHub 공식 릴리스에서 직접 제공됩니다.</p>
+          <dl class="download-meta">
+            <div><dt>현재 버전</dt><dd>v<span data-site-text="version">0.3.0</span></dd></div>
+            <div><dt>지원 환경</dt><dd>Windows 10/11</dd></div>
+            <div><dt>설치 방식</dt><dd>64비트 설치 파일</dd></div>
+          </dl>
+          <div class="check-list" aria-label="다운로드 전 확인 사항">
+            <div><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m5 12 4 4L19 6"/></svg><span>Windows 10 또는 11, 64비트 PC가 필요합니다.</span></div>
+            <div><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3"><path d="m5 12 4 4L19 6"/></svg><span>처음 송출하기 전 YouTube 라이브 스트리밍을 활성화해 주세요.</span></div>
+          </div>
+        </aside>
       </div>
     </section>
 
-    <!-- 6. INSTALL -->
-    <section id="install">
-      <h2>설치하기</h2>
-      <p class="lead">설치는 <b>설정 마법사 없이</b> 한 번에 끝나고, 끝나면 앱이 자동으로 실행됩니다.</p>
-      <div class="grid g2" style="align-items:start">
+    <section class="section" aria-labelledby="start-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">처음 시작하기</p>
+          <h2 id="start-title">세 단계면 충분합니다</h2>
+          <p>어려운 방송 설정을 먼저 배울 필요가 없습니다. 설치 후 처음 한 번만 확인하면, 다음부터는 PC를 켜는 것으로 시작됩니다.</p>
+        </div>
         <ol class="steps">
-          <li><span class="num">1</span><div class="body"><b>내려받은 <code>Setup.exe</code>를 더블클릭</b>합니다.</div></li>
-          <li><span class="num">2</span><div class="body"><b>“Windows의 PC 보호” 창이 뜨면</b> → <kbd>추가 정보</kbd>를 누른 뒤 나타나는 <kbd>실행</kbd> 버튼을 클릭합니다. (오른쪽 그림 참고)</div></li>
-          <li><span class="num">3</span><div class="body"><b>설치가 자동으로 진행</b>되고, 끝나면 앱이 스스로 실행됩니다. 선택할 화면(마법사)은 없습니다.</div></li>
-          <li><span class="num">4</span><div class="body">자동 시작 방식·녹화 폴더 등 세부 설정은 나중에 <b>제어판(<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>) → 설정</b>에서 바꿉니다.</div></li>
+          <li class="step"><h3>다운로드</h3><p>위의 <strong>Setup.exe 다운로드</strong> 버튼을 눌러 최신 설치 파일을 받습니다.</p></li>
+          <li class="step"><h3>실행과 동의</h3><p>설치 파일을 실행한 뒤, 화면·소리 캡처와 본인 YouTube 송출에 관한 안내를 읽고 동의합니다.</p></li>
+          <li class="step"><h3>최초 연결</h3><p>처음 송출할 때만 브라우저에서 본인 Google 계정으로 로그인합니다. 이후에는 자동으로 연결됩니다.</p></li>
         </ol>
-        <div>
-          <div class="ss" role="img" aria-label="Windows SmartScreen 경고 창 예시">
-            <div class="h">Windows의 PC 보호</div>
-            <div class="b">
-              Microsoft Defender SmartScreen에서 인식할 수 없는 앱의 시작을 차단했습니다. 이 앱을 실행하면 PC가 위험에 노출될 수 있습니다.
-              <div style="margin-top:10px"><span class="more">추가 정보</span></div>
-              <div class="btns"><span class="run">실행</span><span>실행 안 함</span></div>
-            </div>
-          </div>
-          <p class="small muted center" style="margin-top:8px">① “추가 정보” 클릭 → ② “실행” 버튼이 나타남</p>
+      </div>
+    </section>
+
+    <section class="section alt" aria-labelledby="features-title">
+      <div class="container">
+        <div class="section-heading">
+          <p class="eyebrow">필요한 일만</p>
+          <h2 id="features-title">복잡한 조작 없이, 필요한 기능은 갖췄습니다</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature"><div class="feature-icon" aria-hidden="true">↗</div><h3>자동 송출</h3><p>PC가 켜진 뒤 준비가 완료되면 YouTube 라이브가 자동으로 시작됩니다. 라이브는 기본적으로 일부 공개로 만들어집니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">▣</div><h3>로컬 백업 녹화</h3><p>인터넷 연결이 불안정해도 PC 녹화는 계속됩니다. 송출이 복구되면 자동으로 다시 연결합니다.</p></article>
+          <article class="feature"><div class="feature-icon" aria-hidden="true">⌘</div><h3>필요할 때만 제어</h3><p><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>로 제어판을 열어 상태, 오디오, 녹화와 설정을 확인할 수 있습니다.</p></article>
         </div>
       </div>
     </section>
 
-    <!-- 7. FIRST RUN -->
-    <section id="first-run">
-      <h2>최초 실행 — 사용 동의</h2>
-      <p class="lead">처음 실행하면 이 프로그램이 무엇을 자동으로 하는지 알려주는 <b>동의 화면</b>이 한 번 나타납니다.</p>
-      <div class="card">
-        <p style="margin:0 0 8px"><b>“<span data-cfg="brandName">Media Capture Helper</span> 사용 동의”</b> 창은 다음 4가지 자동 동작을 안내합니다.</p>
-        <ul style="margin:0">
-          <li>주 모니터 화면 전체 캡처(마우스 커서 포함)</li>
-          <li>시스템 소리 + 마이크 캡처·혼합</li>
-          <li>캡처한 내용을 <b>내 유튜브 계정으로 일부 공개 라이브 송출</b></li>
-          <li>같은 내용을 <b>로컬 폴더에 백업 녹화</b></li>
-        </ul>
-        <p class="small muted" style="margin-top:10px">체크박스를 선택한 뒤 <span class="btnface">동의하고 시작</span>을 누르면 시작됩니다. 동의하지 않으면 프로그램이 종료됩니다.</p>
-      </div>
-      <div class="callout ok">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <div><h4>그다음은 자동입니다 — 사용자가 할 일 없음</h4><p class="small" style="margin:0">인증 파일 배치, 연결된 마이크 자동 등록, 자동 시작 등록이 알아서 이뤄지고, <b>약 30초 뒤(네트워크 준비) 자동으로 송출+녹화가 시작</b>됩니다.</p></div>
-      </div>
-    </section>
-
-    <!-- 8. YOUTUBE -->
-    <section id="youtube">
-      <h2>YouTube 연결 <span class="muted small">(최초 1회)</span></h2>
-      <p class="lead">첫 송출 때 브라우저가 한 번 열립니다. <b>본인 Google 계정으로 로그인</b>하면 끝이며, 이후에는 자동으로 갱신되어 다시 로그인할 필요가 없습니다.</p>
-      <div class="callout warn">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
-        <div><h4>설치 전날, 채널의 “실시간 스트리밍”을 미리 켜두세요</h4>
-          <p class="small" style="margin:0">채널에 라이브 스트리밍이 활성화돼 있어야 송출됩니다. <b>YouTube 스튜디오 → 만들기 → 실시간 스트리밍</b>에서 켤 수 있으며, <b>최초 활성화에 최대 24시간</b>이 걸릴 수 있습니다.</p></div>
-      </div>
-      <p class="small muted">로그인이 계속 막힌다면, 배포용 Google 프로젝트가 “테스트” 상태라 <b>등록된 테스트 사용자만</b> 로그인할 수 있는 경우입니다 — <a href="#appendix">부록</a>을 참고하세요. 로그인 정보(토큰)는 Windows DPAPI로 암호화되어 이 PC에만 저장됩니다.</p>
-    </section>
-
-    <!-- 9. DAILY -->
-    <section id="daily">
-      <h2>매일 사용법</h2>
-      <p class="lead"><b>PC를 켜면 끝</b>입니다. 약 30초 후 자동으로 송출과 녹화가 시작됩니다.</p>
-      <div class="grid g2">
-        <div class="card">
-          <h3 style="margin-top:0">상태 확인</h3>
-          <p class="small">화면 <b>좌측 상단의 6px 점</b>(기본 숨김, 설정에서 켤 수 있음)으로 상태를 봅니다.</p>
-          <div class="legend">
-            <span class="chip"><span class="sdot s-g"></span> 정상 송출</span>
-            <span class="chip"><span class="sdot s-y"></span> 연결 중</span>
-            <span class="chip"><span class="sdot s-r"></span> 재시도 중</span>
-          </div>
-        </div>
-        <div class="card">
-          <h3 style="margin-top:0">알아두면 좋은 점</h3>
-          <ul class="small" style="margin:0; padding-left:18px">
-            <li>라이브는 항상 <b>일부 공개(Unlisted)</b> — 링크를 아는 사람만 볼 수 있습니다.</li>
-            <li>PC를 끄면 방송이 종료되고 녹화 파일이 안전하게 마감됩니다.</li>
-            <li>송출이 끊겨도 <b>녹화는 계속</b>되고, 네트워크가 복구되면 자동 재연결됩니다.</li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <!-- 10. CONTROL PANEL -->
-    <section id="control-panel">
-      <h2>제어판 둘러보기</h2>
-      <p class="lead">평소엔 아무것도 안 해도 되지만, <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>를 누르면 <b>제어판</b>이 열려 상태 확인·수동 조작·설정을 할 수 있습니다.</p>
-      <div class="winmock" role="img" aria-label="제어판 화면 구성 예시">
-        <div class="bar"><span class="dots"><i></i><i></i><i></i></span><span data-cfg="brandName">Media Capture Helper</span> 제어판</div>
-        <div class="wbody">
-          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px">
-            <span class="badge2">LIVE</span>
-            <span class="btnface">시작</span><span class="btnface">중지</span>
-            <span class="muted small">업로드 4,820 kbps · 30 fps · CPU 18% · GPU 24%</span>
-          </div>
-          <div class="region"><span class="tag">오디오 믹서</span><span class="small">시스템 소리 + 마이크별 장치 선택 · 실시간 미터 · 증폭 · 음소거 · 게이트 · (마스터) 노이즈 억제/컴프레서/리미터</span></div>
-          <div class="grid g2" style="gap:8px">
-            <div class="region"><span class="tag">캡처 · 인코딩</span><span class="small">모니터 선택 · 영역 · 해상도 · FPS · 비트레이트 · 자원 사용 제한</span></div>
-            <div class="region"><span class="tag">녹화</span><span class="small">현재 파일 · 누적 용량 · 남은 디스크</span></div>
-          </div>
-          <div class="region"><span class="tag">설정</span><span class="small">방송 상태 박스 표시 · <b>호실명</b> · 단축키 · 자동 시작 방식 · 녹화 폴더/한도/보존일 · <b>텔레그램 알림</b> · <b>폰 원격 PIN</b> · [설정 저장]</span></div>
-          <p class="muted small" style="margin:8px 0 0">하단 상태바: 현재 버전 · 업데이트가 예약되면 “⬆ 다운로드됨 — 재시작 시 적용” 표시</p>
-        </div>
-      </div>
-      <div class="tw"><table>
-        <tr><th>영역</th><th>하는 일</th></tr>
-        <tr><td>상태 배지</td><td>LIVE / 준비 중 / 연결 중 / 재시도 중 + 수동 <b>시작·중지</b></td></tr>
-        <tr><td>오디오 믹서</td><td>소스별 볼륨·음소거·게이트, 마이크 추가/새로고침, 마스터 필터</td></tr>
-        <tr><td>인코딩·캡처</td><td>해상도/FPS/비트레이트, 모니터·영역, 자원 사용 제한(다음 세션부터)</td></tr>
-        <tr><td>녹화</td><td>현재 파일명, 누적 용량, 남은 디스크</td></tr>
-        <tr><td>설정</td><td><b>호실명</b>, 단축키, 자동 시작 방식, 녹화 폴더/한도/보존일, 텔레그램, 폰 원격 PIN</td></tr>
-      </table></div>
-    </section>
-
-    <!-- 11. QUALITY -->
-    <section id="quality">
-      <h2>송출 품질 <span class="muted small">(자동 절약)</span></h2>
-      <p class="lead">별도 설정 없이도, <b>PC 부하나 네트워크가 나빠지면 송출 화질을 자동으로 한 단계씩 낮춰</b> 끊김을 막고, 여건이 회복되면 쉬는 시간에 원본으로 되돌립니다. (소리는 절대 낮추지 않습니다.)</p>
-      <div class="grid g2">
-        <div class="card">
-          <h3 style="margin-top:0">자동 모드 (기본)</h3>
-          <p class="small">인코딩이 버거우면(<span class="muted">EncodeOverload</span>) 또는 업링크가 부족하면(<span class="muted">NetworkCongestion</span>) <b>원본 → 절약 1단계 → 2단계…</b>로 낮췄다가, 안정되면 자동 복귀합니다.</p>
-        </div>
-        <div class="card">
-          <h3 style="margin-top:0">수동 고정</h3>
-          <p class="small">폰 원격(또는 제어판)에서 원하는 단계로 <b>고정</b>할 수 있습니다. 고정하면 자동 변경이 멈추고, <b>방송을 전체 중지하면 자동 모드로 복귀</b>합니다.</p>
-        </div>
-      </div>
-      <p class="small muted">폰 원격의 “송출 품질” 카드에 현재 단계(예: <span class="example">절약 1단계 · 자동</span>)가 표시됩니다.</p>
-    </section>
-
-    <!-- 12. ROOM NAME -->
-    <section id="room-name">
-      <h2>호실명으로 제목 구분</h2>
-      <p class="lead">여러 PC가 한 채널에 송출할 때, 각 PC에 <b>호실명</b>을 넣으면 제목 앞에 <span class="example">[201호]</span>가 자동으로 붙어 서로 구분됩니다.</p>
-      <ol class="steps">
-        <li><span class="num">1</span><div class="body"><b>제어판 → 설정 → 호실명</b>에 방 이름(예: <code>201호</code>)을 입력하고 <span class="btnface">설정 저장</span>.</div></li>
-        <li><span class="num">2</span><div class="body">다음 방송/교시부터 라이브·VOD 제목 앞에 <b><span class="example">[201호]</span></b>가 자동으로 붙습니다.</div></li>
-      </ol>
-      <p class="small">제목 예시 — 라이브: <span class="example">[201호] 라이브 - 2026-07-13 09:00</span> · 교시 VOD: <span class="example">[201호] 1교시 - 2026-07-13</span>. 호실명을 비우면 <code>[ ]</code> 부분은 생략됩니다.</p>
-      <div class="callout info">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.5h.01" stroke-linecap="round"/></svg>
-        <div><h4>여러 PC가 한 유튜브 채널에 송출하려면</h4><p class="small" style="margin:0">채널을 <b>브랜드 계정</b>으로 만들고 각 방 운영자 Google 계정을 <b>관리자(매니저)</b>로 추가한 뒤, 각 PC에서 그 계정으로 로그인해 공유 채널을 선택합니다. ⚠️ 업로드 한도는 <b>Cloud 프로젝트 단위로 공유</b>되므로, PC가 많으면 프로젝트 분리 또는 <a href="#periods">할당량 증설</a>을 권장합니다.</p></div>
-      </div>
-    </section>
-
-    <!-- 13. PERIODS -->
-    <section id="periods">
-      <h2>교시 자동 분할 VOD</h2>
-      <p class="lead">하루 종일 라이브 하나는 그대로 두면서, <b>교시 시간표에 맞춰 녹화본을 교시별로 잘라</b> “N교시 - 날짜” 제목의 일부 공개 영상으로 유튜브에 자동 업로드합니다. 쉬는 시간은 올라가지 않습니다.</p>
-      <h3>동작 방식</h3>
-      <ol class="steps">
-        <li><span class="num">1</span><div class="body"><b>시간표를 입력</b>합니다(폰 원격 또는 <code>config.json</code>). 요일별 기본값 + “오늘만 덮어쓰기”(단축수업 등, 다음 날 자동 해제)를 지원합니다.</div></li>
-        <li><span class="num">2</span><div class="body">각 교시 종료 시각에 녹화본에서 해당 구간을 <b>무손실(재인코딩 없음)</b>로 잘라냅니다. 시작점은 키프레임 기준 <b>최대 2초</b> 어긋날 수 있습니다(수업 녹화엔 무해).</div></li>
-        <li><span class="num">3</span><div class="body">잘린 파일은 <b>업로드 큐</b>에 쌓여 순서대로 올라갑니다(재부팅 후에도 유지).</div></li>
-      </ol>
-      <div class="callout warn">
-        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
-        <div><h4>업로드 한도(하루 약 6건)와 다음날 이월</h4>
-          <p class="small" style="margin:0">유튜브 업로드 API는 하루 약 <b>6건</b>까지 허용됩니다. <b>7교시 이상</b>이면 초과분이 <b>큐에 보존됐다가 다음 날 자동 업로드</b>됩니다(리셋 ≈ 한국시간 16~17시). 매일 당일에 모두 올리려면 <b>할당량 증설</b>을 신청하세요: Google Cloud Console → YouTube Data API → <i>Audit and Quota Extension</i>(무료, 심사 수일~수주). 좁은 회선이면 <code>uploadTiming</code>을 <code>after-hours</code>(방과 후 일괄)로 바꿀 수 있습니다.</p></div>
-      </div>
-    </section>
-
-    <!-- 14. TELEGRAM -->
-    <section id="telegram">
-      <h2>텔레그램 알림 <span class="muted small">(선택)</span></h2>
-      <p class="lead">문제가 생기면 폰으로 즉시 알림을 받을 수 있습니다 — <b>마이크 무음 · 송출 끊김 · 디스크 부족 · 업로드 실패</b> 등.</p>
-      <ol class="steps">
-        <li><span class="num">1</span><div class="body">텔레그램에서 <b>@BotFather</b>로 봇을 만들고 <b>봇 토큰</b>을 복사합니다.</div></li>
-        <li><span class="num">2</span><div class="body">알림 받을 <b>채팅 ID</b>를 확인합니다.</div></li>
-        <li><span class="num">3</span><div class="body"><b>제어판 → 설정 → 텔레그램 알림</b>에 토큰과 채팅 ID를 붙여넣고, <b>알림 수준</b>(정보/경고/심각)을 고른 뒤 <span class="btnface">테스트 알림 보내기</span>로 확인 → <span class="btnface">설정 저장</span>.</div></li>
-      </ol>
-      <p class="small muted">봇 토큰은 개인 정보이니 공유하지 마세요. 저장 시 자동으로 암호화됩니다.</p>
-    </section>
-
-    <!-- 15. REMOTE -->
-    <section id="remote">
-      <h2>폰 원격 제어</h2>
-      <p class="lead">같은 와이파이(또는 외부)의 <b>폰 브라우저로 접속</b>해 라이브 시작/중지, 상태·미리보기·오디오·<b>송출 품질</b> 확인, 교시 시간표 편집, 업로드 큐 확인을 할 수 있습니다. <b>폰에 앱을 설치할 필요가 없습니다.</b></p>
-      <div class="grid g2" style="align-items:start">
-        <div>
-          <div class="callout warn">
-            <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 2 20h20L12 3Z" stroke-linejoin="round"/><path d="M12 10v4M12 17h.01" stroke-linecap="round"/></svg>
-            <div><h4>먼저 원격을 켜야 합니다 (기본은 꺼짐)</h4>
-              <p class="small" style="margin:0"><code>config.json</code>의 <code>remote.mode</code>를 <code>"lan"</code>(또는 <code>tailscale</code>/<code>cloudflare</code>)으로 바꾸고 앱을 재시작합니다(포트 8787).</p></div>
-          </div>
-          <p class="small">파일 위치: 탐색기 주소창에 <span class="example">%AppData%\<span data-cfg-path="appDataDir">MediaCaptureHelper</span></span> 를 입력해서 엽니다.</p>
-          <h3>연결(페어링)</h3>
-          <ol class="steps">
-            <li><span class="num">1</span><div class="body">폰 브라우저에서 <code>http://&lt;PC의 LAN IP&gt;:8787</code> 접속.</div></li>
-            <li><span class="num">2</span><div class="body">제어판(<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>)에 표시된 <b>6자리 PIN</b>을 폰에 입력 → 연결.</div></li>
-            <li><span class="num">3</span><div class="body">한 번 연결하면 기기 토큰이 저장되어 다음부터는 <b>PIN 없이</b> 접속됩니다.</div></li>
-          </ol>
-        </div>
-        <div class="phone" role="img" aria-label="폰 원격 페어링 화면 예시">
-          <div class="scr">
-            <h5>📡 <span data-cfg="brandName">Media Capture Helper</span> 원격</h5>
-            <div class="mock-card">
-              <p class="ch">기기 연결</p>
-              <p class="small muted" style="margin:0 0 6px">PC 제어창에 표시된 6자리 PIN을 입력하세요.</p>
-              <div class="mpin">● ● ● ● ● ●</div>
-              <div class="mbtns"><span class="mbtn">연결</span></div>
-            </div>
-            <div class="mock-card">
-              <p class="ch">송출 품질</p>
-              <div class="qp"><b class="on">자동</b><b>원본</b><b>절약1</b><b>절약2</b></div>
-              <p class="small muted" style="margin:6px 0 0">부하·네트워크 상태에 따라 자동으로 조절됩니다.</p>
-            </div>
+    <section class="section" aria-labelledby="warning-title">
+      <div class="container narrow">
+        <div class="notice">
+          <div class="notice-icon" aria-hidden="true">!</div>
+          <div>
+            <h3 id="warning-title">설치할 때 Windows 보안 경고가 보일 수 있습니다</h3>
+            <p>개인 배포 프로그램은 서명이 없으면 Windows가 경고를 표시할 수 있습니다. GitHub 공식 릴리스에서 받은 파일인지 확인한 뒤, 경고 화면에서 <strong>[추가 정보] → [실행]</strong>을 선택하면 설치할 수 있습니다. 자세한 화면 안내는 <a href="guide.html#install">사용 안내</a>에서 확인하세요.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- 16. REMOTE ADVANCED -->
-    <section id="remote-cloudflare">
-      <h2>폰 원격 — 외부 접속 <span class="muted small">(고급)</span></h2>
-      <p class="lead">집·외부에서, 같은 와이파이가 아니어도 접속하는 방법입니다. 상황에 맞는 방식을 고르세요.</p>
-      <div class="tw"><table>
-        <tr><th>방식</th><th>특징</th><th>추천 상황</th></tr>
-        <tr><td><b>LAN</b></td><td>같은 와이파이, 평문(HTTP)</td><td>같은 공간에서 간단히</td></tr>
-        <tr><td><b>Tailscale</b></td><td>암호화, 설치 필요(PC+폰)</td><td>집 밖에서 안전하게</td></tr>
-        <tr><td><b>Cloudflare 명명형 터널</b></td><td>고정 HTTPS 주소, 방화벽·포트포워딩 불필요</td><td>학교 PC에 매일 같은 주소로(도메인 연 ~1.5만원)</td></tr>
-      </table></div>
-
-      <details>
-        <summary>Cloudflare 고정 주소(명명형 터널) 8단계 설정</summary>
-        <div class="dbody">
-          <ol class="small" style="padding-left:20px; line-height:1.9">
-            <li>Cloudflare 무료 계정 가입(이메일 인증).</li>
-            <li>도메인 확보: <b>Domain Registration → Register Domains</b>에서 새로 구매(가장 간단, 자동 연결) 또는 기존 도메인을 <b>Add a site</b>로 연결.</li>
-            <li>(기존 도메인이면) 상태가 <b>Active</b>가 될 때까지 대기.</li>
-            <li><b>Zero Trust → Networks → Tunnels → Create a tunnel</b> → 커넥터 <b>Cloudflared</b> 선택 → 터널 이름 저장 → 화면의 <b>긴 토큰 문자열만 복사</b>(설치는 앱이 알아서 함).</li>
-            <li><b>Public Hostname → Add</b>: Subdomain 지정 · Type <code>HTTP</code> · URL <code>localhost:8787</code> 저장 → 폰 주소가 <code>https://이름.내도메인.com</code>으로 고정.</li>
-            <li>현장 PC의 <code>config.json</code>(<span class="example">%AppData%\<span data-cfg-path="appDataDir">MediaCaptureHelper</span></span>) <code>remote</code> 항목을 아래처럼 맞춤.</li>
-            <li>앱 재시작 → 붙여넣은 토큰이 <b>자동으로 암호화</b>되고, 제어창에 <b>고정 주소 + 6자리 PIN</b>이 표시됨.</li>
-            <li>폰 브라우저(셀룰러/와이파이 무관)로 그 고정 주소 접속 → PIN 입력 → 완료(다음부터 PIN 불필요).</li>
-          </ol>
-          <div class="codeblock">
-            <button class="copybtn" type="button">복사</button>
-<pre>"remote": {
-  "mode": "cloudflare",
-  "port": 8787,
-  "cloudflareTunnelToken": "여기에_4단계에서_복사한_긴_토큰_붙여넣기",
-  "cloudflareHostname": "이름.내도메인.com"
-}</pre>
-          </div>
-          <p class="small muted" style="margin:0"><code>deviceTokens</code> 같은 다른 줄이 있으면 건드리지 말고 그대로 둡니다. 저장 인코딩은 UTF-8.</p>
+    <section class="section alt" aria-labelledby="faq-title">
+      <div class="container narrow">
+        <div class="section-heading">
+          <p class="eyebrow">자주 묻는 질문</p>
+          <h2 id="faq-title">다운로드 전 확인해 주세요</h2>
         </div>
-      </details>
-    </section>
-
-    <!-- 17. RECORDINGS -->
-    <section id="recordings">
-      <h2>녹화 파일 관리</h2>
-      <div class="tw"><table>
-        <tr><th>위치</th><td>기본 <span class="example">%USERPROFILE%\Videos\<span data-cfg-path="recordingsDir">MediaCaptureHelper</span></span> (제어판에서 변경 가능)</td></tr>
-        <tr><th>파일명</th><td>부팅~종료가 1개 파일. 예 <code>REC_2026-07-13_0930.mp4</code> (인코더 재시작 시 <code>_part2</code> 추가)</td></tr>
-        <tr><th>자동 정리</th><td>보존 <b>7일</b> 초과분과 <b>100GB</b> 초과분을 오래된 것부터 삭제(둘 다 조정 가능)</td></tr>
-        <tr><th>안전장치</th><td>남은 디스크 <b>5GB 미만</b>이면 녹화 일시정지. 갑작스런 전원 차단에도 파일은 재생 가능</td></tr>
-      </table></div>
-    </section>
-
-    <!-- 18. UPDATE -->
-    <section id="update">
-      <h2>자동 업데이트 · 제거</h2>
-      <div class="grid g2">
-        <div class="card"><h3 style="margin-top:0">자동 업데이트</h3><p class="small">6시간마다 <b>조용히 자동 업데이트</b>를 확인하고, 다음 재시작 때 적용합니다. 제어판 하단 상태바에 “재시작 시 적용” 안내가 뜹니다.</p></div>
-        <div class="card"><h3 style="margin-top:0">제거</h3><p class="small">Windows <b>설정 → 앱</b>에서 <span data-cfg="brandName">Media Capture Helper</span> 제거. 자동 시작·방화벽 규칙은 함께 해제되고, <b>녹화 파일과 설정은 삭제되지 않습니다</b>.</p></div>
+        <div class="faq">
+          <details><summary>YouTube 라이브는 누구나 볼 수 있나요?</summary><div class="details-body"><p>기본값은 <strong>일부 공개(Unlisted)</strong>입니다. 링크를 알고 있는 사람만 볼 수 있고, 공개 검색 결과에는 표시되지 않습니다.</p></div></details>
+          <details><summary>인터넷이 끊기면 녹화도 멈추나요?</summary><div class="details-body"><p>아닙니다. 네트워크나 YouTube 연결에 문제가 있어도 로컬 녹화는 계속되고, 연결이 복구되면 송출을 다시 시도합니다.</p></div></details>
+          <details><summary>처음 연결이 바로 되지 않으면 어떻게 하나요?</summary><div class="details-body"><p>YouTube 채널의 라이브 스트리밍이 활성화되어 있는지 먼저 확인하세요. 최초 활성화에는 최대 24시간이 걸릴 수 있습니다. <a href="guide.html#youtube">YouTube 연결 안내 보기</a></p></div></details>
+          <details><summary>설치 후 설정을 바꾸고 싶어요</summary><div class="details-body"><p>제어판에서 녹화 폴더, 보존 기간, 자동 시작 방식 등을 바꿀 수 있습니다. 교시 VOD나 폰 원격 제어 같은 상세 설정은 <a href="guide.html">전체 사용 안내</a>를 참고하세요.</p></div></details>
+        </div>
       </div>
     </section>
 
-    <!-- 19. FAQ -->
-    <section id="faq">
-      <h2>문제 해결 / 자주 묻는 질문</h2>
-      <details><summary>설치할 때 “Windows의 PC 보호” 경고가 떠요</summary><div class="dbody small">정상입니다. 서명 없는 개인 배포라서 표시됩니다. <b>[추가 정보] → [실행]</b>을 누르세요.</div></details>
-      <details><summary>상태 점이 계속 🟡(연결 중)이에요</summary><div class="dbody small">인터넷 연결과 <b>YouTube 라이브 스트리밍 활성화</b> 여부를 확인하세요(<a href="#youtube">최초 활성화에 최대 24시간</a>).</div></details>
-      <details><summary>상태 점이 계속 🔴(재시도)이에요</summary><div class="dbody small"><span class="example">%AppData%\<span data-cfg-path="appDataDir">MediaCaptureHelper</span>\logs\</span>의 최신 로그를 확인하세요. 프로그램은 자동으로 무한 재시도하며, 그동안 <b>녹화는 계속</b>됩니다.</div></details>
-      <details><summary>로그인 브라우저 창이 안 떠요</summary><div class="dbody small">설정 폴더에 <code>client_secret.json</code> 파일이 있는지 확인하세요(파일 존재 여부만 확인, 내용은 열 필요 없음).</div></details>
-      <details><summary>마이크 소리가 안 나가요</summary><div class="dbody small">제어판 → 오디오 믹서에서 장치 선택·증폭·게이트를 확인하세요. 마이크가 없어도 <b>시스템 소리는 송출</b>됩니다.</div></details>
-      <details><summary>녹화는 되는데 송출이 안 돼요</summary><div class="dbody small">네트워크 문제일 때의 정상 동작입니다. 복구되면 자동으로 재연결됩니다.</div></details>
-      <details><summary>게임 전체화면에서 검은 화면이에요</summary><div class="dbody small">자동 재초기화를 기다리거나, <b>창 모드(테두리 없는 전체화면)</b>를 사용하세요.</div></details>
-      <details><summary>단축키가 안 먹혀요</summary><div class="dbody small">다른 프로그램과 충돌한 경우입니다. 제어판 설정에서 다른 조합으로 바꾸세요.</div></details>
-      <details><summary>교시 영상이 그날 다 안 올라가요</summary><div class="dbody small">업로드 한도(하루 약 6건) 때문입니다. 초과분은 <b>다음 날 자동 업로드</b>됩니다(정상). 매일 당일 업로드하려면 <a href="#periods">할당량 증설</a>을 신청하세요.</div></details>
-    </section>
-
-    <!-- 20. APPENDIX -->
-    <section id="appendix">
-      <h2>부록</h2>
-      <details><summary><code>config.json</code> 주요 항목</summary><div class="dbody">
-        <p class="small muted">보통은 폰 원격 UI에서 입력하면 자동으로 채워집니다. 직접 편집도 가능합니다.</p>
-        <div class="codeblock"><button class="copybtn" type="button">복사</button>
-<pre>{
-  "deviceName": "201호",
-  "youtube": { "titleTemplate": "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}" },
-  "periods": {
-    "weekdayDefaults": { "Mon": [ { "no": 1, "start": "09:00:00", "end": "09:50:00" } ] },
-    "overrides":       { "2026-07-13": [ { "no": 1, "start": "09:00:00", "end": "09:30:00" } ] },
-    "titleTemplate": "[{호실}] {교시}교시 - {yyyy-MM-dd}",
-    "vodPrivacy": "unlisted",
-    "uploadTiming": "immediate-throttled"
-  },
-  "remote": { "mode": "off", "port": 8787 }
-}</pre></div>
-      </div></details>
-      <details><summary>로그인이 막힐 때 (OAuth “테스트” 앱)</summary><div class="dbody small">배포용 Google 프로젝트가 게시 전(테스트) 상태이면 <b>테스트 사용자로 등록된 Google 계정만</b> 로그인할 수 있습니다. 로그인이 거부되면 해당 계정이 테스트 사용자에 추가돼 있는지 확인하세요.</div></details>
-    </section>
-
-    <!-- 21. LEGAL -->
-    <section id="legal">
-      <h2>이용약관 (요약)</h2>
-      <div class="grid g3">
-        <div class="card"><h3 style="margin-top:0">✅ 허용</h3><p class="small">본인이 소유·관리하는 PC에서 <b>본인의 화면·음성을 기록·방송</b>하는 목적.</p></div>
-        <div class="card"><h3 style="margin-top:0">🚫 금지</h3><p class="small">타인 PC에 무단 설치, 타인의 화면·음성·개인정보를 동의 없이 캡처·송출, 감시·스토킹 등.</p></div>
-        <div class="card"><h3 style="margin-top:0">🔒 데이터</h3><p class="small">녹화는 로컬에만 저장(개발자에게 전송 안 됨). 유튜브는 본인 계정으로만. 토큰은 DPAPI 암호화.</p></div>
+    <section class="section">
+      <div class="container">
+        <div class="cta-panel">
+          <div><h2>준비가 되셨나요?</h2><p>최신 Windows 설치 파일을 다운로드하거나, 설치 전에 전체 사용 방법을 먼저 확인할 수 있습니다.</p></div>
+          <a class="button" data-site-href="downloadSetupUrl" href="#" download>Windows용 다운로드</a>
+        </div>
       </div>
-      <details><summary>전체 약관 보기 (EULA)</summary><div class="dbody small">
-        <p><b>1. 소프트웨어의 동작</b> — 주 모니터 전체 캡처(커서 포함), 시스템·마이크 오디오 혼합, 본인 유튜브 계정 일부 공개 송출, 로컬 백업 녹화(기본 7일), 부팅 시 자동 시작.</p>
-        <p><b>2. 허용되는 사용</b> — 본인 소유·관리 PC에서 본인의 화면·음성을 기록·방송하는 목적에 한정.</p>
-        <p><b>3. 금지되는 사용</b> — 타인 PC 무단 설치, 타인의 화면·음성·개인정보 무단 캡처·송출·저장, 감시·스토킹·정보 탈취 등 관련 법령(개인정보 보호법, 통신비밀보호법 등) 위반 행위. 위반 책임은 전적으로 사용자에게 있음.</p>
-        <p><b>4. 데이터 처리</b> — 녹화 파일은 지정한 로컬 폴더에만 저장되고 개발자에게 전송되지 않음. 유튜브 송출은 사용자가 직접 로그인한 본인 계정으로만 이뤄짐. OAuth 토큰은 Windows DPAPI로 암호화되어 사용자 프로필에 저장됨.</p>
-        <p><b>5. 보증의 부인</b> — 소프트웨어는 “있는 그대로” 제공되며, 데이터 손실·방송 사고·법적 분쟁 등 결과에 대해 개발자는 책임지지 않음.</p>
-        <p><b>6. 동의 철회</b> — 동의하지 않으면 제거하면 됨. 제거 시 자동 시작 등록이 해제됨.</p>
-      </div></details>
     </section>
-
   </main>
-</div>
 
-<div class="stickydl"><a class="btn" data-cfg-href="downloadSetupUrl" href="#" download>⬇ Windows용 다운로드</a></div>
-
-<footer>
-  <div class="foot">
-    <span class="brand"><span class="tile" aria-hidden="true"></span><b data-cfg="brandName">Media Capture Helper</b></span>
-    <span>버전 <span data-cfg="version">0.3.0</span></span>
-    <a data-cfg-href="releasesPageUrl" href="#" target="_blank" rel="noopener">릴리스</a>
-    <span class="grow"></span>
-    <span class="small">본인 소유 PC의 자기 기록·방송 목적 전용 · Windows 10/11 (64비트)</span>
-  </div>
-</footer>
-
-<button id="totop" aria-label="맨 위로">↑</button>
-<div id="toast" role="status" aria-live="polite"></div>
-
-<script>
-  /* =======================================================================
-     CONFIG — 브랜드명 · 버전 · 다운로드 URL · 경로의 단일 출처.
-     여기만 고치면 페이지 전체에 반영됩니다.
-     ======================================================================= */
-  const CONFIG = {
-    brandName: "Media Capture Helper",
-    version: "0.3.0",                     // 릴리스한 태그와 맞추세요 (표시용)
-    appDataDir: "MediaCaptureHelper",     // %AppData%\<appDataDir>\
-    recordingsDir: "MediaCaptureHelper",  // %USERPROFILE%\Videos\<recordingsDir>\
-    repoUrl:             "https://github.com/JonathanBlackDoctor/SilentStream",
-    releasesPageUrl:     "https://github.com/JonathanBlackDoctor/SilentStream/releases",
-    downloadSetupUrl:    "https://github.com/JonathanBlackDoctor/SilentStream/releases/latest/download/MediaCaptureHelper-win-Setup.exe",
-    downloadPortableUrl: "https://github.com/JonathanBlackDoctor/SilentStream/releases/latest/download/MediaCaptureHelper-win-Portable.zip",
-  };
-
-  // --- CONFIG 바인딩 ---
-  document.querySelectorAll("[data-cfg]").forEach(el => { const v = CONFIG[el.dataset.cfg]; if (v != null) el.textContent = v; });
-  document.querySelectorAll("[data-cfg-href]").forEach(el => { const v = CONFIG[el.dataset.cfgHref]; if (v != null) el.setAttribute("href", v); });
-  document.querySelectorAll("[data-cfg-path]").forEach(el => { const v = CONFIG[el.dataset.cfgPath]; if (v != null) el.textContent = v; });
-
-  // --- 테마 토글 ---
-  const root = document.documentElement, themeIc = document.getElementById("themeIc"), themeTx = document.getElementById("themeTx");
-  function applyTheme(t){ root.setAttribute("data-theme", t); const dark = t === "dark";
-    themeIc.textContent = dark ? "🌙" : "☀️"; themeTx.textContent = dark ? "어둡게" : "밝게"; }
-  (function initTheme(){
-    let t = null; try { t = localStorage.getItem("mch_theme"); } catch(e){}
-    if (!t) t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-    applyTheme(t);
-  })();
-  document.getElementById("themeBtn").onclick = () => {
-    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    applyTheme(next); try { localStorage.setItem("mch_theme", next); } catch(e){}
-  };
-
-  // --- 모바일 목차 토글 ---
-  const toc = document.getElementById("toc"), tocToggle = document.getElementById("tocToggle");
-  function isNarrow(){ return window.matchMedia("(max-width:1000px)").matches; }
-  function syncTocCollapse(){ if (isNarrow()) toc.classList.add("collapsed"); else toc.classList.remove("collapsed"); }
-  syncTocCollapse(); window.addEventListener("resize", syncTocCollapse);
-  tocToggle.onclick = () => { const c = toc.classList.toggle("collapsed"); tocToggle.setAttribute("aria-expanded", String(!c)); };
-  toc.querySelectorAll("a").forEach(a => a.addEventListener("click", () => { if (isNarrow()) { toc.classList.add("collapsed"); tocToggle.setAttribute("aria-expanded","false"); } }));
-
-  // --- 스크롤스파이 + 진행바 ---
-  const links = [...toc.querySelectorAll("a")];
-  const linkFor = id => links.find(a => a.getAttribute("href") === "#" + id);
-  const spy = new IntersectionObserver(entries => {
-    entries.forEach(e => { if (e.isIntersecting) {
-      links.forEach(a => a.classList.remove("active"));
-      const l = linkFor(e.target.id); if (l){ l.classList.add("active"); l.setAttribute("aria-current","true"); }
-      links.forEach(a => { if (a !== l) a.removeAttribute("aria-current"); });
-    }});
-  }, { rootMargin: "-45% 0px -50% 0px" });
-  document.querySelectorAll("main section[id]").forEach(s => spy.observe(s));
-
-  const progress = document.getElementById("progress"), totop = document.getElementById("totop");
-  function onScroll(){
-    const h = document.documentElement, max = h.scrollHeight - h.clientHeight;
-    const pct = max > 0 ? (h.scrollTop / max) * 100 : 0;
-    progress.style.width = pct + "%";
-    totop.classList.toggle("show", h.scrollTop > 600);
-  }
-  document.addEventListener("scroll", onScroll, { passive:true }); onScroll();
-  totop.onclick = () => window.scrollTo({ top:0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
-
-  // --- 코드 복사 버튼 ---
-  const toast = (m) => { const t = document.getElementById("toast"); t.textContent = m; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1600); };
-  document.querySelectorAll(".copybtn").forEach(b => b.addEventListener("click", () => {
-    const pre = b.parentElement.querySelector("pre");
-    const text = pre ? pre.innerText : "";
-    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(() => toast("복사되었습니다")).catch(() => toast("복사 실패")); }
-    else { const r = document.createRange(); r.selectNodeContents(pre); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); try { document.execCommand("copy"); toast("복사되었습니다"); } catch(e){ toast("복사 실패"); } sel.removeAllRanges(); }
-  }));
-</script>
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"></span><span data-site-text="brandName">Media Capture Helper</span></a>
+      <span>본인 소유 또는 관리 권한이 있는 PC의 기록·방송 목적 전용</span>
+      <nav class="footer-links" aria-label="푸터 메뉴"><a href="guide.html#legal">이용 안내</a><a data-site-href="releasesPageUrl" href="#" target="_blank" rel="noopener">릴리스</a></nav>
+      <span>© <span data-current-year>2026</span></span>
+    </div>
+  </footer>
 </body>
 </html>
