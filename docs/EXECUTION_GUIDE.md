@@ -182,6 +182,7 @@ git push origin v0.2.0
 ```
 dotnet tool install -g vpk --version 1.2.0
 dotnet publish src/SilentStream.App -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish
+dotnet publish src/SilentStream.UninstallHelper -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/uninstall-helper
 # publish/ffmpeg/ffmpeg.exe 와 publish/client_secret.json 을 수동 배치한 뒤:
 vpk pack --packId SilentStream --packVersion 0.2.0 --packDir publish --mainExe SilentStream.exe --packTitle SilentStream
 # 산출물: ./Releases (Setup.exe 등). GitHub 게시는 vpk upload github ... (CI 가 대신 수행)

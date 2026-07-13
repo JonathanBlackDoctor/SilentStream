@@ -80,6 +80,13 @@ jobs:
           -p:Version=${{ steps.ver.outputs.version }}
           -o publish
 
+      - name: Publish remote uninstall helper
+        run: >
+          dotnet publish src/SilentStream.UninstallHelper/SilentStream.UninstallHelper.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -o publish/uninstall-helper
+
       # 2) static ffmpeg.exe 를 publish/ffmpeg/ 에 동봉(FfmpegLocator 가 BaseDirectory\ffmpeg\ffmpeg.exe 탐색).
       - name: Bundle FFmpeg
         shell: pwsh

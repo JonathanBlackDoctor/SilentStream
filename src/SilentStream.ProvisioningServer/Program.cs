@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using SilentStream.Core.Recovery;
 using SilentStream.Core.Remote.WebPush;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,6 +28,7 @@ if (args is ["generate-vapid"])
 
 builder.Services.Configure<ProvisioningOptions>(builder.Configuration.GetSection("Provisioning"));
 builder.Services.AddSingleton<RoomRegistry>();
+builder.Services.AddSingleton<RecoveryVaultStore>();
 
 var app = builder.Build();
 
@@ -116,6 +118,102 @@ app.MapPost("/api/assignments/refresh-vapid", (VapidRefreshRequest? request, Roo
     }
 });
 
+// Opaque recovery-vault endpoints. All device writes prove possession of the per-room tunnel
+// token; the backup's contents are already encrypted to a Windows CNG/TPM key before upload.
+app.MapPost("/api/recovery/register", (RecoveryRegistrationRequest? request, RecoveryVaultStore vault) =>
+{
+    if (request is null || !RoomRegistry.IsValidId(request.RoomId) ||
+        !RoomRegistry.IsSafeDeviceValue(request.InstallationId) || !RoomRegistry.IsSafeSecret(request.TunnelToken))
+    {
+        return Error("복구 등록 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    }
+    return vault.Register(request)
+        ? Results.NoContent()
+        : Error("복구 키를 등록할 수 없습니다.", StatusCodes.Status401Unauthorized);
+});
+
+app.MapPost("/api/recovery/snapshots", (RecoverySnapshotUploadRequest? request, RecoveryVaultStore vault) =>
+{
+    if (request is null || !RoomRegistry.IsValidId(request.RoomId) ||
+        !RoomRegistry.IsSafeDeviceValue(request.InstallationId) || !RoomRegistry.IsSafeSecret(request.TunnelToken))
+    {
+        return Error("복구 백업 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    }
+    return vault.StoreSnapshot(request)
+        ? Results.NoContent()
+        : Error("복구 백업을 저장할 수 없습니다.", StatusCodes.Status401Unauthorized);
+});
+
+app.MapPost("/api/recovery/challenges", (RecoveryChallengeRequest? request, RecoveryVaultStore vault) =>
+{
+    if (request is null) return Error("복구 키 정보가 없습니다.", StatusCodes.Status400BadRequest);
+    var challenge = vault.CreateChallenge(request.KeyId);
+    return challenge is null
+        ? Results.NotFound()
+        : Results.Ok(new
+        {
+            challengeId = challenge.ChallengeId,
+            nonce = Convert.ToBase64String(challenge.Nonce),
+            expiresAtUtc = challenge.ExpiresAtUtc
+        });
+});
+
+app.MapPost("/api/recovery/restore", (RecoveryRestoreRequest? request, RecoveryVaultStore vault) =>
+{
+    if (request is null || string.IsNullOrWhiteSpace(request.ChallengeId) || string.IsNullOrWhiteSpace(request.Signature))
+        return Error("복구 확인 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    try
+    {
+        var snapshot = vault.Restore(request.ChallengeId, Convert.FromBase64String(request.Signature));
+        return snapshot is null ? Results.NotFound() : Results.Ok(snapshot);
+    }
+    catch (FormatException)
+    {
+        return Error("복구 서명이 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    }
+});
+
+// The administrator credential is accepted only by the provisioning server. The issued command
+// is room/install-specific and must then be consumed by that exact installed device.
+app.MapPost("/api/admin/removal-commands", (RemovalIssueRequest? request, HttpRequest http, RecoveryVaultStore vault,
+    IOptions<ProvisioningOptions> options) =>
+{
+    if (!HasAdminToken(http, options.Value.AdminToken))
+        return Error("관리자 인증이 필요합니다.", StatusCodes.Status401Unauthorized);
+    if (request is null || !RoomRegistry.IsValidId(request.RoomId))
+        return Error("호실 식별자가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    var result = vault.IssueRemoval(request.RoomId);
+    return result.Kind switch
+    {
+        RemovalCommandResultKind.Success => Results.Ok(new { commandId = result.CommandId, expiresAtUtc = result.ExpiresAtUtc }),
+        RemovalCommandResultKind.RecoveryBackupUnavailable => Error("최신 복구 백업이 확인되지 않아 제거 명령을 발급할 수 없습니다.", StatusCodes.Status409Conflict),
+        _ => Error("등록된 기기를 찾을 수 없습니다.", StatusCodes.Status404NotFound)
+    };
+});
+
+app.MapPost("/api/device-removal-commands/{commandId}/consume", (string commandId, RemovalConsumeRequest? request,
+    RecoveryVaultStore vault) =>
+{
+    if (request is null || !RoomRegistry.IsValidId(request.RoomId) ||
+        !RoomRegistry.IsSafeDeviceValue(request.InstallationId) || !RoomRegistry.IsSafeSecret(request.TunnelToken))
+        return Error("삭제 명령 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    var result = vault.ConsumeRemoval(commandId, request.RoomId, request.InstallationId, request.TunnelToken);
+    return result.Kind switch
+    {
+        RemovalConsumeResultKind.Success => Results.Ok(new { completionToken = result.CompletionToken }),
+        RemovalConsumeResultKind.NotFound => Results.NotFound(),
+        _ => Error("삭제 명령을 실행할 권한이 없습니다.", StatusCodes.Status401Unauthorized)
+    };
+});
+
+app.MapPost("/api/device-removal-commands/{commandId}/complete", (string commandId, RemovalCompleteRequest? request,
+    RecoveryVaultStore vault) =>
+{
+    if (request is null || string.IsNullOrWhiteSpace(request.CompletionToken))
+        return Error("완료 확인 정보가 올바르지 않습니다.", StatusCodes.Status400BadRequest);
+    return vault.CompleteRemoval(commandId, request.CompletionToken) ? Results.NoContent() : Results.NotFound();
+});
+
 // A reset is intentionally admin-only. It is needed when a PC is replaced or the wrong room was
 // chosen; the next install can then claim the released room again.
 app.MapPost("/api/admin/rooms/{roomId}/release", (string roomId, HttpRequest request, RoomRegistry rooms,
@@ -161,6 +259,12 @@ public sealed class ProvisioningOptions
 
     /// <summary>Server-only administrator token for releasing an incorrectly claimed room.</summary>
     public string AdminToken { get; set; } = string.Empty;
+
+    /// <summary>Protected server volume holding encrypted recovery envelopes and removal state.</summary>
+    public string RecoveryDirectory { get; set; } = "data/recovery";
+    public int RecoverySnapshotRetainCount { get; set; } = 3;
+    public int RecoverySnapshotMaxBytes { get; set; } = 16 * 1024 * 1024;
+    public int RecoveryChallengeSeconds { get; set; } = 60;
 }
 
 public sealed class RoomRegistry
@@ -251,6 +355,67 @@ public sealed class RoomRegistry
             return shared is null
                 ? new VapidRefreshResult(VapidRefreshResultKind.NotConfigured)
                 : new VapidRefreshResult(VapidRefreshResultKind.Success, shared);
+        }
+    }
+
+    public bool VerifyInstalledDevice(string roomId, string installationId, string tunnelToken)
+    {
+        lock (_gate)
+        {
+            var room = LoadLocked().Rooms.FirstOrDefault(r => string.Equals(r.Id, roomId, StringComparison.OrdinalIgnoreCase));
+            return room is not null && string.Equals(room.ClaimedInstallationId, installationId, StringComparison.Ordinal) &&
+                FixedTimeEquals(room.CloudflareTunnelToken, tunnelToken);
+        }
+    }
+
+    public bool RegisterRecoveryIdentity(string roomId, string installationId, string tunnelToken, string keyId, string protectionLevel)
+    {
+        lock (_gate)
+        {
+            var document = LoadLocked();
+            var room = document.Rooms.FirstOrDefault(r => string.Equals(r.Id, roomId, StringComparison.OrdinalIgnoreCase));
+            if (room is null || !string.Equals(room.ClaimedInstallationId, installationId, StringComparison.Ordinal) ||
+                !FixedTimeEquals(room.CloudflareTunnelToken, tunnelToken)) return false;
+            // A different existing recovery identity is never overwritten by a running device.
+            if (!string.IsNullOrWhiteSpace(room.RecoveryKeyId) &&
+                !string.Equals(room.RecoveryKeyId, keyId, StringComparison.Ordinal)) return false;
+            // Room data deliberately retains only the public-key fingerprint. The public key
+            // needed for proof-of-possession lives with the protected recovery vault instead.
+            room.RecoveryKeyId = keyId;
+            room.RecoveryProtectionLevel = protectionLevel;
+            SaveLocked(document);
+            return true;
+        }
+    }
+
+    public bool IsRecoveryIdentityForDevice(string roomId, string installationId, string tunnelToken, string keyId)
+    {
+        lock (_gate)
+        {
+            var room = LoadLocked().Rooms.FirstOrDefault(r => string.Equals(r.Id, roomId, StringComparison.OrdinalIgnoreCase));
+            return room is not null && string.Equals(room.ClaimedInstallationId, installationId, StringComparison.Ordinal) &&
+                FixedTimeEquals(room.CloudflareTunnelToken, tunnelToken) &&
+                string.Equals(room.RecoveryKeyId, keyId, StringComparison.Ordinal);
+        }
+    }
+
+    public string? GetRecoveryKeyId(string roomId)
+    {
+        lock (_gate)
+        {
+            var room = LoadLocked().Rooms.FirstOrDefault(r => string.Equals(r.Id, roomId, StringComparison.OrdinalIgnoreCase));
+            return room is null || string.IsNullOrWhiteSpace(room.ClaimedInstallationId)
+                ? null
+                : room.RecoveryKeyId;
+        }
+    }
+
+    public RoomSecret? GetClaimedRoom(string roomId)
+    {
+        lock (_gate)
+        {
+            var room = LoadLocked().Rooms.FirstOrDefault(r => string.Equals(r.Id, roomId, StringComparison.OrdinalIgnoreCase));
+            return room is null || string.IsNullOrWhiteSpace(room.ClaimedInstallationId) ? null : room.PublicClaimCopy();
         }
     }
 
@@ -369,17 +534,29 @@ public sealed class RoomSecret
     public string? ClaimedInstallationId { get; set; }
     public string? ClaimedMachineName { get; set; }
     public DateTimeOffset? ClaimedAtUtc { get; set; }
+    public string? RecoveryKeyId { get; set; }
+    public string? RecoveryProtectionLevel { get; set; }
 
     public RoomSecret PublicCopy() => new()
     {
         Id = Id,
         DisplayName = DisplayName
     };
+
+    public RoomSecret PublicClaimCopy() => new()
+    {
+        Id = Id,
+        DisplayName = DisplayName,
+        ClaimedInstallationId = ClaimedInstallationId
+    };
 }
 
 public sealed record ClaimRequest(string RoomId, string InstallationId, string MachineName, string? ActivationCode);
 
 public sealed record VapidRefreshRequest(string RoomId, string InstallationId, string TunnelToken);
+public sealed record RemovalIssueRequest(string RoomId);
+public sealed record RemovalConsumeRequest(string RoomId, string InstallationId, string TunnelToken);
+public sealed record RemovalCompleteRequest(string CompletionToken);
 
 public sealed record ProvisioningAssignment(
     string RoomId,

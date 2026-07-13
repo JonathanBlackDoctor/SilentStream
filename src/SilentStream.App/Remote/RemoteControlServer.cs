@@ -20,6 +20,7 @@ using SilentStream.Core.Logging;
 using SilentStream.Core.Models;
 using SilentStream.Core.Remote;
 using SilentStream.Core.Remote.WebPush;
+using SilentStream.App.Recovery;
 
 namespace SilentStream.App.Remote;
 
@@ -61,6 +62,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IPushSubscriptionStore _pushSubscriptions;
     private readonly IVapidKeyStore _vapidKeys;
     private readonly RemoteAppRestartService _appRestart;
+    private readonly RemoteUninstallService _appUninstall;
+    private readonly RecoveryCoordinator _recovery;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -106,6 +109,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IPushSubscriptionStore pushSubscriptions,
         IVapidKeyStore vapidKeys,
         RemoteAppRestartService appRestart,
+        RemoteUninstallService appUninstall,
+        RecoveryCoordinator recovery,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -125,6 +130,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _pushSubscriptions = pushSubscriptions;
         _vapidKeys = vapidKeys;
         _appRestart = appRestart;
+        _appUninstall = appUninstall;
+        _recovery = recovery;
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -479,6 +486,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
         app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
+        app.MapGet("/api/recovery/status", () => Results.Json(_recovery.Status, Json));
 
         // Download assets are deliberately catalogued independently from the short-lived upload
         // queue. A completed queue job is pruned after a while, but its local audio remains
@@ -744,6 +752,18 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 ok,
                 message = ok ? "앱을 안전하게 다시 시작합니다." : "앱 재시작이 이미 진행 중입니다."
             }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+        });
+        app.MapPost("/api/app/uninstall", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<RemoteUninstallRequest>(ctx).ConfigureAwait(false);
+            if (body is null || string.IsNullOrWhiteSpace(body.AdministratorToken))
+            {
+                return Results.Json(new { ok = false, message = "관리자 인증이 필요합니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+            var result = await _appUninstall.RequestAsync(body.AdministratorToken, ctx.RequestAborted).ConfigureAwait(false);
+            return Results.Json(new { ok = result.Ok, message = result.Message }, Json,
+                statusCode: result.Ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
 
         app.Map("/ws/status", HandleWebSocketAsync);
@@ -1134,6 +1154,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             badge = StateBadge(state),
             live = state == StreamState.Live,
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
+            recovery = _recovery.Status,
 
             // 적용 중인 송출 품질(적응형 품질) — 폰 상태 카드의 품질 줄 + 프리셋 하이라이트용.
             quality = new
@@ -1438,6 +1459,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private sealed record AudioMuteRequest(string? Id, bool Muted);
 
     private sealed record AudioGainRequest(string? Id, double Gain);
+
+    private sealed record RemoteUninstallRequest(string? AdministratorToken);
 
     /// <summary>A connected WebSocket plus a 1-permit gate that serialises sends to it.</summary>
     private sealed class SocketChannel(WebSocket socket)

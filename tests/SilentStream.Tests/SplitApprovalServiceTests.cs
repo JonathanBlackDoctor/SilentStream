@@ -441,7 +441,22 @@ public class SplitApprovalServiceTests : IDisposable
     {
         _cts.Cancel();
         _cts.Dispose();
-        Directory.Delete(_dir, recursive: true);
+        // The virtual-clock worker observes cancellation asynchronously and can still have the
+        // config file open for a few milliseconds. Wait briefly so test cleanup is not flaky on
+        // Windows' exclusive file handles.
+        var deadline = DateTime.UtcNow.AddSeconds(1);
+        while (true)
+        {
+            try
+            {
+                Directory.Delete(_dir, recursive: true);
+                return;
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(25);
+            }
+        }
     }
 
     /// <summary>Virtual clock: a delay advances the clock and yields (see PeriodSchedulerTests).</summary>

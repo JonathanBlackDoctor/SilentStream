@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using SilentStream.App.ControlUI;
 using SilentStream.App.Hotkeys;
 using SilentStream.App.Preview;
+using SilentStream.App.Recovery;
 using SilentStream.App.Provisioning;
 using SilentStream.App.Remote;
 using SilentStream.App.StatusIndicator;
@@ -15,6 +16,7 @@ using SilentStream.Core.DependencyInjection;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
 using SilentStream.Core.Provisioning;
+using SilentStream.Core.Recovery;
 using SilentStream.Media.Windows;
 
 namespace SilentStream.App;
@@ -47,8 +49,11 @@ public partial class App : Application
         collection.AddSingleton<IAudioMixer, WasapiAudioMixer>();
         // 송출 미리보기: 캡처 프레임을 저레이트 JPEG 썸네일로 제공(제어창 + 폰).
         collection.AddSingleton<IPreviewProvider, FramePreviewService>();
+        collection.AddSingleton<IRecoveryKeyStore, CngRecoveryKeyStore>();
+        collection.AddSingleton<RecoveryCoordinator>();
         // 원격 재시작은 앱 종료 순서와 단일 인스턴스 가드를 알아야 하므로 WPF 계층에서만 구현한다.
         collection.AddSingleton<RemoteAppRestartService>();
+        collection.AddSingleton<RemoteUninstallService>();
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());
@@ -81,6 +86,9 @@ public partial class App : Application
             SynchronizeProvisionedVapid(_services, configStore, log);
         }
         config = configStore.Load();
+        // Existing devices become eligible only after the first server-acknowledged snapshot.
+        // The coordinator also observes subsequent queue/catalog/config file writes.
+        _services.GetRequiredService<RecoveryCoordinator>().Start();
 
         // 첫 실행: 연결된 모든 실제 마이크를 믹서 소스로 시드한다(시스템 + 마이크 전부). 기본값이
         // 무신호 장치 하나만 잡아 무음이 됐던 2차 현장 문제를 막는다 — 한 마이크가 죽어도 다른

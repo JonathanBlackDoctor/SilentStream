@@ -305,6 +305,15 @@
 
     <button id="restartAppBtn" class="ghost" style="margin-top:0">앱 다시 시작</button>
 
+    <div class="card" id="recoveryCard">
+      <h2>기기 복구 및 제거</h2>
+      <p class="muted" id="recoveryState">복구 백업 상태를 확인하는 중입니다.</p>
+      <small class="muted">이 작업은 앱과 앱 설정만 지웁니다. 녹화 폴더의 영상은 삭제하지 않으며, 같은 Windows 사용자로 다시 설치하면 설정을 자동 복원합니다.</small>
+      <input id="removeRoomConfirm" placeholder="이 호실 이름을 다시 입력" autocomplete="off" style="margin-top:10px" />
+      <input id="removeAdminToken" type="password" placeholder="관리자 토큰 (저장하지 않음)" autocomplete="off" style="margin-top:8px" />
+      <button id="uninstallAppBtn" class="stop" style="margin-top:8px" disabled>복구 가능한 완전 제거</button>
+    </div>
+
     <button class="ghost" id="unpair">이 호실 연결 해제</button>
   </section>
 
@@ -709,7 +718,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics()]);
+      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -845,8 +854,38 @@
       } catch(e){ toast("앱 재시작 요청에 실패했습니다."); }
     });
 
+    async function loadRecovery(){
+      if (!cur) return;
+      try { renderRecovery(await (await api(cur, "/api/recovery/status")).json()); }
+      catch(e){ renderRecovery({ready:false, message:"복구 백업 상태를 확인할 수 없습니다."}); }
+    }
+    function renderRecovery(recovery){
+      const state = $("recoveryState"), button = $("uninstallAppBtn");
+      if (!state || !button) return;
+      state.textContent = recovery && recovery.message ? recovery.message : "복구 백업 상태를 확인할 수 없습니다.";
+      button.disabled = !(recovery && recovery.ready);
+    }
+    makeHoldable("uninstallAppBtn", 3000, async () => {
+      const room = cur;
+      const expected = room && (room.label || $("roomName").textContent);
+      if (!room || $("removeRoomConfirm").value.trim() !== expected){
+        toast("현재 호실 이름을 정확히 입력해야 합니다."); return;
+      }
+      const adminToken = $("removeAdminToken").value;
+      if (!adminToken){ toast("관리자 토큰을 입력하세요."); return; }
+      if (!await confirmAsk("복구 가능한 완전 제거", "송출을 안전하게 종료하고 최신 설정을 백업한 뒤 앱과 앱 데이터를 지웁니다. 연결은 곧 종료됩니다.", "완전 제거")) return;
+      if (cur !== room) return;
+      try {
+        const response = await api(room, "/api/app/uninstall", {method:"POST", body:JSON.stringify({administratorToken:adminToken})});
+        const data = await response.json();
+        $("removeAdminToken").value = "";
+        toast(data.message || "원격 제거를 시작했습니다.");
+      } catch(e){ toast("원격 제거 요청에 실패했습니다."); }
+    });
+
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
+      if (s.recovery) renderRecovery(s.recovery);
       if (cur) syncLabel(cur, s.room);
       const rn=$("roomName"); if(rn) rn.textContent = s.room || "연결된 강의실";
       document.title = s.room ? (s.room+" · Media Capture Helper 원격") : "Media Capture Helper 원격";
