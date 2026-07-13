@@ -25,6 +25,8 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IScreenCaptureSource, ScreenCaptureSource>();
         services.AddSingleton<IAudioMixer, AudioMixer>();
         services.AddSingleton<IEncoderPipeline, EncoderPipeline>();
+        // One shared, token-safe OAuth health source for the live and VOD paths.
+        services.AddSingleton<IYouTubeAuthHealth, YouTubeAuthHealth>();
         services.AddSingleton<IYouTubeLiveService, YouTubeLiveService>();
         services.AddSingleton<IRecordingManager, RecordingManager>();
         // 적응형 송출 품질(확장계획서_적응형송출품질): 정책 컨트롤러. 오케스트레이터가 메트릭/상태를

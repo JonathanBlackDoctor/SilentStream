@@ -24,6 +24,7 @@ public sealed class UploadQueue : IUploadQueue
     private readonly IYouTubeUploadService _uploadService;
     private readonly IConfigStore _configStore;
     private readonly ILogService _log;
+    private readonly IPeriodAssetCatalog? _assets;
     private readonly string _queueFile;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -46,6 +47,20 @@ public sealed class UploadQueue : IUploadQueue
     {
     }
 
+    /// <summary>
+    /// DI constructor: links a successful upload to its durable download asset without changing
+    /// the queue's retry semantics if the optional catalogue cannot be written.
+    /// </summary>
+    public UploadQueue(
+        IYouTubeUploadService uploadService,
+        IConfigStore configStore,
+        ILogService log,
+        IPeriodAssetCatalog assets)
+        : this(uploadService, configStore, log, AppPaths.UploadQueueFile, () => DateTime.Now, Task.Delay,
+            maxPerDay: 6, maxAttempts: 5, assetCatalog: assets)
+    {
+    }
+
     /// <summary>Test seam: redirect the queue file, clock, delay, and limits.</summary>
     public UploadQueue(
         IYouTubeUploadService uploadService,
@@ -57,7 +72,8 @@ public sealed class UploadQueue : IUploadQueue
         int maxPerDay,
         int maxAttempts,
         int maxCompletedRetained = 50,
-        int maxFailedRetained = 20)
+        int maxFailedRetained = 20,
+        IPeriodAssetCatalog? assetCatalog = null)
     {
         _uploadService = uploadService;
         _configStore = configStore;
@@ -69,6 +85,7 @@ public sealed class UploadQueue : IUploadQueue
         _maxAttempts = maxAttempts;
         _maxCompletedRetained = maxCompletedRetained;
         _maxFailedRetained = maxFailedRetained;
+        _assets = assetCatalog;
     }
 
     public void Enqueue(UploadJob job)
@@ -160,6 +177,16 @@ public sealed class UploadQueue : IUploadQueue
                 .UploadAsync(job.FilePath, job.Title, privacy, ct).ConfigureAwait(false);
 
             UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Completed, VideoId = videoId });
+            try
+            {
+                _assets?.MarkUploaded(job.Id, videoId);
+            }
+            catch (Exception ex)
+            {
+                // The upload already succeeded. Preserve that terminal state even if the optional
+                // download-asset metadata cannot be refreshed right now.
+                _log.Warn($"{job.PeriodNumber}교시 다운로드 자산의 YouTube 연결 저장 실패: {ex.Message}");
+            }
             IncrementQuota();
             TryDeleteCutFile(job.FilePath);
             PruneTerminal();

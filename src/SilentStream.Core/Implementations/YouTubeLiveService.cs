@@ -1,4 +1,5 @@
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Services;
 using Google.Apis.YouTube.v3;
 using Google.Apis.YouTube.v3.Data;
@@ -17,6 +18,7 @@ namespace SilentStream.Core.Implementations;
 public sealed class YouTubeLiveService(
     IConfigStore configStore,
     ITokenProtector tokenProtector,
+    IYouTubeAuthHealth authHealth,
     ILogService log) : IYouTubeLiveService
 {
     private YouTubeService? _service;
@@ -25,6 +27,7 @@ public sealed class YouTubeLiveService(
     {
         if (!File.Exists(AppPaths.ClientSecretFile))
         {
+            authHealth.ReportPermanentFailure(YouTubeAuthFailureKind.MissingClientSecret);
             log.Error($"OAuth 클라이언트 설정 파일이 없습니다: {AppPaths.ClientSecretFile} " +
                       "(준비 방법은 CLAUDE.local.md / docs/CLAUDE.local.md.template 참고)");
             return false;
@@ -48,6 +51,10 @@ public sealed class YouTubeLiveService(
                 await credential.RefreshTokenAsync(ct).ConfigureAwait(false);
             }
 
+            // Report expiry metadata only; token values remain inside Google's credential and the
+            // DPAPI-backed data store.
+            authHealth.ObserveAccessTokenExpiry(YouTubeAccessTokenExpiry.Resolve(credential.Token));
+
             _service = new YouTubeService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,
@@ -55,6 +62,14 @@ public sealed class YouTubeLiveService(
             });
             log.Info("YouTube 인증 완료");
             return true;
+        }
+        catch (TokenResponseException ex)
+        {
+            // invalid_grant / invalid_client and similar token-server rejections need local
+            // operator action. Ordinary network failures continue through the retry path below.
+            authHealth.ReportPermanentFailure(YouTubeAuthFailureKind.TokenRejected);
+            log.Error("YouTube OAuth token refresh was rejected.", ex);
+            return false;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

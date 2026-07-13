@@ -65,6 +65,7 @@ public class ContractsScaffoldingTests
     [InlineData(typeof(IYouTubeUploadService))]
     [InlineData(typeof(IUploadQueue))]
     [InlineData(typeof(IRecordingSessionInfo))]
+    [InlineData(typeof(IYouTubeAuthHealth))]
     [InlineData(typeof(IHealthMonitor))]
     [InlineData(typeof(INotifier))]
     public void Extension_contracts_resolve_from_the_container(Type contract)
@@ -96,7 +97,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(8, config.Version); // schema v8 (승인 기반 교시 분할)
+        Assert.Equal(9, config.Version); // schema v9 (호실 자동 프로비저닝)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

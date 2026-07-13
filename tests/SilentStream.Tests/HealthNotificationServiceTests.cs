@@ -110,6 +110,26 @@ public class HealthNotificationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task OAuth_expiring_is_deduplicated_as_a_condition_and_its_recovery_is_sent()
+    {
+        using var service = CreateStarted();
+
+        _monitor.Raise(Event(HealthEventKind.OauthExpiring, HealthSeverity.Warn,
+            message: "OAuth token expires soon"));
+        await WaitUntilAsync(() => _notifier.Sent.Count >= 1);
+
+        // A repeated poll result must not create a second push for the same active condition.
+        _monitor.Raise(Event(HealthEventKind.OauthExpiring, HealthSeverity.Warn,
+            message: "OAuth token expires soon"));
+        await Task.Delay(150);
+        Assert.Single(_notifier.Sent);
+
+        _monitor.Raise(Event(HealthEventKind.OauthExpiring, HealthSeverity.Info, active: false,
+            message: "OAuth auth recovered"));
+        await WaitUntilAsync(() => _notifier.Sent.Count >= 2);
+    }
+
+    [Fact]
     public async Task Recovery_of_an_unnotified_condition_is_dropped()
     {
         _configStore.Update(c => c.Notifications.NotifyLevel = "critical");

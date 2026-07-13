@@ -61,9 +61,9 @@ public enum HealthEventKind
     SplitPending,
 
     /// <summary>
-    /// The YouTube OAuth credential is expiring/invalid. RESERVED: no runtime source exposes token
-    /// expiry today (see IYouTubeLiveService), so the health layer does not emit this yet — wiring it
-    /// requires a small new hook on the auth service. Defined here so consumers can already handle it.
+    /// The shared YouTube live/VOD OAuth credential is near access-token expiry or cannot be refreshed.
+    /// A Warn condition begins ten minutes before the observed access-token expiry; a rejected refresh
+    /// or missing OAuth client configuration escalates it to Critical. Cleared after successful auth.
     /// </summary>
     OauthExpiring,
 
@@ -80,7 +80,8 @@ public enum HealthEventKind
 /// <summary>
 /// A single typed health signal emitted by <see cref="Contracts.IHealthMonitor"/>. Condition kinds
 /// (<see cref="HealthEventKind.RtmpDown"/>, <see cref="HealthEventKind.MicSilent"/>,
-/// <see cref="HealthEventKind.DiskLow"/>) toggle <see cref="Active"/> on onset (true) and recovery
+/// <see cref="HealthEventKind.DiskLow"/>, <see cref="HealthEventKind.OauthExpiring"/>) toggle
+/// <see cref="Active"/> on onset (true) and recovery
 /// (false); momentary kinds (live started/stopped, upload failed) are always <see cref="Active"/>=true.
 /// </summary>
 /// <param name="Kind">Which condition this reports.</param>

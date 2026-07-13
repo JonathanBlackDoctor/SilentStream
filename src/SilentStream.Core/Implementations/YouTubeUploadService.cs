@@ -1,10 +1,12 @@
 using Google;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Auth.OAuth2.Responses;
 using Google.Apis.Services;
 using Google.Apis.Upload;
 using Google.Apis.YouTube.v3;
 using Google.Apis.YouTube.v3.Data;
 using SilentStream.Core.Contracts;
+using SilentStream.Core.Models;
 using SilentStream.Core.YouTube;
 
 namespace SilentStream.Core.Implementations;
@@ -19,6 +21,7 @@ namespace SilentStream.Core.Implementations;
 public sealed class YouTubeUploadService(
     IConfigStore configStore,
     ITokenProtector tokenProtector,
+    IYouTubeAuthHealth authHealth,
     ILogService log) : IYouTubeUploadService
 {
     /// <summary>~12 Mbps cap for immediate-throttled uploads — leaves headroom for the live RTMP.</summary>
@@ -84,10 +87,13 @@ public sealed class YouTubeUploadService(
         }
         if (!File.Exists(AppPaths.ClientSecretFile))
         {
+            authHealth.ReportPermanentFailure(YouTubeAuthFailureKind.MissingClientSecret);
             throw new InvalidOperationException(
                 $"OAuth 클라이언트 설정 파일이 없습니다: {AppPaths.ClientSecretFile}");
         }
 
+        try
+        {
         // Same data store + "user" key as the live service: reuses the already-stored refresh
         // token (full scope includes videos.insert, D9) so no interactive prompt is triggered.
         await using var secretStream = File.OpenRead(AppPaths.ClientSecretFile);
@@ -104,12 +110,22 @@ public sealed class YouTubeUploadService(
             await credential.RefreshTokenAsync(ct).ConfigureAwait(false);
         }
 
+        authHealth.ObserveAccessTokenExpiry(YouTubeAccessTokenExpiry.Resolve(credential.Token));
+
         _service = new YouTubeService(new BaseClientService.Initializer
         {
             HttpClientInitializer = credential,
             ApplicationName = "Media Capture Helper"
         });
         return _service;
+        }
+        catch (TokenResponseException)
+        {
+            // OAuth server rejections need re-login or client setup, unlike the upload queue's
+            // normal transport retries.
+            authHealth.ReportPermanentFailure(YouTubeAuthFailureKind.TokenRejected);
+            throw;
+        }
     }
 
     /// <summary>Maps a 403 quota error to <see cref="QuotaExceededException"/>; rethrows the rest.</summary>

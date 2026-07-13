@@ -60,6 +60,26 @@ public class UploadQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task Completed_upload_marks_its_durable_asset_with_the_youtube_id()
+    {
+        var uploader = new FakeUploader();
+        var catalog = new FakeAssetCatalog();
+        var job = MakeJob(1);
+        catalog.Upsert(new PeriodAsset(job.Id, job.Date, job.PeriodNumber, job.Title));
+        var queue = new UploadQueue(uploader, _configStore, new LogService(), _queueFile,
+            () => _clock.Now, _clock.Delay, maxPerDay: 6, maxAttempts: 5, assetCatalog: catalog);
+        queue.Enqueue(job);
+
+        using var cts = new CancellationTokenSource();
+        queue.Start(cts.Token);
+        await WaitUntilAsync(() => queue.Snapshot()[0].Status == UploadJobStatus.Completed,
+            TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        Assert.Equal("vid-1", Assert.Single(catalog.Assets).VideoId);
+    }
+
+    [Fact]
     public async Task Quota_exceeded_keeps_job_pending_then_resumes_after_reset()
     {
         // First attempt hits quota; after the (virtual) PT reset the retry succeeds.
@@ -220,5 +240,21 @@ public class UploadQueueTests : IDisposable
             }
             return Task.FromResult($"vid-{call}");
         }
+    }
+
+    private sealed class FakeAssetCatalog : IPeriodAssetCatalog
+    {
+        public List<PeriodAsset> Assets { get; } = [];
+        public PeriodAsset Upsert(PeriodAsset asset) { Assets.Add(asset); return asset; }
+        public IReadOnlyList<PeriodAsset> Snapshot() => Assets.ToList();
+        public PeriodAsset? Find(string id) => Assets.SingleOrDefault(a => a.Id == id);
+        public bool MarkUploaded(string id, string videoId)
+        {
+            var index = Assets.FindIndex(a => a.Id == id);
+            if (index < 0) return false;
+            Assets[index] = Assets[index] with { VideoId = videoId };
+            return true;
+        }
+        public bool MarkCaptionStatus(string id, string status, string? language = null, string? message = null) => false;
     }
 }

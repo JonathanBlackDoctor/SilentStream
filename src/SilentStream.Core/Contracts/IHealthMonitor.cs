@@ -18,8 +18,9 @@ public interface IHealthMonitor : IDisposable
     event EventHandler<HealthEvent> HealthChanged;
 
     /// <summary>
-    /// Snapshot of the currently-active conditions (rtmp down, silent mics, disk low). Momentary
-    /// events (live started/stopped, upload failed) are not retained here. Safe to read from any thread.
+    /// Snapshot of the currently-active conditions (rtmp down, silent mics, disk low, OAuth health,
+    /// adaptive quality). Momentary events (live started/stopped, upload failed) are not retained
+    /// here. Safe to read from any thread.
     /// </summary>
     IReadOnlyList<HealthEvent> ActiveEvents { get; }
 

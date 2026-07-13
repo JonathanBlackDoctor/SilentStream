@@ -12,8 +12,8 @@ namespace SilentStream.Core.Implementations;
 ///   <item>disk_low — POLLED from <see cref="IRecordingManager.GetStatus"/> vs config MinFreeGb (no event exists).</item>
 ///   <item>upload_failed — POLLED from <see cref="IUploadQueue.Snapshot"/> for terminal failures (no event exists).</item>
 /// </list>
-/// oauth_expiring is defined in <see cref="HealthEventKind"/> but not emitted: no runtime source exposes
-/// token expiry today (see IYouTubeLiveService), so it awaits a small new auth hook (Phase 1).
+/// oauth_expiring comes from the shared <see cref="IYouTubeAuthHealth"/> source: it warns ten
+/// minutes before the observed access-token expiry and becomes critical when renewal is rejected.
 /// Thread-safe (single <c>_gate</c> lock guards all debounce state, mirroring PairingThrottle); source
 /// events arrive on background threads and are never marshalled to the UI. The clock and poll delay are
 /// injectable so debounce/hysteresis is unit-testable without real time (PeriodScheduler/PairingThrottle seam).
@@ -34,6 +34,7 @@ public sealed class HealthMonitor : IHealthMonitor
     private readonly IRecordingManager _recording;
     private readonly IUploadQueue _uploadQueue;
     private readonly IConfigStore _configStore;
+    private readonly IYouTubeAuthHealth? _youtubeAuth;
     private readonly ISplitApprovalService? _splits; // null in older tests — split checks just skip
     private readonly ILogService _log;
     private readonly Func<DateTime> _now;
@@ -51,6 +52,7 @@ public sealed class HealthMonitor : IHealthMonitor
     private DateTime? _retryingSinceUtc;
     private HealthSeverity? _rtmpDownSeverity;
     private HealthSeverity? _diskLowSeverity;
+    private HealthSeverity? _oauthSeverity;
     private readonly HashSet<string> _silentMics = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reportedFailedUploadIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reportedPendingSplitIds = new(StringComparer.Ordinal);
@@ -65,10 +67,11 @@ public sealed class HealthMonitor : IHealthMonitor
         IRecordingManager recording,
         IUploadQueue uploadQueue,
         IConfigStore configStore,
+        IYouTubeAuthHealth youtubeAuth,
         ISplitApprovalService splits,
         ILogService log)
         : this(orchestrator, mixer, recording, uploadQueue, configStore, log,
-            () => DateTime.UtcNow, Task.Delay, splits)
+            () => DateTime.UtcNow, Task.Delay, splits, youtubeAuth)
     {
     }
 
@@ -82,13 +85,15 @@ public sealed class HealthMonitor : IHealthMonitor
         ILogService log,
         Func<DateTime> now,
         Func<TimeSpan, CancellationToken, Task> delay,
-        ISplitApprovalService? splits = null)
+        ISplitApprovalService? splits = null,
+        IYouTubeAuthHealth? youtubeAuth = null)
     {
         _orchestrator = orchestrator;
         _mixer = mixer;
         _recording = recording;
         _uploadQueue = uploadQueue;
         _configStore = configStore;
+        _youtubeAuth = youtubeAuth;
         _splits = splits;
         _log = log;
         _now = now;
@@ -110,6 +115,10 @@ public sealed class HealthMonitor : IHealthMonitor
         _orchestrator.StateChanged += OnStateChanged;
         _orchestrator.QualityChanged += OnQualityChanged;
         _mixer.MicSignalChanged += OnMicSignalChanged;
+        if (_youtubeAuth is not null)
+        {
+            _youtubeAuth.StatusChanged += OnYouTubeAuthStatusChanged;
+        }
 
         // Seed the baseline so we don't emit a spurious live_started, and pick up an in-progress outage.
         // _room is (re)read here and refreshed each poll pass so a runtime 호실명 edit is reflected.
@@ -283,6 +292,38 @@ public sealed class HealthMonitor : IHealthMonitor
         RaiseAll(buffer);
     }
 
+    private void OnYouTubeAuthStatusChanged(object? sender, YouTubeAuthHealthStatus status)
+    {
+        var buffer = new List<HealthEvent>();
+        lock (_gate)
+        {
+            switch (status.State)
+            {
+                case YouTubeAuthHealthState.Healthy:
+                    if (_oauthSeverity is not null)
+                    {
+                        _oauthSeverity = null;
+                        SetCondition(buffer, HealthEventKind.OauthExpiring, HealthSeverity.Info,
+                            active: false, status.Message, sourceKey: null);
+                    }
+                    break;
+
+                case YouTubeAuthHealthState.Expiring:
+                    _oauthSeverity = HealthSeverity.Warn;
+                    SetCondition(buffer, HealthEventKind.OauthExpiring, HealthSeverity.Warn,
+                        active: true, status.Message, sourceKey: null);
+                    break;
+
+                case YouTubeAuthHealthState.ActionRequired:
+                    _oauthSeverity = HealthSeverity.Critical;
+                    SetCondition(buffer, HealthEventKind.OauthExpiring, HealthSeverity.Critical,
+                        active: true, status.Message, sourceKey: null);
+                    break;
+            }
+        }
+        RaiseAll(buffer);
+    }
+
     // ---- Polled signals (disk, uploads) + rtmp_down hysteresis ----
 
     /// <summary>
@@ -293,6 +334,17 @@ public sealed class HealthMonitor : IHealthMonitor
     public void RunChecksOnce()
     {
         var buffer = new List<HealthEvent>();
+
+        try
+        {
+            // This may synchronously raise StatusChanged; it stays outside this monitor's lock so
+            // the handler can safely create the OauthExpiring health event.
+            _youtubeAuth?.Evaluate();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("OAuth health expiry check failed", ex);
+        }
 
         // Gather external inputs OUTSIDE the lock so disk I/O never blocks the event handlers.
         var state = _orchestrator.State;
@@ -622,6 +674,10 @@ public sealed class HealthMonitor : IHealthMonitor
         _orchestrator.StateChanged -= OnStateChanged;
         _orchestrator.QualityChanged -= OnQualityChanged;
         _mixer.MicSignalChanged -= OnMicSignalChanged;
+        if (_youtubeAuth is not null)
+        {
+            _youtubeAuth.StatusChanged -= OnYouTubeAuthStatusChanged;
+        }
         try
         {
             _cts?.Cancel();

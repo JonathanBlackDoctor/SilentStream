@@ -34,7 +34,7 @@ public class HealthMonitorTests : IDisposable
         _configStore.Save(AppConfig.CreateDefault()); // MinFreeGb=5, Recording.Enabled=true
     }
 
-    private HealthMonitor CreateStarted(string? room = null)
+    private HealthMonitor CreateStarted(string? room = null, IYouTubeAuthHealth? youtubeAuth = null)
     {
         if (room is not null)
         {
@@ -44,7 +44,7 @@ public class HealthMonitorTests : IDisposable
             _orch, _mixer, _recording, _queue, _configStore, new LogService(),
             () => _clock.Now,
             (_, ct) => Task.Delay(Timeout.Infinite, ct), // park the poll loop; tests call RunChecksOnce
-            _splits);
+            _splits, youtubeAuth);
         hm.HealthChanged += (_, e) => { lock (_events) { _events.Add(e); } };
         hm.Start(CancellationToken.None);
         return hm;
@@ -483,6 +483,38 @@ public class HealthMonitorTests : IDisposable
         Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.QualityDegraded);
     }
 
+    // ---- oauth_expiring ----
+
+    [Fact]
+    public void OAuth_expiring_warns_escalates_and_recovers_as_one_active_condition()
+    {
+        var auth = new FakeYouTubeAuthHealth();
+        using var hm = CreateStarted(youtubeAuth: auth);
+
+        hm.RunChecksOnce();
+        Assert.Equal(1, auth.EvaluateCalls);
+
+        auth.Raise(new YouTubeAuthHealthStatus(
+            YouTubeAuthHealthState.Expiring, "token expires soon"));
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.OauthExpiring &&
+            e.Active && e.Severity == HealthSeverity.Warn);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.OauthExpiring &&
+            e.Severity == HealthSeverity.Warn);
+
+        auth.Raise(new YouTubeAuthHealthStatus(
+            YouTubeAuthHealthState.ActionRequired, "token rejected"));
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.OauthExpiring &&
+            e.Active && e.Severity == HealthSeverity.Critical);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.OauthExpiring &&
+            e.Severity == HealthSeverity.Critical);
+
+        auth.Raise(new YouTubeAuthHealthStatus(
+            YouTubeAuthHealthState.Healthy, "auth recovered"));
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.OauthExpiring && !e.Active &&
+            e.Severity == HealthSeverity.Info);
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.OauthExpiring);
+    }
+
     // ---- fakes ----
 
     private sealed class Clock
@@ -565,5 +597,15 @@ public class HealthMonitorTests : IDisposable
         public SplitActionOutcome Merge(string id) => new(true, null);
         public SplitActionOutcome CancelMerge() => new(true, null);
         public SplitActionOutcome Skip(string id) => new(true, null);
+    }
+
+    private sealed class FakeYouTubeAuthHealth : IYouTubeAuthHealth
+    {
+        public event EventHandler<YouTubeAuthHealthStatus>? StatusChanged;
+        public int EvaluateCalls { get; private set; }
+        public void ObserveAccessTokenExpiry(DateTime? expiresAtUtc) { }
+        public void ReportPermanentFailure(YouTubeAuthFailureKind failure) { }
+        public void Evaluate() => EvaluateCalls++;
+        public void Raise(YouTubeAuthHealthStatus status) => StatusChanged?.Invoke(this, status);
     }
 }
