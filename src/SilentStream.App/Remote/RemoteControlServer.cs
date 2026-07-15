@@ -67,6 +67,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly RemoteSystemShutdownService _systemShutdown;
     private readonly RemoteUninstallService _appUninstall;
     private readonly RecoveryCoordinator _recovery;
+    private readonly InspectionRemoteStore _inspection;
+    private readonly IReadOnlyList<INotifier> _notifiers;
     private readonly ILogService _log;
 
     private readonly object _socketsGate = new();
@@ -116,6 +118,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         RemoteSystemShutdownService systemShutdown,
         RemoteUninstallService appUninstall,
         RecoveryCoordinator recovery,
+        InspectionRemoteStore inspection,
+        IEnumerable<INotifier> notifiers,
         ILogService log)
     {
         _orchestrator = orchestrator;
@@ -139,6 +143,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _systemShutdown = systemShutdown;
         _appUninstall = appUninstall;
         _recovery = recovery;
+        _inspection = inspection;
+        _notifiers = notifiers.ToArray();
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
@@ -494,6 +500,39 @@ public sealed class RemoteControlServer : IRemoteControlServer
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
         app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
         app.MapGet("/api/recovery/status", () => Results.Json(_recovery.Status, Json));
+
+        // 실기기 점검은 별도 PowerShell 프로세스가 수행한다. 앱은 상태를 안전하게 중계하고,
+        // 인증된 폰의 허용된 작업만 파일 큐로 넘긴다. 명령의 실제 실행은 키트의 에이전트가
+        // 담당하므로 원격 요청으로 임의 PowerShell을 실행할 수 없다.
+        app.MapGet("/api/inspection", () => Results.Json(_inspection.GetSnapshot(), Json));
+        app.MapPost("/api/inspection/report", async Task<IResult> (HttpContext ctx) =>
+        {
+            var report = await ReadJsonAsync<InspectionReportRequest>(ctx).ConfigureAwait(false);
+            if (report is null || string.IsNullOrWhiteSpace(report.RunId) || string.IsNullOrWhiteSpace(report.Room))
+            {
+                return Results.Json(new { error = "점검 보고 형식이 올바르지 않습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var saved = _inspection.SaveReport(report);
+            if (saved.ShouldNotify)
+            {
+                var prefix = string.IsNullOrWhiteSpace(saved.State.Room) ? string.Empty : $"[{saved.State.Room}] ";
+                var icon = saved.State.Severity == "error" ? "🚨" : "✅";
+                var message = $"{icon} {prefix}실기기 점검: {saved.State.Message}";
+                foreach (var notifier in _notifiers)
+                {
+                    _ = SendInspectionNotificationAsync(notifier, message);
+                }
+            }
+            return Results.Json(saved.State, Json);
+        });
+        app.MapPost("/api/inspection/command", async Task<IResult> (HttpContext ctx) =>
+        {
+            var request = await ReadJsonAsync<InspectionCommandRequest>(ctx).ConfigureAwait(false);
+            var result = _inspection.QueueCommand(request);
+            return Results.Json(result, Json, statusCode: result.Ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+        });
 
         // Download assets are deliberately catalogued independently from the short-lived upload
         // queue. A completed queue job is pruned after a while, but its local audio remains
@@ -886,6 +925,18 @@ public sealed class RemoteControlServer : IRemoteControlServer
         });
 
         app.Map("/ws/status", HandleWebSocketAsync);
+    }
+
+    private async Task SendInspectionNotificationAsync(INotifier notifier, string message)
+    {
+        try
+        {
+            await notifier.SendAsync(message, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"실기기 점검 알림 전송 실패: {ex.Message}");
+        }
     }
 
     private async Task HandleWebSocketAsync(HttpContext ctx)

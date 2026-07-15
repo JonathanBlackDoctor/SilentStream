@@ -39,6 +39,14 @@ public static class AppPaths
     public static string VapidKeysFile => Path.Combine(AppDataDir, "vapid_keys.json");
 
     /// <summary>
+    /// 상태와 명령을 분리한 실기기 점검 원격 연동 파일. 점검 PowerShell은 상태만 쓰고,
+    /// 원격 제어 서버는 인증된 조작자의 명령만 이 위치에 큐잉한다.
+    /// </summary>
+    public static string InspectionStatusFile => Path.Combine(AppDataDir, "inspection-remote.json");
+
+    public static string InspectionCommandFile => Path.Combine(AppDataDir, "inspection-command.json");
+
+    /// <summary>
     /// Durable download assets for completed period VODs. This is intentionally separate from
     /// <see cref="VodDir"/>: the upload worker removes its temporary MP4 after YouTube accepts it,
     /// while exported audio remains available to the paired operator.

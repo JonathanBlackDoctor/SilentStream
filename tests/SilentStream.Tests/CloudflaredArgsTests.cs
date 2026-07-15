@@ -47,4 +47,18 @@ public class CloudflaredArgsTests
         Assert.Equal("tunnel --no-autoupdate --url http://localhost:8787", quick);
         Assert.Equal("tunnel --no-autoupdate run --token TOK", named);
     }
+
+    [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(0, 0)]
+    [InlineData(1, 2)]
+    [InlineData(2, 5)]
+    [InlineData(3, 10)]
+    [InlineData(4, 30)]
+    [InlineData(5, 60)]
+    [InlineData(20, 60)]
+    public void Named_tunnel_restart_backoff_is_bounded(int failures, int expectedSeconds)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expectedSeconds), CloudflaredRestartPolicy.DelayAfter(failures));
+    }
 }

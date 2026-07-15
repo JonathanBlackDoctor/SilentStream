@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SilentStream 컨트롤러 디자인 시안</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, Pretendard, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 1180px; color: #f5f7fb; background: #0b0d12; }
+    .page { width: 1520px; margin: 0 auto; padding: 54px 0 72px; }
+    .eyebrow { color: #8d98aa; font-size: 12px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+    h1 { margin: 9px 0 10px; font-size: 35px; letter-spacing: -.05em; }
+    .intro { max-width: 760px; margin: 0; color: #aeb8c8; font-size: 15px; line-height: 1.65; }
+    .concepts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 30px; margin-top: 36px; }
+    .concept { min-height: 636px; overflow: hidden; border: 1px solid #252a34; border-radius: 24px; background: #11141b; }
+    .concept-head { display: flex; align-items: start; justify-content: space-between; padding: 20px 23px 18px; border-bottom: 1px solid #252a34; }
+    .concept-kicker { color: #8994a7; font-size: 11px; font-weight: 800; letter-spacing: .12em; }
+    .concept h2 { margin: 4px 0 0; font-size: 20px; letter-spacing: -.035em; }
+    .concept-note { max-width: 225px; color: #98a3b4; font-size: 12px; line-height: 1.55; text-align: right; }
+    .mock { min-height: 534px; padding: 26px; position: relative; }
+    button { font: inherit; border: 0; cursor: default; }
+
+    /* A. Command Deck — decisive operation-first layout */
+    .deck { color: #f7f8fb; background: radial-gradient(circle at 92% 4%, #213c5b 0, transparent 36%), #0e1218; }
+    .deck-bar { display: flex; align-items: center; justify-content: space-between; }
+    .brand { font-weight: 760; letter-spacing: -.04em; } .brand b { color: #73b5ff; }
+    .room { color: #9ca7b8; font-size: 12px; }
+    .deck-hero { display: grid; grid-template-columns: 1fr 178px; gap: 16px; margin-top: 21px; }
+    .live-card { padding: 22px; border: 1px solid #2c3d51; border-radius: 19px; background: linear-gradient(135deg, #172a3f, #121a25); }
+    .live-top { display: flex; justify-content: space-between; align-items: center; color: #aab8c9; font-size: 12px; }
+    .live-dot { display: inline-flex; gap: 6px; align-items: center; color: #95f2b4; font-weight: 700; }
+    .live-dot:before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #4ce480; box-shadow: 0 0 0 4px rgba(76, 228, 128, .12); }
+    .live-card strong { display: block; margin-top: 23px; font-size: 31px; letter-spacing: -.055em; }
+    .live-card p { margin: 6px 0 0; color: #9baabf; font-size: 12px; }
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .metric { padding: 15px 13px; border: 1px solid #243040; border-radius: 15px; background: rgba(17, 24, 33, .85); }
+    .metric span { display: block; color: #8b98aa; font-size: 11px; } .metric b { display: block; margin-top: 6px; font-size: 17px; letter-spacing: -.04em; }
+    .deck-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 16px; }
+    .deck-actions button { min-height: 51px; border-radius: 14px; font-size: 13px; font-weight: 750; }
+    .primary { color: #071018; background: #74baff; } .danger { color: #ffc9c7; background: #351d25; border: 1px solid #713743; }
+    .deck-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid #202935; }
+    .label { display: flex; justify-content: space-between; color: #a8b2c1; font-size: 12px; font-weight: 700; }
+    .label small { color: #6e7b8e; font-weight: 500; }
+    .quality { display: flex; gap: 6px; margin-top: 10px; } .quality span { flex: 1; padding: 9px 4px; color: #8290a2; border: 1px solid #293646; border-radius: 9px; font-size: 11px; text-align: center; }
+    .quality .selected { color: #bfe0ff; border-color: #5595d2; background: #19334d; }
+    .meterline { display: flex; align-items: center; gap: 10px; margin-top: 12px; color: #aeb9c8; font-size: 12px; }
+    .bar { flex: 1; height: 6px; overflow: hidden; border-radius: 5px; background: #26303e; } .bar i { display: block; width: 62%; height: 100%; border-radius: inherit; background: #5fd995; }
+
+    /* B. Quiet Canvas — calm, touch-friendly, glanceable */
+    .canvas { color: #1d2732; background: #f0f3f5; }
+    .canvas .topline { display: flex; align-items: center; justify-content: space-between; color: #647083; font-size: 12px; }
+    .canvas .topline b { color: #263443; font-size: 15px; letter-spacing: -.04em; }
+    .canvas-status { margin-top: 21px; padding: 22px; border-radius: 20px; background: #fff; box-shadow: 0 10px 27px rgba(53, 65, 81, .08); }
+    .canvas-status .statusrow { display: flex; align-items: center; gap: 9px; color: #236a4d; font-size: 12px; font-weight: 800; }
+    .canvas-status .statusrow:before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: #48c887; }
+    .canvas-status h3 { margin: 12px 0 5px; font-size: 26px; letter-spacing: -.055em; }
+    .canvas-status p { margin: 0; color: #728093; font-size: 12px; }
+    .canvas-numbers { display: flex; gap: 19px; margin-top: 18px; padding-top: 15px; border-top: 1px solid #edf0f3; }
+    .canvas-numbers div { flex: 1; color: #788597; font-size: 11px; } .canvas-numbers b { display: block; margin-top: 3px; color: #263443; font-size: 17px; }
+    .canvas-start { width: 100%; margin-top: 16px; padding: 15px; border-radius: 14px; color: #fff; background: #283c4e; font-weight: 750; font-size: 14px; }
+    .canvas-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; margin-top: 15px; }
+    .canvas-tile { min-height: 103px; padding: 15px; border: 1px solid #e0e6ea; border-radius: 17px; background: #f9fafb; }
+    .canvas-tile em { display: block; color: #8490a0; font-style: normal; font-size: 11px; } .canvas-tile b { display: block; margin-top: 9px; font-size: 14px; letter-spacing: -.035em; }
+    .canvas-tile .micbar { height: 5px; margin-top: 12px; overflow: hidden; border-radius: 10px; background: #dde4e7; } .micbar i { display: block; width: 55%; height: 100%; background: #51b88a; }
+    .canvas-stop { margin-top: 15px; width: 100%; padding: 12px; color: #a74b50; border: 1px solid #e7c8c9; border-radius: 13px; background: transparent; font-weight: 700; font-size: 12px; }
+
+    /* C. Focus Flow — one primary status with layered secondary controls */
+    .focus { background: linear-gradient(153deg, #16151a 0%, #171c29 54%, #13151b 100%); }
+    .focus-top { display: flex; justify-content: space-between; align-items: center; color: #aeb6c4; font-size: 12px; } .focus-top b { color: #fff; font-size: 15px; }
+    .focus-orb { display: flex; align-items: center; justify-content: center; width: 138px; height: 138px; margin: 24px auto 15px; border: 1px solid #3b4962; border-radius: 50%; background: radial-gradient(circle, #27466a, #1b2638 55%, #151a23 70%); box-shadow: 0 0 0 12px rgba(81, 137, 205, .045); }
+    .focus-orb span { text-align: center; color: #9eb0c9; font-size: 11px; } .focus-orb b { display: block; margin-top: 3px; color: #fff; font-size: 25px; letter-spacing: -.05em; }
+    .focus-title { text-align: center; } .focus-title h3 { margin: 0; font-size: 22px; letter-spacing: -.055em; } .focus-title p { margin: 5px 0 0; color: #8997aa; font-size: 12px; }
+    .focus-control { display: flex; gap: 8px; margin: 21px auto 0; max-width: 344px; } .focus-control button { flex: 1; padding: 13px; border-radius: 12px; color: #d9eaff; background: #243852; font-weight: 750; }
+    .focus-control button:last-child { color: #e7b9bd; background: #2e1f28; }
+    .focus-stack { display: grid; gap: 8px; margin-top: 22px; }
+    .flow-row { display: grid; grid-template-columns: 35px 1fr auto; align-items: center; gap: 10px; padding: 12px 13px; border: 1px solid #2d3543; border-radius: 14px; background: rgba(30, 34, 43, .78); }
+    .flow-icon { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 10px; color: #a5cfff; background: #263a53; font-size: 13px; } .flow-row b { font-size: 12px; } .flow-row small { display: block; margin-top: 2px; color: #8290a3; font-size: 10px; } .flow-row span:last-child { color: #c6d5e8; font-size: 12px; }
+
+    /* D. Signal Grid — purpose-built for several rooms */
+    .signal { background: #101116; }
+    .signal-head { display: flex; justify-content: space-between; align-items: center; } .signal-name { font-size: 15px; font-weight: 750; } .signal-add { padding: 7px 10px; color: #bbc9d8; border: 1px solid #313741; border-radius: 9px; background: #1a1e25; font-size: 11px; }
+    .signal-summary { display: flex; gap: 7px; margin-top: 17px; } .signal-summary span { padding: 5px 8px; border-radius: 20px; color: #8995a4; background: #1b1f27; font-size: 11px; } .signal-summary .ok { color: #83e5b0; background: #173527; }
+    .room-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 18px; }
+    .room-card { min-height: 127px; padding: 13px; border: 1px solid #2c313a; border-radius: 15px; background: #181b22; } .room-card.live { border-color: #2a6a4b; background: linear-gradient(135deg, #17291f, #181b22 64%); } .room-card.alert { border-color: #704044; background: linear-gradient(135deg, #2b1a20, #181b22 64%); }
+    .room-card header { display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 700; } .room-card header span { padding: 3px 6px; border-radius: 8px; color: #8be1b4; background: #163d2b; font-size: 9px; } .room-card.alert header span { color: #ffafb2; background: #4c252b; }
+    .room-card p { margin: 14px 0 4px; color: #d8dce2; font-size: 15px; font-weight: 750; letter-spacing: -.04em; } .room-card small { color: #8290a1; font-size: 10px; }
+    .signal-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 19px; padding: 12px 13px; border-radius: 13px; background: #1b1e26; color: #9ca8b9; font-size: 11px; } .signal-footer b { color: #d8e5f4; }
+    .signal .preview-thumb { position: absolute; right: 26px; bottom: 24px; width: 180px; height: 100px; overflow: hidden; border: 1px solid #37404e; border-radius: 12px; background: linear-gradient(135deg, #293748, #11151c); } .preview-thumb:before { content: "PREVIEW"; position: absolute; top: 9px; left: 10px; color: #acb9ca; font-size: 9px; letter-spacing: .12em; } .preview-thumb:after { content: ""; position: absolute; right: -23px; bottom: -35px; width: 150px; height: 120px; border-radius: 70% 0 0; background: #e4a66c; opacity: .4; }
+
+    .legend { display: flex; gap: 15px; margin-top: 29px; padding: 16px 19px; border: 1px solid #252a34; border-radius: 15px; color: #9aa5b6; font-size: 12px; line-height: 1.55; }
+    .legend b { color: #e2e6ec; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <div class="eyebrow">SilentStream · Remote Controller Concept Study</div>
+    <h1>원격 컨트롤러 디자인 시안</h1>
+    <p class="intro">현재의 핵심 기능(송출 시작·중지, 품질, 오디오, 녹화, 다중 강의실)을 유지하면서 정보 우선순위와 분위기를 다르게 잡았습니다. 실제 기능 연결 전, 선호 방향을 고르기 위한 비교용 화면입니다.</p>
+
+    <section class="concepts">
+      <article class="concept">
+        <header class="concept-head"><div><div class="concept-kicker">Concept A</div><h2>Command Deck</h2></div><p class="concept-note">긴급 조작과 실시간 수치를 가장 빠르게 읽는 어두운 운영 콘솔</p></header>
+        <div class="mock deck">
+          <div class="deck-bar"><div class="brand">silent<b>stream</b></div><div class="room">201호 · 원격 제어</div></div>
+          <div class="deck-hero"><div class="live-card"><div class="live-top"><span>현재 세션</span><span class="live-dot">LIVE</span></div><strong>2교시 송출 중</strong><p>09:00 – 09:50 · YouTube 연결 정상</p></div><div class="metrics"><div class="metric"><span>BITRATE</span><b>6.2 Mb/s</b></div><div class="metric"><span>FPS</span><b>29.97</b></div><div class="metric"><span>CPU</span><b>32%</b></div><div class="metric"><span>GPU</span><b>18%</b></div></div></div>
+          <div class="deck-actions"><button class="primary">송출 시작</button><button class="danger">전체 중지</button></div>
+          <div class="deck-section"><div class="label"><span>송출 품질</span><small>1080p · 30fps</small></div><div class="quality"><span class="selected">자동</span><span>표준</span><span>안정</span><span>절전</span></div></div>
+          <div class="deck-section"><div class="label"><span>오디오</span><small>마스터 정상</small></div><div class="meterline"><span>교탁 마이크</span><div class="bar"><i></i></div><span>-12 dB</span></div><div class="meterline"><span>PC 사운드</span><div class="bar"><i style="width:36%"></i></div><span>-24 dB</span></div></div>
+        </div>
+      </article>
+
+      <article class="concept">
+        <header class="concept-head"><div><div class="concept-kicker">Concept B</div><h2>Quiet Canvas</h2></div><p class="concept-note">교사가 부담 없이 쓰는, 밝고 부드러운 터치 우선 화면</p></header>
+        <div class="mock canvas">
+          <div class="topline"><b>SilentStream</b><span>201호&nbsp;&nbsp;·&nbsp;&nbsp;오늘 2교시</span></div>
+          <section class="canvas-status"><div class="statusrow">정상 송출 중</div><h3>수업을 안정적으로 전송하고 있어요</h3><p>영상과 오디오가 모두 정상입니다.</p><div class="canvas-numbers"><div>업로드 <b>6.2 Mb/s</b></div><div>프레임 <b>30 FPS</b></div><div>남은 저장공간 <b>184 GB</b></div></div></section>
+          <button class="canvas-start">송출 시작</button>
+          <div class="canvas-grid"><div class="canvas-tile"><em>오디오</em><b>교탁 마이크</b><div class="micbar"><i></i></div></div><div class="canvas-tile"><em>녹화</em><b>녹화 중 · 8.4 GB</b><div class="micbar"><i style="width:72%;background:#9db4ce"></i></div></div><div class="canvas-tile"><em>화질</em><b>자동 · 1080p</b></div><div class="canvas-tile"><em>시간표</em><b>다음 수업 13:00</b></div></div>
+          <button class="canvas-stop">송출과 녹화 전체 중지</button>
+        </div>
+      </article>
+
+      <article class="concept">
+        <header class="concept-head"><div><div class="concept-kicker">Concept C</div><h2>Focus Flow</h2></div><p class="concept-note">복잡한 수치는 접고, 지금 해야 할 한 가지 행동에 집중시키는 방식</p></header>
+        <div class="mock focus">
+          <div class="focus-top"><b>201호</b><span>원격 연결됨 · 09:24</span></div>
+          <div class="focus-orb"><span>STREAM<b>LIVE</b></span></div>
+          <div class="focus-title"><h3>송출이 정상적으로 진행 중입니다</h3><p>현재 세션 · 2교시&nbsp;&nbsp;09:00–09:50</p></div>
+          <div class="focus-control"><button>방송만 중지</button><button>전체 중지</button></div>
+          <div class="focus-stack"><div class="flow-row"><span class="flow-icon">◉</span><div><b>스트림 품질</b><small>적응형 품질이 네트워크를 조정합니다</small></div><span>1080p</span></div><div class="flow-row"><span class="flow-icon">⌁</span><div><b>마이크와 시스템 오디오</b><small>두 입력 모두 신호가 들어오고 있습니다</small></div><span>정상</span></div><div class="flow-row"><span class="flow-icon">□</span><div><b>백업 녹화</b><small>2026-07-13_2교시.mp4</small></div><span>8.4 GB</span></div></div>
+        </div>
+      </article>
+
+      <article class="concept">
+        <header class="concept-head"><div><div class="concept-kicker">Concept D</div><h2>Signal Grid</h2></div><p class="concept-note">여러 강의실을 담당할 때 이상 징후와 현황을 한눈에 보는 관제형 화면</p></header>
+        <div class="mock signal">
+          <div class="signal-head"><div class="signal-name">전체 강의실</div><button class="signal-add">+ 강의실 추가</button></div>
+          <div class="signal-summary"><span class="ok">● 정상 3</span><span>주의 1</span><span>오프라인 0</span></div>
+          <div class="room-grid"><article class="room-card live"><header>201호 <span>LIVE</span></header><p>2교시 송출 중</p><small>6.2 Mb/s · 30 FPS · 오디오 정상</small></article><article class="room-card live"><header>202호 <span>LIVE</span></header><p>1교시 녹화 중</p><small>4.8 Mb/s · 30 FPS · 오디오 정상</small></article><article class="room-card alert"><header>301호 <span>확인 필요</span></header><p>마이크 신호 없음</p><small>점검이 필요합니다 · 2분 전</small></article><article class="room-card"><header>302호 <span style="color:#b4bdc9;background:#2b303a">대기</span></header><p>다음 수업 13:00</p><small>녹화 파일 184 GB 여유</small></article></div>
+          <div class="signal-footer"><span>선택한 강의실: <b>201호</b></span><span>세부 제어 →</span></div><div class="preview-thumb"></div>
+        </div>
+      </article>
+    </section>
+
+    <div class="legend"><b>방향 요약</b><span>A는 장비 담당자용의 빠른 조작, B는 일반 사용자의 편안함, C는 단일 강의실의 집중도, D는 다중 강의실 모니터링에 특히 잘 맞습니다. 선택한 방향을 바탕으로 실제 원격 컨트롤러에 적용할 수 있습니다.</span></div>
+  </main>
+</body>
+</html>

@@ -55,6 +55,7 @@ public partial class App : Application
         collection.AddSingleton<RemoteAppRestartService>();
         collection.AddSingleton<RemoteSystemShutdownService>();
         collection.AddSingleton<RemoteUninstallService>();
+        collection.AddSingleton<InspectionRemoteStore>();
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());

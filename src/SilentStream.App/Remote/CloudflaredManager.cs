@@ -19,14 +19,32 @@ public sealed class CloudflaredManager : IDisposable
         new(@"https://[a-z0-9-]+\.trycloudflare\.com", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private readonly ILogService _log;
+    private readonly object _processGate = new();
 
     private Process? _process;
     private CancellationTokenSource? _sessionCts;
+    private Task? _namedSupervisorTask;
     private TaskCompletionSource<string>? _quickUrlTcs;
 
     public CloudflaredManager(ILogService log) => _log = log;
 
-    public bool IsRunning => _process is { HasExited: false };
+    public bool IsRunning
+    {
+        get
+        {
+            lock (_processGate)
+            {
+                try
+                {
+                    return _process is { HasExited: false };
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+        }
+    }
 
     /// <summary>The public URL phones use, once known (null while a token-only tunnel runs without a
     /// configured hostname, or before a quick tunnel has reported its URL).</summary>
@@ -44,52 +62,38 @@ public sealed class CloudflaredManager : IDisposable
     public async Task<string?> StartAsync(
         string? token, int localPort, string? hostname, string? protocol, CancellationToken ct)
     {
-        if (IsRunning)
+        lock (_processGate)
         {
-            throw new InvalidOperationException("cloudflared가 이미 실행 중입니다.");
+            if (_sessionCts is not null)
+            {
+                throw new InvalidOperationException("cloudflared가 이미 실행 중입니다.");
+            }
+
+            _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         }
 
-        _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var hasToken = !string.IsNullOrWhiteSpace(token);
         var args = CloudflaredArgs.Build(token, localPort, protocol);
 
-        // Only quick tunnels learn their URL from stderr; a named tunnel's URL is its hostname.
-        _quickUrlTcs = hasToken
-            ? null
-            : new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        _process = new Process
-        {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = ResolveCloudflared(),
-                Arguments = args,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardError = true,
-                RedirectStandardOutput = true
-            },
-            EnableRaisingEvents = true
-        };
-        _process.ErrorDataReceived += OnStderr;
-        _process.OutputDataReceived += OnStderr;
-        _process.Exited += (_, _) =>
-        {
-            _log.Warn("cloudflared 터널이 종료되었습니다.");
-            _quickUrlTcs?.TrySetException(
-                new InvalidOperationException("cloudflared가 URL을 보고하기 전에 종료되었습니다."));
-        };
-
-        _process.Start();
-        _process.BeginErrorReadLine();
-        _process.BeginOutputReadLine();
-
         if (hasToken)
         {
-            // Named tunnel: the public URL is whatever hostname the user mapped in the dashboard.
+            // A named tunnel has a stable hostname. Supervise its child process for the whole app
+            // lifetime: managed networks are commonly unavailable for a while during Windows
+            // logon, and cloudflared can also exit after a transient edge failure.
             PublicUrl = string.IsNullOrWhiteSpace(hostname) ? null : $"https://{hostname}";
+            var firstAttempt = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _namedSupervisorTask = SuperviseNamedTunnelAsync(args, firstAttempt, _sessionCts!.Token);
+            await firstAttempt.Task.ConfigureAwait(false);
             return PublicUrl;
         }
+
+        // Quick tunnels learn their random URL from stderr and cannot keep the same public address
+        // after a restart, so retain their existing one-session behaviour.
+        _quickUrlTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var process = CreateProcess(args);
+        process.Exited += OnQuickTunnelExited;
+        SetCurrentProcess(process);
+        StartProcess(process);
 
         // Quick tunnel: the random *.trycloudflare.com URL only appears in stderr — wait for it.
         var tcs = _quickUrlTcs!;
@@ -105,29 +109,44 @@ public sealed class CloudflaredManager : IDisposable
 
     public async Task StopAsync()
     {
-        _sessionCts?.Cancel();
-        var process = _process;
-        if (process is null)
+        CancellationTokenSource? session;
+        Task? supervisor;
+        Process? process;
+        lock (_processGate)
         {
-            return;
+            session = _sessionCts;
+            if (session is null)
+            {
+                return;
+            }
+
+            _sessionCts = null;
+            supervisor = _namedSupervisorTask;
+            _namedSupervisorTask = null;
+            process = _process;
         }
+
+        session.Cancel();
         try
         {
-            // cloudflared has no graceful stdin-EOF stop; give it a moment, then kill the tree.
-            if (!process.HasExited &&
-                !await WaitForExitAsync(process, TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            if (supervisor is not null)
             {
-                process.Kill(entireProcessTree: true);
+                await supervisor.ConfigureAwait(false);
+            }
+            else if (process is not null)
+            {
+                await StopProcessAsync(process).ConfigureAwait(false);
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
         {
             // Already exited.
         }
         finally
         {
-            process.Dispose();
-            _process = null;
+            session.Dispose();
+            _quickUrlTcs = null;
+            PublicUrl = null;
             _log.Info("Cloudflare 터널을 정지했습니다.");
         }
     }
@@ -142,7 +161,157 @@ public sealed class CloudflaredManager : IDisposable
         {
             // Best-effort cleanup on dispose.
         }
-        _sessionCts?.Dispose();
+    }
+
+    private async Task SuperviseNamedTunnelAsync(
+        string args, TaskCompletionSource<bool> firstAttempt, CancellationToken ct)
+    {
+        var consecutiveFailures = 0;
+
+        while (!ct.IsCancellationRequested)
+        {
+            Process? process = null;
+            var startedAt = DateTimeOffset.UtcNow;
+            try
+            {
+                process = CreateProcess(args);
+                SetCurrentProcess(process);
+                StartProcess(process);
+                firstAttempt.TrySetResult(true);
+
+                await process.WaitForExitAsync(ct).ConfigureAwait(false);
+                if (ct.IsCancellationRequested)
+                {
+                    break;
+                }
+
+                var ranLongEnoughToResetBackoff = DateTimeOffset.UtcNow - startedAt >= TimeSpan.FromMinutes(5);
+                consecutiveFailures = ranLongEnoughToResetBackoff ? 1 : consecutiveFailures + 1;
+                _log.Warn($"cloudflared 터널이 종료되었습니다(exit={process.ExitCode}). 자동으로 재연결합니다.");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                consecutiveFailures++;
+                // The local controller server is already running. Do not fail app startup merely
+                // because cloudflared or the network was unavailable on this first attempt.
+                firstAttempt.TrySetResult(false);
+                _log.Warn($"cloudflared 터널 시작 실패({ex.Message}). 자동으로 재시도합니다.");
+            }
+            finally
+            {
+                if (process is not null)
+                {
+                    await TerminateAndDisposeAsync(process).ConfigureAwait(false);
+                    ClearCurrentProcess(process);
+                }
+            }
+
+            if (ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            var delay = CloudflaredRestartPolicy.DelayAfter(consecutiveFailures);
+            _log.Info($"Cloudflare 터널 재연결을 {delay.TotalSeconds:0}초 후 시도합니다.");
+            try
+            {
+                await Task.Delay(delay, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+
+        firstAttempt.TrySetCanceled(ct);
+    }
+
+    private Process CreateProcess(string args)
+    {
+        var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = ResolveCloudflared(),
+                Arguments = args,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardError = true,
+                RedirectStandardOutput = true
+            },
+            EnableRaisingEvents = true
+        };
+        process.ErrorDataReceived += OnStderr;
+        process.OutputDataReceived += OnStderr;
+        return process;
+    }
+
+    private static void StartProcess(Process process)
+    {
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("cloudflared 프로세스를 시작하지 못했습니다.");
+        }
+        process.BeginErrorReadLine();
+        process.BeginOutputReadLine();
+    }
+
+    private void OnQuickTunnelExited(object? sender, EventArgs e)
+    {
+        _log.Warn("cloudflared 터널이 종료되었습니다.");
+        _quickUrlTcs?.TrySetException(
+            new InvalidOperationException("cloudflared가 URL을 보고하기 전에 종료되었습니다."));
+    }
+
+    private void SetCurrentProcess(Process process)
+    {
+        lock (_processGate)
+        {
+            _process = process;
+        }
+    }
+
+    private void ClearCurrentProcess(Process process)
+    {
+        lock (_processGate)
+        {
+            if (ReferenceEquals(_process, process))
+            {
+                _process = null;
+            }
+        }
+    }
+
+    private async Task StopProcessAsync(Process process)
+    {
+        await TerminateAndDisposeAsync(process).ConfigureAwait(false);
+        ClearCurrentProcess(process);
+    }
+
+    private static async Task TerminateAndDisposeAsync(Process process)
+    {
+        try
+        {
+            // cloudflared has no graceful stdin-EOF stop; give it a moment, then kill the tree.
+            if (!process.HasExited &&
+                !await WaitForExitAsync(process, TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync().ConfigureAwait(false);
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Never started or already exited.
+        }
+        finally
+        {
+            process.Dispose();
+        }
     }
 
     private void OnStderr(object sender, DataReceivedEventArgs e)

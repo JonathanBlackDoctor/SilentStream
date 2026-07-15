@@ -245,6 +245,23 @@
       </details>
     </div>
 
+    <div class="card" id="inspectionCard">
+      <div class="card-lead"><h2>실기기 점검</h2><small id="inspectionPhase">점검 상태를 불러오는 중</small></div>
+      <div class="meter"><i id="inspectionBar" style="width:0%"></i></div>
+      <p class="muted" id="inspectionMessage" style="margin:8px 0 0">이 방에서 점검을 시작하면 진행률과 문제를 여기에 표시합니다.</p>
+      <small class="muted" id="inspectionCommand"></small>
+      <details style="margin-top:9px">
+        <summary class="muted" style="cursor:pointer">점검 로그·문제 <span id="inspectionIssueCount"></span></summary>
+        <ul id="inspectionIssues" class="issue-list"></ul>
+        <pre id="inspectionLog" class="muted" style="white-space:pre-wrap;margin:8px 0 0;font-size:11px"></pre>
+      </details>
+      <div class="btnrow" style="margin-top:10px">
+        <button class="ghost" id="inspectionRetryStream">송출 복구 요청</button>
+        <button class="ghost" id="inspectionRerun">점검 다시 실행</button>
+      </div>
+      <small class="muted">재실행은 현재 점검이 끝났거나 실패한 뒤에만 허용됩니다. 실행 중에는 기존 점검을 중단하지 않습니다.</small>
+    </div>
+
     <!-- 교시 승인(v8): 교시가 끝나면 여기 카드가 뜬다 — 시각 조정/승인/연강/건너뛰기. 대기 없으면 숨김 -->
     <div id="splitArea" class="hidden"></div>
 
@@ -751,7 +768,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery()]);
+      const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery(), loadInspection()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -903,6 +920,59 @@
         toast(data.message || (data.ok ? "PC 종료를 준비합니다." : "PC 종료를 준비하지 못했습니다."));
       } catch(e){ toast("PC 종료 요청에 실패했습니다. 연결을 확인하세요."); }
     }, "PC를 종료하려면 버튼을 3초간 길게 누르세요.");
+
+    function inspectionPhaseLabel(phase){
+      return ({running:"진행 중", awaiting_reboot:"재부팅 대기", post_reboot:"재부팅 후 확인 중",
+        completed:"완료", "post-reboot-complete":"재부팅 검증 완료", failed:"실패"})[phase] || "대기";
+    }
+    function renderInspection(payload){
+      const state = payload && payload.state;
+      if (!state){
+        $("inspectionPhase").textContent = "아직 실행 기록 없음";
+        $("inspectionMessage").textContent = "이 방의 점검시작 아이콘을 실행하면 상태가 표시됩니다.";
+        $("inspectionBar").style.width = "0%";
+        $("inspectionCommand").textContent = "";
+        $("inspectionIssues").innerHTML = "";
+        $("inspectionIssueCount").textContent = "";
+        $("inspectionLog").textContent = "";
+        return;
+      }
+      const percent = Math.max(0, Math.min(100, Number(state.progressPercent) || 0));
+      $("inspectionBar").style.width = percent + "%";
+      $("inspectionPhase").textContent = `${inspectionPhaseLabel(state.phase)} · ${percent}%`;
+      $("inspectionMessage").textContent = [state.currentStep, state.message].filter(Boolean).join(" — ") || "상태 갱신 대기";
+      const issues = state.issues || [];
+      $("inspectionIssueCount").textContent = issues.length ? `(${issues.length})` : "";
+      $("inspectionIssues").innerHTML = issues.slice(-8).map(x => `<li>${esc(x)}</li>`).join("");
+      $("inspectionLog").textContent = (state.recentLog || []).slice(-8).join("\n");
+      const command = payload.command;
+      $("inspectionCommand").textContent = command
+        ? `최근 원격 요청: ${command.action} · ${command.status}${command.message ? " — " + command.message : ""}`
+        : "";
+    }
+    async function loadInspection(){
+      const room = cur;
+      const data = await (await api(room, "/api/inspection")).json();
+      if (cur === room) renderInspection(data);
+    }
+    async function requestInspectionCommand(action){
+      const room = cur;
+      const r = await api(room, "/api/inspection/command", {method:"POST", body:JSON.stringify({action})});
+      const d = await r.json();
+      if (cur === room) await loadInspection().catch(()=>{});
+      toast(d.message || (d.ok ? "원격 요청을 보냈습니다." : "요청을 처리하지 못했습니다."));
+    }
+    $("inspectionRetryStream").onclick = () => requestInspectionCommand("retry-stream")
+      .catch(() => toast("송출 복구 요청에 실패했습니다."));
+    makeHoldable("inspectionRerun", 2000, async () => {
+      const room = cur;
+      if (!await confirmAsk("실기기 점검을 다시 실행할까요?",
+        "현재 점검이 완료 또는 실패한 상태일 때만 새 점검을 시작합니다. 새 실행도 마지막에 재부팅 검증까지 진행됩니다.",
+        "점검 재실행")) return;
+      if (cur !== room) return;
+      try { await requestInspectionCommand("rerun-check"); }
+      catch(e){ toast("점검 재실행 요청에 실패했습니다."); }
+    });
 
     async function loadRecovery(){
       if (!cur) return;
@@ -1579,6 +1649,7 @@
 
     // ---- 주기 갱신 (화면 상태로 게이트: 중복 인터벌 없이 한 번만 등록) ----
     setInterval(()=>{ if(view==="dash" && cur && (!ws || ws.readyState!==1)) pollOnce().catch(()=>{}); }, 5000);
+    setInterval(()=>{ if(view==="dash" && cur) loadInspection().catch(()=>{}); }, 5000);
     setInterval(()=>{ if(view==="dash" && cur) loadAssets().catch(()=>{}); }, 15000);
     setInterval(()=>{ if(view==="dash" && (!ws || ws.readyState!==1)) refreshPreview(); }, 2000);
     setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
