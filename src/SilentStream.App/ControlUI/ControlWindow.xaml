@@ -14,7 +14,7 @@
             <Setter Property="Height" Value="8" />
             <Setter Property="Minimum" Value="0" />
             <Setter Property="Maximum" Value="1" />
-            <Setter Property="Background" Value="#0B1220" />
+            <Setter Property="Background" Value="#1A1A1A" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Margin" Value="0,5" />
         </Style>
@@ -52,12 +52,12 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="TabSurface" Property="Background" Value="#172842" />
+                                <Setter TargetName="TabSurface" Property="Background" Value="#0D273F" />
                                 <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
-                                <Setter TargetName="TabSurface" Property="Background" Value="#193B73" />
-                                <Setter Property="Foreground" Value="#BFD7FF" />
+                                <Setter TargetName="TabSurface" Property="Background" Value="#0D273F" />
+                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -65,7 +65,7 @@
             </Setter>
         </Style>
         <Style x:Key="SecondaryButton" TargetType="Button">
-            <Setter Property="Background" Value="#22304A" />
+            <Setter Property="Background" Value="#363636" />
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
@@ -92,7 +92,7 @@
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <Button Content="방송 시작" Command="{Binding StartCommand}" Width="106" Margin="8,0,0,0" />
                 <Button Content="중지" Command="{Binding StopCommand}" Width="84" Margin="8,0,0,0"
-                        Background="#3C1F2A" BorderBrush="#CC4E62" BorderThickness="1" />
+                        Background="#3A2420" BorderBrush="#FF8549" BorderThickness="1" Foreground="White" />
             </StackPanel>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="{Binding BitrateText}" Style="{StaticResource MetricText}" />
@@ -103,7 +103,7 @@
         </DockPanel>
 
         <Border Grid.Row="1" Margin="0,0,0,12" CornerRadius="8" Padding="12,9"
-                Background="#45212A" BorderBrush="#D45C70" BorderThickness="1"
+                Background="#3A2420" BorderBrush="#FF8549" BorderThickness="1"
                 Visibility="{Binding MicWarningVisible, Converter={StaticResource B2V}}">
             <TextBlock Text="{Binding MicWarningText}" Foreground="White" TextWrapping="Wrap" />
         </Border>
@@ -129,7 +129,7 @@
                         <Grid>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                             <TextBlock Text="송출 미리보기" Style="{StaticResource SectionTitle}" />
-                            <Border Grid.Row="1" Background="#080E1A" CornerRadius="7" Padding="4">
+                            <Border Grid.Row="1" Background="#0D0D0D" CornerRadius="7" Padding="4">
                                 <Image Source="{Binding PreviewImage}" Stretch="Uniform" StretchDirection="Both" />
                             </Border>
                         </Grid>
@@ -181,11 +181,11 @@
                                 <ItemsControl ItemsSource="{Binding AudioSources}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Border Background="#111B2B" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                            <Border Background="#242424" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
                                                     CornerRadius="8" Padding="12" Margin="0,0,0,8">
                                                 <StackPanel>
                                                     <DockPanel>
-                                                        <Button DockPanel.Dock="Right" Content="✕" Width="28" Padding="0" Background="#45212A"
+                                                        <Button DockPanel.Dock="Right" Content="✕" Width="28" Padding="0" Background="#3A2420" Foreground="White"
                                                                 Command="{Binding RemoveCommand}" ToolTip="이 소스 제거"
                                                                 Visibility="{Binding CanRemove, Converter={StaticResource B2V}}" />
                                                         <CheckBox DockPanel.Dock="Right" Content="음소거" Margin="0,0,12,0" IsChecked="{Binding Muted, Mode=TwoWay}" />
@@ -249,7 +249,7 @@
                         <Grid>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
                             <TextBlock Text="송출 미리보기" Style="{StaticResource SectionTitle}" />
-                            <Border Grid.Row="1" Background="#080E1A" CornerRadius="7" Padding="4">
+                            <Border Grid.Row="1" Background="#0D0D0D" CornerRadius="7" Padding="4">
                                 <Image Source="{Binding PreviewImage}" Stretch="Uniform" StretchDirection="Both" />
                             </Border>
                         </Grid>
@@ -384,7 +384,7 @@
         </TabControl>
 
         <!-- 저장은 고정된 하단 바에서 실행해 현재 페이지와 무관하게 찾기 쉽다. -->
-        <Border Grid.Row="3" Margin="0,16,0,0" Padding="14,10" Background="#0B1220"
+        <Border Grid.Row="3" Margin="0,16,0,0" Padding="14,10" Background="#1A1A1A"
                 BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
             <DockPanel>
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">

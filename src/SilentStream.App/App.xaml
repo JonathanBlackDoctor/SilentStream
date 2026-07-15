@@ -5,14 +5,14 @@
     <!-- No StartupUri: this is a background host. The status box / control UI are
          created on demand. Composition happens in App.OnStartup. -->
     <Application.Resources>
-        <!-- 차분한 네이비 다크 테마: 제어창과 최초 호실 선택창에 공통 적용 -->
-        <SolidColorBrush x:Key="BgBrush" Color="#101827" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#192235" />
-        <SolidColorBrush x:Key="PanelHoverBrush" Color="#22304A" />
-        <SolidColorBrush x:Key="FgBrush" Color="#F8FAFC" />
-        <SolidColorBrush x:Key="DimBrush" Color="#B7C2D0" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#4F8CFF" />
-        <SolidColorBrush x:Key="BorderBrush" Color="#2C3A55" />
+        <!-- 미리보기와 맞춘 중성 차콜 + 하늘색 포인트 테마 -->
+        <SolidColorBrush x:Key="BgBrush" Color="#181818" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#242424" />
+        <SolidColorBrush x:Key="PanelHoverBrush" Color="#2D2D2D" />
+        <SolidColorBrush x:Key="FgBrush" Color="#FFFFFF" />
+        <SolidColorBrush x:Key="DimBrush" Color="#7F7F7F" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#83C3FF" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#2B2B2B" />
 
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
@@ -31,7 +31,7 @@
         </Style>
         <Style TargetType="Button">
             <Setter Property="Background" Value="{StaticResource AccentBrush}" />
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Foreground" Value="#0D0D0D" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="Padding" Value="10,6" />
         </Style>
@@ -62,11 +62,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="ItemBorder" Property="Background" Value="#284C85" />
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#0D273F" />
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentBrush}" />
-                                <Setter Property="Foreground" Value="White" />
+                                <Setter Property="Foreground" Value="#0D0D0D" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.45" />
@@ -77,7 +77,7 @@
             </Setter>
         </Style>
         <Style TargetType="ListBox">
-            <Setter Property="Background" Value="#0B1220" />
+            <Setter Property="Background" Value="#1A1A1A" />
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
             <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
