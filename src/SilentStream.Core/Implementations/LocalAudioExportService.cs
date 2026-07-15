@@ -4,13 +4,14 @@ using SilentStream.Core.Media;
 namespace SilentStream.Core.Implementations;
 
 /// <summary>
-/// Produces a durable M4A from an already-cut, locally-recorded period VOD. The MP4 is expected
-/// to contain AAC audio, so FFmpeg stream-copies it rather than re-encoding: the operation is
-/// quick, has negligible CPU cost, and does not disturb the live encoder.
+/// Produces a compact, durable M4A from an already-cut, locally-recorded period VOD. Audio is
+/// re-encoded as 48 kbps mono AAC, which suits spoken lessons while keeping phone downloads small.
+/// This runs only after a period has been cut, so it does not affect the live encoder.
 /// </summary>
 public sealed class LocalAudioExportService : ILocalAudioExportService
 {
     private static readonly TimeSpan ExportTimeout = TimeSpan.FromMinutes(5);
+    private const int DownloadAudioBitrateKbps = 48;
 
     private readonly IProcessRunner _processRunner;
     private readonly ILogService _log;
@@ -29,9 +30,9 @@ public sealed class LocalAudioExportService : ILocalAudioExportService
         _outputDir = outputDir;
     }
 
-    public async Task<string?> ExportAsync(string sourceVideoPath, string assetId, CancellationToken ct)
+    public async Task<string?> ExportAsync(string sourceMediaPath, string assetId, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(assetId) || !File.Exists(sourceVideoPath))
+        if (string.IsNullOrWhiteSpace(assetId) || !File.Exists(sourceMediaPath))
         {
             _log.Warn("교시 음성 내보내기를 건너뜁니다. 원본 영상 또는 자산 ID가 없습니다.");
             return null;
@@ -43,10 +44,11 @@ public sealed class LocalAudioExportService : ILocalAudioExportService
 
         var args = string.Join(' ',
             "-hide_banner", "-loglevel warning", "-y",
-            $"-i \"{sourceVideoPath}\"",
-            // The recording pipeline produces AAC in MP4. Map only its first audio stream and
-            // copy it into an M4A container; no YouTube content is read or transformed here.
-            "-map 0:a:0", "-vn", "-c:a copy", "-movflags +faststart",
+            $"-i \"{sourceMediaPath}\"",
+            // Map only the first local audio stream. Mono 48 kbps AAC is about 22 MB per hour,
+            // versus about 72 MB per hour for the 160 kbps source stream.
+            "-map 0:a:0", "-vn", "-c:a aac", $"-b:a {DownloadAudioBitrateKbps}k", "-ac 1",
+            "-movflags +faststart",
             $"\"{outputPath}\"");
 
         try

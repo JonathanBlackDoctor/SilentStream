@@ -45,6 +45,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IVodSegmentService, VodSegmentService>();
         services.AddSingleton<ILocalAudioExportService, LocalAudioExportService>();
         services.AddSingleton<IPeriodAssetCatalog, PeriodAssetCatalog>();
+        services.AddSingleton<IYouTubeAudioRecoveryService, YouTubeAudioRecoveryService>();
         services.AddSingleton<IYouTubeUploadService, YouTubeUploadService>();
         services.AddSingleton<IYouTubeCaptionService, YouTubeCaptionService>();
         services.AddSingleton<IUploadQueue, UploadQueue>();

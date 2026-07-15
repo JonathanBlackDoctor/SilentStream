@@ -58,7 +58,7 @@ public class PeriodAssetCatalogTests : IDisposable
     }
 
     [Fact]
-    public void Upload_and_caption_updates_are_persisted_and_unknown_ids_return_false()
+    public void Upload_audio_and_caption_updates_are_persisted_without_overwriting_each_other()
     {
         IPeriodAssetCatalog catalog = Create();
         catalog.Upsert(Asset("period-1", 1));
@@ -66,13 +66,17 @@ public class PeriodAssetCatalogTests : IDisposable
 
         Assert.True(catalog.MarkUploaded("period-1", "video-123"));
         Advance();
+        Assert.True(catalog.MarkAudioPath("period-1", "recovered.m4a"));
+        Advance();
         Assert.True(catalog.MarkCaptionStatus(
             "period-1", PeriodAssetCaptionStatus.Available, "ko", "SRT saved"));
         Assert.False(catalog.MarkUploaded("missing", "video-404"));
+        Assert.False(catalog.MarkAudioPath("missing", "missing.m4a"));
         Assert.False(catalog.MarkCaptionStatus("missing", PeriodAssetCaptionStatus.Failed));
 
         var saved = Assert.IsType<PeriodAsset>(Create().Find("period-1"));
         Assert.Equal("video-123", saved.VideoId);
+        Assert.Equal("recovered.m4a", saved.AudioPath);
         Assert.Equal(PeriodAssetCaptionStatus.Available, saved.CaptionStatus);
         Assert.Equal("ko", saved.CaptionLanguage);
         Assert.Equal("SRT saved", saved.CaptionMessage);

@@ -54,6 +54,12 @@ public static class AppPaths
     /// </summary>
     public static string PeriodAudioDir => Path.Combine(PeriodAssetsDir, "audio");
 
+    /// <summary>
+    /// Short-lived source media downloaded while rebuilding a missing period-audio asset.
+    /// Completed M4A files never live here and stale subdirectories are removed on startup.
+    /// </summary>
+    public static string PeriodAudioRecoveryTempDir => Path.Combine(PeriodAssetsDir, "recovery-temp");
+
     public static string DefaultRecordingFolder
     {
         get

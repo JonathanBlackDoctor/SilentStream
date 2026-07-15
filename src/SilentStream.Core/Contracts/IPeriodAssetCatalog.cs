@@ -29,6 +29,12 @@ public interface IPeriodAssetCatalog
     bool MarkUploaded(string id, string videoId);
 
     /// <summary>
+    /// Records the completed local M4A path without replacing concurrently-updated YouTube or
+    /// caption metadata. Returns false when no asset has the id.
+    /// </summary>
+    bool MarkAudioPath(string id, string audioPath);
+
+    /// <summary>
     /// Records the current caption-processing state and its optional language/status message.
     /// Returns false when no asset has the id.
     /// </summary>

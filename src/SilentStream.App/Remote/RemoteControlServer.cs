@@ -52,6 +52,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly ISplitApprovalService _splits;
     private readonly IUploadQueue _uploadQueue;
     private readonly IPeriodAssetCatalog _periodAssets;
+    private readonly IYouTubeAudioRecoveryService _audioRecovery;
     private readonly IYouTubeCaptionService _captions;
     private readonly IRecordingManager _recording;
     private readonly IAudioMixer _audioMixer;
@@ -100,6 +101,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         ISplitApprovalService splits,
         IUploadQueue uploadQueue,
         IPeriodAssetCatalog periodAssets,
+        IYouTubeAudioRecoveryService audioRecovery,
         IYouTubeCaptionService captions,
         IRecordingManager recording,
         IAudioMixer audioMixer,
@@ -122,6 +124,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _splits = splits;
         _uploadQueue = uploadQueue;
         _periodAssets = periodAssets;
+        _audioRecovery = audioRecovery;
         _captions = captions;
         _recording = recording;
         _audioMixer = audioMixer;
@@ -508,6 +511,33 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
             return Results.File(audioPath, "audio/mp4", PeriodAssetDownloadName(asset, "m4a"),
                 enableRangeProcessing: true);
+        });
+        app.MapPost("/api/period-assets/{id}/audio/recover", (string id) =>
+        {
+            var asset = _periodAssets.Find(id);
+            if (asset is null)
+            {
+                return Results.Json(new { error = "교시 자료를 찾을 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status404NotFound);
+            }
+            if (GetSafeAssetAudioPath(asset.AudioPath) is not null)
+            {
+                return Results.Json(
+                    new AudioRecoverySnapshot(asset.Id, AudioRecoveryStatus.Available), Json);
+            }
+            if (string.IsNullOrWhiteSpace(asset.VideoId))
+            {
+                return Results.Json(new { error = "YouTube 업로드가 완료된 뒤 음성을 복구할 수 있습니다." }, Json,
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+
+            var recovery = _audioRecovery.Start(asset.Id);
+            if (string.Equals(recovery.Status, AudioRecoveryStatus.Failed, StringComparison.Ordinal))
+            {
+                return Results.Json(new { error = recovery.Message, status = recovery.Status }, Json,
+                    statusCode: StatusCodes.Status409Conflict);
+            }
+            return Results.Json(recovery, Json, statusCode: StatusCodes.Status202Accepted);
         });
         app.MapGet("/api/period-assets/{id}/captions", async Task<IResult> (string id, HttpContext context) =>
         {
@@ -1150,21 +1180,32 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     // ---- period download assets ----
 
-    private object BuildPeriodAssets() => new
+    private object BuildPeriodAssets()
     {
-        items = _periodAssets.Snapshot().Take(200).Select(asset => new
+        var items = _periodAssets.Snapshot().Take(200).Select(asset =>
         {
-            id = asset.Id,
-            date = asset.Date.ToString("yyyy-MM-dd"),
-            period = asset.PeriodNumber,
-            title = asset.Title,
-            videoId = asset.VideoId,
-            audioAvailable = GetSafeAssetAudioPath(asset.AudioPath) is not null,
-            captionStatus = asset.CaptionStatus,
-            captionLanguage = asset.CaptionLanguage,
-            captionMessage = asset.CaptionMessage
-        })
-    };
+            var audioAvailable = GetSafeAssetAudioPath(asset.AudioPath) is not null;
+            var recovery = audioAvailable
+                ? new AudioRecoverySnapshot(asset.Id, AudioRecoveryStatus.Available)
+                : _audioRecovery.GetStatus(asset.Id);
+            return new
+            {
+                id = asset.Id,
+                date = asset.Date.ToString("yyyy-MM-dd"),
+                period = asset.PeriodNumber,
+                title = asset.Title,
+                videoId = asset.VideoId,
+                audioAvailable,
+                audioRecoverable = !audioAvailable && !string.IsNullOrWhiteSpace(asset.VideoId),
+                audioRecoveryStatus = recovery.Status,
+                audioRecoveryMessage = recovery.Message,
+                captionStatus = asset.CaptionStatus,
+                captionLanguage = asset.CaptionLanguage,
+                captionMessage = asset.CaptionMessage
+            };
+        });
+        return new { items };
+    }
 
     private void UpdateCaptionStatusSafely(string id, string status, string? language = null, string? message = null)
     {

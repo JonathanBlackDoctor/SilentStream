@@ -100,6 +100,55 @@ jobs:
           New-Item -ItemType Directory -Force -Path publish/ffmpeg | Out-Null
           Copy-Item $exe.FullName -Destination publish/ffmpeg/ffmpeg.exe -Force
 
+      # 2a) YouTube fallback 전용 yt-dlp를 고정 버전/해시로 동봉한다. 앱은 사용자가 입력한
+      #     URL이 아니라 자산 카탈로그에 기록된 앱 소유 VOD의 videoId만 전달한다.
+      - name: Bundle pinned yt-dlp
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "2026.06.09"
+          $expectedSha256 = "3a48cb955d55c8821b60ccbdbbc6f61bc958f2f3d3b7ad5eaf3d83a543293a27"
+          $directory = "publish/yt-dlp"
+          $executable = "$directory/yt-dlp.exe"
+          New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://github.com/yt-dlp/yt-dlp/releases/download/$version/yt-dlp.exe" `
+            -OutFile $executable
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 -Path $executable).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "yt-dlp.exe SHA-256 mismatch: expected=$expectedSha256 actual=$actualSha256"
+          }
+          $reportedVersion = (& $executable --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne $version) {
+            throw "yt-dlp.exe version check failed: expected=$version actual=$reportedVersion"
+          }
+
+          # Current yt-dlp requires an external JavaScript runtime for full YouTube support.
+          # Deno is enabled by default and is discovered automatically beside yt-dlp.exe.
+          $denoVersion = "2.8.1"
+          $denoExpectedSha256 = "5fb5bac71f609fb91ec8960fb290885aadc27eeb22f07a8eca0c3db6be38b11a"
+          $denoZip = "deno-x86_64-pc-windows-msvc.zip"
+          Invoke-WebRequest `
+            -Uri "https://github.com/denoland/deno/releases/download/v$denoVersion/$denoZip" `
+            -OutFile $denoZip
+          $denoActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $denoZip).Hash.ToLowerInvariant()
+          if ($denoActualSha256 -ne $denoExpectedSha256) {
+            throw "Deno archive SHA-256 mismatch: expected=$denoExpectedSha256 actual=$denoActualSha256"
+          }
+          Expand-Archive -Path $denoZip -DestinationPath deno_tmp -Force
+          Copy-Item deno_tmp/deno.exe "$directory/deno.exe" -Force
+          $reportedDenoVersion = (& "$directory/deno.exe" --version | Select-Object -First 1)
+          if ($LASTEXITCODE -ne 0 -or -not $reportedDenoVersion.StartsWith("deno $denoVersion")) {
+            throw "Deno version check failed: expected=$denoVersion actual=$reportedDenoVersion"
+          }
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/yt-dlp/yt-dlp/$version/THIRD_PARTY_LICENSES.txt" `
+            -OutFile "$directory/THIRD_PARTY_LICENSES.txt"
+          Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/denoland/deno/v$denoVersion/LICENSE.md" `
+            -OutFile "$directory/DENO_LICENSE.md"
+          Copy-Item docs/THIRD_PARTY_NOTICES.md publish/THIRD_PARTY_NOTICES.md -Force
+
       # 2b) cloudflared.exe 를 publish/cloudflared/ 에 동봉(CloudflaredManager 가
       #     BaseDirectory\cloudflared\cloudflared.exe 탐색). remote.mode="cloudflare" 일 때만 사용 —
       #     아웃바운드 터널이라 포트포워딩/방화벽 불필요. Apache-2.0(번들 합법). 재현성 위해 특정

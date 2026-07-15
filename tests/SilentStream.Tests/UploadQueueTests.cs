@@ -255,6 +255,7 @@ public class UploadQueueTests : IDisposable
             Assets[index] = Assets[index] with { VideoId = videoId };
             return true;
         }
+        public bool MarkAudioPath(string id, string audioPath) => false;
         public bool MarkCaptionStatus(string id, string status, string? language = null, string? message = null) => false;
     }
 }

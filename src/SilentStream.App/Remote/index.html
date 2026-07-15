@@ -369,7 +369,9 @@
     let view = "";           // "pair" | "grid" | "dash"
     let pairTarget = null;   // 재페어링 대상 호실(토큰 만료), 없으면 null
     let weekData = {}, activeDay = "Mon", ws = null;
-    let assetItems = [], assetLoading = false;
+    let assetItems = [], assetLoading = false, assetRefreshTimer = null;
+    const audioRecoveryPolls = new Set();
+    const AUDIO_RECOVERY_ACTIVE = new Set(["queued", "downloading", "encoding"]);
     let renderedSrcKey = "", audioReloading = false;
     let currentTimeline = null, timelineRemainingMs = null, timelineReceivedAt = 0;
     // Start fail-closed until the connected PC reports the persisted mode.
@@ -1153,18 +1155,44 @@
         default: return asset.videoId ? "자막 확인 가능" : "업로드 완료 대기";
       }
     }
+    function audioRecoveryActive(asset){
+      return AUDIO_RECOVERY_ACTIVE.has(asset && asset.audioRecoveryStatus);
+    }
+    function audioButtonLabel(asset){
+      if(asset.audioAvailable) return "음성 받기";
+      switch(asset.audioRecoveryStatus){
+        case "queued": return "음성 복구 대기 중";
+        case "downloading": return "YouTube에서 받는 중";
+        case "encoding": return "음성 파일 만드는 중";
+        case "failed": return "음성 다시 복구";
+        default: return asset.audioRecoverable ? "음성 복구·받기" : "음성 없음";
+      }
+    }
+    function scheduleAssetRefresh(){
+      if(assetRefreshTimer){ clearTimeout(assetRefreshTimer); assetRefreshTimer=null; }
+      if(!cur || !assetItems.some(audioRecoveryActive)) return;
+      const room=cur;
+      assetRefreshTimer=setTimeout(()=>{
+        assetRefreshTimer=null;
+        if(cur===room) loadAssets().catch(()=>{});
+      },2000);
+    }
     function renderAssets(items){
       const list=$("assetList");
       if(!list) return;
       list.innerHTML = items.length ? items.map(asset=>{
-        const audioDisabled = asset.audioAvailable ? "" : " disabled";
+        const canUseAudio = asset.audioAvailable || asset.audioRecoverable;
+        const audioDisabled = !canUseAudio || audioRecoveryActive(asset) ? " disabled" : "";
         const captionDisabled = asset.videoId ? "" : " disabled";
         const message = asset.captionMessage ? ` · ${esc(asset.captionMessage)}` : "";
+        const audioMessage = asset.audioRecoveryMessage
+          ? `<div class="asset-meta">음성 · ${esc(asset.audioRecoveryMessage)}</div>` : "";
         return `<div class="asset">
           <div class="asset-head"><span class="asset-title">${esc(asset.title)}</span><span class="pill">${esc(asset.captionStatus||"pending")}</span></div>
           <div class="asset-meta">${esc(asset.date)} · ${esc(asset.period)}교시 · ${captionLabel(asset)}${message}</div>
+          ${audioMessage}
           <div class="asset-actions">
-            <button class="ghost" data-asset-download="audio" data-asset-id="${esc(asset.id)}"${audioDisabled}>음성 받기</button>
+            <button class="ghost" data-asset-download="audio" data-asset-id="${esc(asset.id)}"${audioDisabled}>${audioButtonLabel(asset)}</button>
             <button class="ghost" data-asset-download="captions" data-asset-id="${esc(asset.id)}"${captionDisabled}>자막 받기</button>
           </div>
         </div>`;
@@ -1184,7 +1212,7 @@
         assetItems=Array.isArray(d.items) ? d.items : [];
         renderAssets(assetItems);
       }catch(e){}
-      finally{ assetLoading=false; }
+      finally{ assetLoading=false; scheduleAssetRefresh(); }
     }
     function filenameFromResponse(response, fallback){
       const value=response.headers.get("Content-Disposition") || "";
@@ -1193,11 +1221,7 @@
       const plain=value.match(/filename="?([^";]+)"?/i);
       return plain ? plain[1] : fallback;
     }
-    async function downloadAsset(id, kind){
-      if(!cur || !id) return;
-      const room=cur;
-      const label=kind==="audio" ? "음성" : "자막";
-      if(kind==="captions") toast("처음 사용 시 PC에서 YouTube 자막 권한을 승인해주세요.");
+    async function fetchAssetFile(id, kind, room){
       try{
         const r=await api(room,`/api/period-assets/${encodeURIComponent(id)}/${kind}`,{signal:timeoutSignal(300000)});
         if(!r.ok){
@@ -1212,11 +1236,85 @@
         a.href=url; a.download=filenameFromResponse(r, kind==="audio" ? "audio.m4a" : "captions.srt");
         document.body.appendChild(a); a.click(); a.remove();
         setTimeout(()=>URL.revokeObjectURL(url),1000);
+        const label=kind==="audio" ? "음성" : "자막";
         toast(label+" 파일을 받았습니다.");
         loadAssets().catch(()=>{});
       }catch(e){
+        const label=kind==="audio" ? "음성" : "자막";
         if(cur===room) toast(label+" 다운로드에 실패했습니다.");
       }
+    }
+    function wait(ms){ return new Promise(resolve=>setTimeout(resolve,ms)); }
+    async function recoverAudioAndDownload(id, room){
+      const recoveryKey=room+"|"+id;
+      if(audioRecoveryPolls.has(recoveryKey)){
+        toast("이미 YouTube에서 음성을 복구하고 있습니다.");
+        return;
+      }
+      audioRecoveryPolls.add(recoveryKey);
+      try{
+        const localAsset=assetItems.find(item=>item.id===id);
+        if(localAsset){
+          localAsset.audioRecoveryStatus="queued";
+          localAsset.audioRecoveryMessage="YouTube 음성 복구를 기다리고 있습니다.";
+          renderAssets(assetItems);
+        }
+
+        const start=await api(room,`/api/period-assets/${encodeURIComponent(id)}/audio/recover`,{method:"POST"});
+        let started={};
+        try{ started=await start.json(); }catch(e){}
+        if(!start.ok){
+          toast(started.error||"YouTube 음성 복구를 시작하지 못했습니다.");
+          return;
+        }
+        if(started.status==="available"){
+          await fetchAssetFile(id,"audio",room);
+          return;
+        }
+
+        toast("로컬 음성이 없어 YouTube에서 복구를 시작했습니다.");
+        const deadline=Date.now()+15*60*1000;
+        while(cur===room && Date.now()<deadline){
+          await wait(2000);
+          if(cur!==room) return;
+          try{
+            const response=await api(room,"/api/period-assets");
+            if(!response.ok) continue;
+            const data=await response.json();
+            assetItems=Array.isArray(data.items) ? data.items : [];
+            renderAssets(assetItems);
+            scheduleAssetRefresh();
+            const asset=assetItems.find(item=>item.id===id);
+            if(!asset){ toast("교시 자료를 찾을 수 없습니다."); return; }
+            if(asset.audioAvailable){
+              await fetchAssetFile(id,"audio",room);
+              return;
+            }
+            if(asset.audioRecoveryStatus==="failed"){
+              toast(asset.audioRecoveryMessage||"YouTube 음성 복구에 실패했습니다.");
+              return;
+            }
+          }catch(e){ /* transient room/tunnel error: keep polling until the job timeout */ }
+        }
+        if(cur===room) toast("YouTube 음성 복구가 제한시간을 초과했습니다. 다시 시도해주세요.");
+      }finally{
+        audioRecoveryPolls.delete(recoveryKey);
+        if(cur===room) loadAssets().catch(()=>{});
+      }
+    }
+    async function downloadAsset(id, kind){
+      if(!cur || !id) return;
+      const room=cur;
+      if(kind==="audio"){
+        const asset=assetItems.find(item=>item.id===id);
+        if(asset && !asset.audioAvailable){
+          if(!asset.audioRecoverable){ toast("복구할 YouTube 영상 정보가 없습니다."); return; }
+          await recoverAudioAndDownload(id,room);
+          return;
+        }
+      }
+      if(kind==="captions") toast("처음 사용 시 PC에서 YouTube 자막 권한을 승인해주세요.");
+      await fetchAssetFile(id,kind,room);
     }
 
     // ---- 설정 잠금: 화면 비활성화는 실수 방지용이고, 실제 권한 검사는 PC 서버가 수행한다. ----

@@ -116,6 +116,30 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
         }
     }
 
+    public bool MarkAudioPath(string id, string audioPath)
+    {
+        var normalizedId = RequireValue(id, nameof(id));
+        var normalizedPath = RequireValue(audioPath, nameof(audioPath));
+
+        lock (_gate)
+        {
+            var state = LoadLocked();
+            var index = FindIndex(state.Assets, normalizedId);
+            if (index < 0)
+            {
+                return false;
+            }
+
+            state.Assets[index] = state.Assets[index] with
+            {
+                AudioPath = normalizedPath,
+                UpdatedAtUtc = UtcNow()
+            };
+            PersistLocked();
+            return true;
+        }
+    }
+
     public bool MarkCaptionStatus(string id, string status, string? language = null, string? message = null)
     {
         var normalizedId = RequireValue(id, nameof(id));

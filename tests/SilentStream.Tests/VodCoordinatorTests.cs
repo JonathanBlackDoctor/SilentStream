@@ -173,6 +173,7 @@ public class VodCoordinatorTests : IDisposable
         public IReadOnlyList<PeriodAsset> Snapshot() => Assets.ToList();
         public PeriodAsset? Find(string id) => Assets.SingleOrDefault(a => a.Id == id);
         public bool MarkUploaded(string id, string videoId) => false;
+        public bool MarkAudioPath(string id, string audioPath) => false;
         public bool MarkCaptionStatus(string id, string status, string? language = null, string? message = null) => false;
     }
 }
