@@ -19,7 +19,9 @@ public class VodCoordinatorTests : IDisposable
     public VodCoordinatorTests()
     {
         _configStore = new ConfigStore(Path.Combine(_dir, "config.json"));
-        _configStore.Save(AppConfig.CreateDefault());
+        var config = AppConfig.CreateDefault();
+        config.DeviceName = "m111";
+        _configStore.Save(config);
     }
 
     private VodCoordinator Create() =>
@@ -70,7 +72,7 @@ public class VodCoordinatorTests : IDisposable
         await WaitUntilAsync(() => _queue.Jobs.Count >= 1, TimeSpan.FromSeconds(5));
 
         var job = Assert.Single(_queue.Jobs);
-        Assert.Equal("1교시 - 2026-06-14", job.Title);     // D6 title format
+        Assert.Equal("[영상] m111 | 2026-06-14 | 1교시", job.Title);
         Assert.Equal(1, job.PeriodNumber);
         Assert.Equal(_vod.ResultPath, job.FilePath);
         Assert.Equal(UploadJobStatus.Pending, job.Status);

@@ -84,7 +84,8 @@ public sealed class YouTubeLiveService(
             ?? throw new InvalidOperationException("AuthenticateAsync를 먼저 호출해야 합니다.");
         var config = configStore.Load();
         var youtubeConfig = config.YouTube;
-        var title = TitleTemplater.Expand(youtubeConfig.TitleTemplate, DateTime.Now, config.DeviceName);
+        var title = TitleTemplater.Expand(
+            youtubeConfig.TitleTemplate, DateTime.Now, TitleTemplater.ResolveRoomName(config));
 
         // 1) Broadcast (the watch-page entity). Auto start/stop follows the encoder feed.
         var broadcast = new LiveBroadcast

@@ -476,7 +476,8 @@ public sealed class SplitApprovalService : ISplitApprovalService
             {
                 var config = _configStore.Load();
                 title = TitleTemplater.Expand(
-                    config.Periods.TitleTemplate, start, item.Periods, config.DeviceName);
+                    config.Periods.TitleTemplate, start, item.Periods,
+                    TitleTemplater.ResolveRoomName(config));
                 var jobId = _idFactory();
 
                 // Mirror of VodCoordinator's immediate path: export downloadable audio from the

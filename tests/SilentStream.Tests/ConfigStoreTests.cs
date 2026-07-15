@@ -16,7 +16,7 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(9, config.Version); // schema v9 (호실 자동 프로비저닝)
+        Assert.Equal(11, config.Version); // schema v11 (YouTube 제목 규칙)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
@@ -53,7 +53,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, loaded.Version);
+        Assert.Equal(11, loaded.Version);
         Assert.Equal(8, loaded.Periods.WeekdayDefaults["Mon"].Count);
         Assert.True(loaded.Periods.RequireApproval);
         Assert.Equal(15, loaded.Periods.AutoApproveMinutes);
@@ -71,7 +71,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, loaded.Version);
+        Assert.Equal(11, loaded.Version);
         var mon = Assert.Single(loaded.Periods.WeekdayDefaults["Mon"]);
         Assert.Equal("09:00:00", mon.Start);
         Assert.False(loaded.Periods.WeekdayDefaults.ContainsKey("Tue"));
@@ -100,8 +100,44 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, loaded.Version);
+        Assert.Equal(11, loaded.Version);
         Assert.Equal(string.Empty, loaded.DeviceName);
+    }
+
+    [Fact]
+    public void V10_builtin_title_templates_migrate_to_the_current_convention()
+    {
+        File.WriteAllText(ConfigPath, """
+            {
+              "version": 10,
+              "youtube": { "titleTemplate": "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}" },
+              "periods": { "titleTemplate": "[{호실}] {교시}교시 - {yyyy-MM-dd}" }
+            }
+            """);
+
+        var loaded = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(11, loaded.Version);
+        Assert.Equal("[LIVE] {호실} | {yyyy-MM-dd}", loaded.YouTube.TitleTemplate);
+        Assert.Equal("[영상] {호실} | {yyyy-MM-dd} | {교시}교시", loaded.Periods.TitleTemplate);
+    }
+
+    [Fact]
+    public void V10_custom_title_templates_are_preserved()
+    {
+        File.WriteAllText(ConfigPath, """
+            {
+              "version": 10,
+              "youtube": { "titleTemplate": "보존할 라이브 제목" },
+              "periods": { "titleTemplate": "보존할 영상 제목" }
+            }
+            """);
+
+        var loaded = new ConfigStore(ConfigPath).Load();
+
+        Assert.Equal(11, loaded.Version);
+        Assert.Equal("보존할 라이브 제목", loaded.YouTube.TitleTemplate);
+        Assert.Equal("보존할 영상 제목", loaded.Periods.TitleTemplate);
     }
 
     [Fact]
@@ -166,7 +202,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, loaded.Version);
+        Assert.Equal(11, loaded.Version);
         Assert.True(loaded.Encoding.Adaptive.Enabled);
         Assert.True(loaded.Encoding.Adaptive.AutoRecover);
         Assert.Equal(3, loaded.Encoding.Adaptive.MaxLevel);
@@ -191,7 +227,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, loaded.Version);
+        Assert.Equal(11, loaded.Version);
         Assert.True(loaded.Notifications.Enabled);
         Assert.Equal(string.Empty, loaded.Notifications.TelegramBotTokenEnc);
         Assert.Equal("warn", loaded.Notifications.NotifyLevel);
@@ -250,7 +286,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(9, config.Version); // defaults are schema v9
+        Assert.Equal(11, config.Version); // defaults are schema v11
         Assert.True(File.Exists(ConfigPath + ".bak"));
         // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
         // label stays empty rather than being silently stamped with this machine's hostname, and
@@ -267,7 +303,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(9, config.Version);
+        Assert.Equal(11, config.Version);
         Assert.True(config.Provisioning.Completed);
         Assert.Equal(string.Empty, config.Provisioning.RoomId);
     }

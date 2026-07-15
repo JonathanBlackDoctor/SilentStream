@@ -15,7 +15,7 @@ public class SplitRemoteTests
     private readonly PeriodsConfig _config = new();
 
     private SplitRemote.SplitsDto Build() =>
-        SplitRemote.BuildDto(_svc, _schedule, _config, "201호", Now);
+        SplitRemote.BuildDto(_svc, _schedule, _config, "m111", Now);
 
     private static DateTime At(int hour, int minute) => Date.ToDateTime(new TimeOnly(hour, minute));
 
@@ -44,7 +44,7 @@ public class SplitRemoteTests
         Assert.Equal("1교시", p.Label);
         Assert.Equal("2026-07-13T08:25:00", p.Start);
         Assert.Equal("2026-07-13T09:25:00", p.End);
-        Assert.Equal("[201호] 1교시 - 2026-07-13", p.ProposedTitle);
+        Assert.Equal("[영상] m111 | 2026-07-13 | 1교시", p.ProposedTitle);
         Assert.Equal(600, p.AutoApproveInSec); // 09:30 → 09:40, server-computed
         Assert.True(p.CanMerge);               // period 2 ends 10:25, still ahead
         Assert.True(dto.RequireApproval);
@@ -59,7 +59,7 @@ public class SplitRemoteTests
         var p = Assert.Single(Build().Pending);
 
         Assert.Equal("1~2교시", p.Label);
-        Assert.Equal("[201호] 1~2교시 - 2026-07-13", p.ProposedTitle);
+        Assert.Equal("[영상] m111 | 2026-07-13 | 1~2교시", p.ProposedTitle);
     }
 
     [Fact]

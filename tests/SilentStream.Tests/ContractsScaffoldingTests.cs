@@ -99,7 +99,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(9, config.Version); // schema v9 (호실 자동 프로비저닝)
+        Assert.Equal(11, config.Version); // schema v11 (YouTube 제목 규칙)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

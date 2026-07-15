@@ -19,10 +19,10 @@ public sealed class AppConfig
     /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>); v8 adds approval-based
     /// period splitting (<see cref="PeriodsConfig.RequireApproval"/>) and seeds the built-in
     /// Mon–Fri timetable when no schedule exists; v9 adds first-install room provisioning
-    /// (<see cref="ProvisioningConfig"/>). Missing keys deserialize to their defaults,
-    /// so an older file loads cleanly and is migrated on the next save.
+    /// (<see cref="ProvisioningConfig"/>); v11 standardizes live and per-period YouTube titles. Missing keys
+    /// deserialize to their defaults, so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 9;
+    public int Version { get; set; } = 11;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -91,11 +91,10 @@ public sealed class YouTubeConfig
     public string Privacy { get; set; } = "unlisted";
 
     /// <summary>
-    /// Title template; date tokens ({yyyy-MM-dd HH:mm}) plus the optional {호실} room token are
-    /// applied at session start. The leading "[{호실}] " collapses to nothing when no room name is
-    /// set, so a fresh install with an empty 호실명 still reads "라이브 - …" exactly as before.
+    /// Title template for live broadcasts. Date tokens plus the room token are applied at session
+    /// start; the default is "[LIVE] {호실} | {yyyy-MM-dd}".
     /// </summary>
-    public string TitleTemplate { get; set; } = "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}";
+    public string TitleTemplate { get; set; } = "[LIVE] {호실} | {yyyy-MM-dd}";
 }
 
 public sealed class EncodingConfig
@@ -265,11 +264,10 @@ public sealed class PeriodsConfig
     public Dictionary<string, List<PeriodEntry>> Overrides { get; set; } = new();
 
     /// <summary>
-    /// Title template for uploaded period VODs. {교시}/{교시:00} + date tokens (D6) plus the
-    /// optional {호실} room token (D12). The leading "[{호실}] " collapses when no room name is set,
-    /// so an empty 호실명 still reads "{교시}교시 - …" exactly as before.
+    /// Title template for uploaded period VODs. Period and date tokens plus the room token are
+    /// applied at upload time; the default is "[영상] {호실} | {yyyy-MM-dd} | {교시}교시".
     /// </summary>
-    public string TitleTemplate { get; set; } = "[{호실}] {교시}교시 - {yyyy-MM-dd}";
+    public string TitleTemplate { get; set; } = "[영상] {호실} | {yyyy-MM-dd} | {교시}교시";
 
     /// <summary>VOD privacy; plan fixes this to "unlisted" (D4).</summary>
     public string VodPrivacy { get; set; } = "unlisted";

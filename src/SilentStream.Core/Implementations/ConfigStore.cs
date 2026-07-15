@@ -11,6 +11,9 @@ namespace SilentStream.Core.Implementations;
 /// </summary>
 public sealed class ConfigStore : IConfigStore
 {
+    private const string LegacyLiveTitleTemplate = "[{호실}] 라이브 - {yyyy-MM-dd HH:mm}";
+    private const string LegacyVodTitleTemplate = "[{호실}] {교시}교시 - {yyyy-MM-dd}";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -220,6 +223,22 @@ public sealed class ConfigStore : IConfigStore
         {
             config.Provisioning.Completed = true;
             config.Version = 9;
+        }
+        // v11 migration: update the previous built-in templates while preserving titles the
+        // operator deliberately customized.
+        if (config.Version < 11)
+        {
+            if (string.Equals(config.YouTube.TitleTemplate, LegacyLiveTitleTemplate, StringComparison.Ordinal))
+            {
+                config.YouTube.TitleTemplate = "[LIVE] {호실} | {yyyy-MM-dd}";
+            }
+
+            if (string.Equals(config.Periods.TitleTemplate, LegacyVodTitleTemplate, StringComparison.Ordinal))
+            {
+                config.Periods.TitleTemplate = "[영상] {호실} | {yyyy-MM-dd} | {교시}교시";
+            }
+
+            config.Version = 11;
         }
         return config;
     }

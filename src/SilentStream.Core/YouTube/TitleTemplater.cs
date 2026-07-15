@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using SilentStream.Core.Models;
 
 namespace SilentStream.Core.YouTube;
 
@@ -22,6 +23,21 @@ public static partial class TitleTemplater
 
     [GeneratedRegex(@"\{호실\}\s*")]
     private static partial Regex EmptyRoomBareRegex();
+
+    /// <summary>
+    /// Returns the stable provisioned room id for a YouTube title when one is available. Room ids
+    /// are normalized to the installed form (for example, "m111"); manually configured devices
+    /// continue to use their existing display label.
+    /// </summary>
+    public static string ResolveRoomName(AppConfig config)
+    {
+        ArgumentNullException.ThrowIfNull(config);
+
+        var roomId = config.Provisioning?.RoomId;
+        return !string.IsNullOrWhiteSpace(roomId)
+            ? roomId.Trim().ToLowerInvariant()
+            : (config.DeviceName ?? string.Empty).Trim();
+    }
 
     public static string Expand(string template, DateTime timestamp, string? roomName = null) =>
         TokenRegex().Replace(ApplyRoom(template, roomName), m =>

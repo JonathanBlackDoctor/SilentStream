@@ -1,6 +1,7 @@
 using System.Text;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
+using SilentStream.Core.Models;
 using SilentStream.Core.YouTube;
 using Xunit;
 
@@ -69,6 +70,22 @@ public class TitleTemplaterTests
         var result = TitleTemplater.Expand("[{호실}] 라이브", new DateTime(2026, 6, 23), "2{yyyy}호");
 
         Assert.Equal("[2yyyy호] 라이브", result);
+    }
+
+    [Fact]
+    public void Provisioned_room_id_and_default_templates_generate_the_agreed_titles()
+    {
+        var config = AppConfig.CreateDefault();
+        config.DeviceName = "M111";
+        config.Provisioning.RoomId = "M111";
+        var timestamp = new DateTime(2026, 7, 15, 9, 30, 0);
+        var room = TitleTemplater.ResolveRoomName(config);
+
+        Assert.Equal("m111", room);
+        Assert.Equal("[LIVE] m111 | 2026-07-15",
+            TitleTemplater.Expand(config.YouTube.TitleTemplate, timestamp, room));
+        Assert.Equal("[영상] m111 | 2026-07-15 | 2교시",
+            TitleTemplater.Expand(config.Periods.TitleTemplate, timestamp, 2, room));
     }
 }
 

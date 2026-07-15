@@ -99,7 +99,8 @@ public sealed class VodCoordinator
             var config = _configStore.Load();
             var periods = config.Periods;
             var title = TitleTemplater.Expand(
-                periods.TitleTemplate, boundary.StartLocal, boundary.PeriodNumber, config.DeviceName);
+                periods.TitleTemplate, boundary.StartLocal, boundary.PeriodNumber,
+                TitleTemplater.ResolveRoomName(config));
             var id = _idFactory();
 
             // Export from the app's local cut before the upload worker removes its temporary MP4.

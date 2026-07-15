@@ -29,6 +29,7 @@ public class SplitApprovalServiceTests : IDisposable
         // reached the moment the worker sleeps, which would race the manual actions under test.
         // Auto-approve behaviour gets its own tests that opt back in.
         config.Periods.AutoApproveMinutes = null;
+        config.DeviceName = "m111";
         _configStore.Save(config);
         _scheduleStore = new PeriodScheduleStore(_configStore);
         _session.Current = new RecordingSession(Path.Combine(_dir, "session.mp4"), At(8, 20));
@@ -110,9 +111,9 @@ public class SplitApprovalServiceTests : IDisposable
         Assert.Equal((At(8, 25), At(9, 25), "1교시"), (call.Start, call.End, call.Label));
         Assert.Equal(_session.Current!.FilePath, call.Session.FilePath);
         var job = Assert.Single(_queue.Jobs);
-        Assert.Equal("1교시 - 2026-07-13", job.Title);
+        Assert.Equal("[영상] m111 | 2026-07-13 | 1교시", job.Title);
         Assert.Equal(1, job.PeriodNumber);
-        Assert.Equal("1교시 - 2026-07-13", svc.Snapshot()[0].Title);
+        Assert.Equal("[영상] m111 | 2026-07-13 | 1교시", svc.Snapshot()[0].Title);
         // The durable-download step (audio export + asset catalog) mirrors the immediate path.
         var asset = Assert.Single(_assets.Assets);
         Assert.Equal(job.Id, asset.Id);
@@ -239,7 +240,7 @@ public class SplitApprovalServiceTests : IDisposable
         svc.Approve(merged.Id, null, null);
         await WaitUntilAsync(() => _queue.Jobs.Count >= 1);
         Assert.Equal("1~2교시", Assert.Single(_vod.RangeCalls).Label);
-        Assert.Equal("1~2교시 - 2026-07-13", Assert.Single(_queue.Jobs).Title);
+        Assert.Equal("[영상] m111 | 2026-07-13 | 1~2교시", Assert.Single(_queue.Jobs).Title);
     }
 
     [Fact]

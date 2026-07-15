@@ -20,6 +20,7 @@ using SilentStream.Core.Logging;
 using SilentStream.Core.Models;
 using SilentStream.Core.Remote;
 using SilentStream.Core.Remote.WebPush;
+using SilentStream.Core.YouTube;
 using SilentStream.App.Recovery;
 
 namespace SilentStream.App.Remote;
@@ -836,7 +837,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private SplitRemote.SplitsDto BuildSplits()
     {
         var config = _configStore.Load();
-        return SplitRemote.BuildDto(_splits, _scheduleStore, config.Periods, config.DeviceName,
+        return SplitRemote.BuildDto(_splits, _scheduleStore, config.Periods, TitleTemplater.ResolveRoomName(config),
             DateTime.Now);
     }
 
