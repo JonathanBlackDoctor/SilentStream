@@ -134,15 +134,33 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
     public async Task StartAsync(CancellationToken ct)
     {
+        var resumeFromRecordingOnly = false;
         lock (_gate)
         {
-            if (State != StreamState.Idle)
+            if (State == StreamState.RecordingOnly)
+            {
+                // "방송 중지" deliberately leaves capture, mixer, and the local recording
+                // alive. A later Live Start must turn that same running session back into a
+                // broadcast instead of silently no-op'ing because it is not Idle.
+                resumeFromRecordingOnly = true;
+            }
+            else if (State != StreamState.Idle)
             {
                 return;
             }
-            _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            SetState(StreamState.Warmup);
+            else
+            {
+                _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                SetState(StreamState.Warmup);
+            }
         }
+
+        if (resumeFromRecordingOnly)
+        {
+            await ResumeStreamingFromRecordingOnlyAsync().ConfigureAwait(false);
+            return;
+        }
+
         // A cancellation race during a previous session can leave an operator wake-up permit
         // unused. It must never make a later, unrelated outage skip its first normal backoff.
         while (_retryWakeSignal.Wait(0))
@@ -179,6 +197,43 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         catch (OperationCanceledException)
         {
             await StopAsync().ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Restarts the YouTube leg after an operator chose broadcast-only stop. Capture, audio and
+    /// the local recording are already running, so this must not run the normal warm-up or create
+    /// a second supervisor. The connect loop owns its regular retry behaviour if YouTube is
+    /// temporarily unavailable.
+    /// </summary>
+    private async Task ResumeStreamingFromRecordingOnlyAsync()
+    {
+        await _swapLock.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            CancellationToken token;
+            lock (_gate)
+            {
+                // A second tap, a full stop, or another transition may have won while this
+                // request was waiting for the encoder swap lock.
+                if (State != StreamState.RecordingOnly)
+                {
+                    return;
+                }
+
+                token = _runCts?.Token ?? CancellationToken.None;
+                SetState(StreamState.ConnectingYouTube);
+            }
+
+            await ConnectUntilLiveAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // StopAsync owns cancellation and the full teardown.
+        }
+        finally
+        {
+            _swapLock.Release();
         }
     }
 

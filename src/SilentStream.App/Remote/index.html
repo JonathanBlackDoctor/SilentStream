@@ -820,7 +820,7 @@
     makeHoldable("stopBroadcastBtn", 2000, async () => {
       const room = cur;
       if (!await confirmAsk("방송만 중지할까요?",
-        "유튜브 송출만 끝나고 로컬 녹화는 계속됩니다.\n녹화 파일은 이 시점부터 새 파일로 이어집니다.\n다시 방송하려면 전체 중지 후 라이브 시작을 누르세요.",
+        "유튜브 송출만 끝나고 로컬 녹화는 계속됩니다.\n녹화 파일은 이 시점부터 새 파일로 이어집니다.\n다시 방송하려면 라이브 시작을 누르세요.",
         "방송 중지")) return;
       if (cur !== room) return;
       try {

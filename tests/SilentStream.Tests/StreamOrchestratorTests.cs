@@ -202,6 +202,28 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Live_start_from_recording_only_resumes_broadcast_without_restarting_capture()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        await orchestrator.StopStreamingKeepRecordingAsync();
+
+        await orchestrator.StartAsync(CancellationToken.None);
+
+        Assert.Equal(StreamState.Live, orchestrator.State);
+        Assert.Equal(2, _youtube.CreateCalls); // the stopped broadcast was completed; this is a new one
+        Assert.Equal(1, _youtube.CompleteCalls);
+        Assert.Equal(3, _encoder.StartCalls.Count);
+        Assert.Equal("rtmp://ingest.example/live2/key-2", _encoder.StartCalls[^1].RtmpUrl);
+        Assert.True(_capture.Started);
+        Assert.True(_mixer.Started);
+        Assert.Equal(1, _capture.StartCalls);
+        Assert.Equal(1, _mixer.StartCalls);
+
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
     public async Task Stop_broadcast_from_non_live_is_a_no_op()
     {
         var orchestrator = CreateOrchestrator();
@@ -793,6 +815,7 @@ public class StreamOrchestratorTests : IDisposable
     private sealed class FakeCapture : IScreenCaptureSource
     {
         public bool Started;
+        public int StartCalls;
         public bool IsCapturing => Started;
         public int Width => 1920;
         public int Height => 1080;
@@ -806,6 +829,7 @@ public class StreamOrchestratorTests : IDisposable
 
         public Task StartAsync(CancellationToken ct)
         {
+            StartCalls++;
             Started = true;
             return Task.CompletedTask;
         }
@@ -823,6 +847,7 @@ public class StreamOrchestratorTests : IDisposable
     {
         public bool Started;
         public bool FailOnStart;
+        public int StartCalls;
 
         public IReadOnlyList<AudioSourceSettings> Sources { get; private set; } = [];
         public AudioLevels CurrentLevels => AudioLevels.Empty;
@@ -843,6 +868,7 @@ public class StreamOrchestratorTests : IDisposable
 
         public Task StartAsync(CancellationToken ct)
         {
+            StartCalls++;
             if (FailOnStart)
             {
                 throw new InvalidOperationException("simulated audio failure");
