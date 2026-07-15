@@ -5,12 +5,14 @@
     <!-- No StartupUri: this is a background host. The status box / control UI are
          created on demand. Composition happens in App.OnStartup. -->
     <Application.Resources>
-        <!-- 다크 테마 (계획서 §3.8) -->
-        <SolidColorBrush x:Key="BgBrush" Color="#1E1E24" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#27272F" />
-        <SolidColorBrush x:Key="FgBrush" Color="#E8E8EC" />
-        <SolidColorBrush x:Key="DimBrush" Color="#8A8A95" />
-        <SolidColorBrush x:Key="AccentBrush" Color="#3D8BFD" />
+        <!-- 차분한 네이비 다크 테마: 제어창과 최초 호실 선택창에 공통 적용 -->
+        <SolidColorBrush x:Key="BgBrush" Color="#101827" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#192235" />
+        <SolidColorBrush x:Key="PanelHoverBrush" Color="#22304A" />
+        <SolidColorBrush x:Key="FgBrush" Color="#F8FAFC" />
+        <SolidColorBrush x:Key="DimBrush" Color="#B7C2D0" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#4F8CFF" />
+        <SolidColorBrush x:Key="BorderBrush" Color="#2C3A55" />
 
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
@@ -25,7 +27,7 @@
         <Style TargetType="GroupBox">
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
             <Setter Property="Background" Value="{StaticResource PanelBrush}" />
-            <Setter Property="BorderBrush" Value="#3A3A44" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
         </Style>
         <Style TargetType="Button">
             <Setter Property="Background" Value="{StaticResource AccentBrush}" />
@@ -36,16 +38,49 @@
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="{StaticResource PanelBrush}" />
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
-            <Setter Property="BorderBrush" Value="#3A3A44" />
-            <Setter Property="Padding" Value="4,3" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="Padding" Value="8,6" />
         </Style>
         <Style TargetType="ComboBox">
-            <Setter Property="Foreground" Value="#1E1E24" />
+            <!-- Windows 기본 흰색 드롭다운 대신, 항상 어두운 바탕과 밝은 글자를 사용한다. -->
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="MinHeight" Value="34" />
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="ItemBorder" Background="{TemplateBinding Background}" CornerRadius="3">
+                            <ContentPresenter Margin="2,0" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="#284C85" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource AccentBrush}" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="ListBox">
-            <Setter Property="Background" Value="#15151A" />
-            <Setter Property="Foreground" Value="#C8C8D0" />
-            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background" Value="#0B1220" />
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
         </Style>
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource FgBrush}" />

@@ -2,30 +2,78 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="{Binding VersionText, StringFormat='Media Capture Helper 제어판 — {0}'}"
-        Width="880" Height="720"
+        Width="1120" Height="760" MinWidth="980" MinHeight="680"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BgBrush}"
         ShowInTaskbar="False">
-    <!-- Ctrl+Shift+F12로 토글되는 다크 테마 제어 UI (계획서 §3.8) -->
+    <!-- 항목을 페이지로 나누어, 필요한 설정만 한 화면에서 조작할 수 있게 한다. -->
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="B2V" />
-        <!-- 실시간 레벨 미터: 값(0~1)을 막대로, 색은 ViewModel이 dB에 따라 지정 -->
+
         <Style x:Key="Meter" TargetType="ProgressBar">
             <Setter Property="Height" Value="8" />
             <Setter Property="Minimum" Value="0" />
             <Setter Property="Maximum" Value="1" />
-            <Setter Property="Background" Value="#15151A" />
+            <Setter Property="Background" Value="#0B1220" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Margin" Value="0,3" />
+            <Setter Property="Margin" Value="0,5" />
         </Style>
         <Style x:Key="DimLabel" TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
-            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="LineHeight" Value="18" />
             <Setter Property="TextWrapping" Value="Wrap" />
+        </Style>
+        <Style x:Key="SectionCard" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+        <Style x:Key="SectionTitle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,0,0,12" />
+        </Style>
+        <Style x:Key="NavTab" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource DimBrush}" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Margin" Value="0,2" />
+            <Setter Property="Padding" Value="16,13" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="TabSurface" Background="Transparent" CornerRadius="8"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabSurface" Property="Background" Value="#172842" />
+                                <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="TabSurface" Property="Background" Value="#193B73" />
+                                <Setter Property="Foreground" Value="#BFD7FF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SecondaryButton" TargetType="Button">
+            <Setter Property="Background" Value="#22304A" />
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="11,7" />
         </Style>
     </Window.Resources>
 
-    <Grid Margin="14">
+    <Grid Margin="20">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
@@ -33,19 +81,20 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 상단: 상태 배지 + 시작/중지 + 성능 -->
-        <DockPanel Grid.Row="0" Margin="0,0,0,10">
-            <Border DockPanel.Dock="Left" CornerRadius="4" Padding="12,6"
-                    Background="{Binding StateColor}">
-                <TextBlock Text="{Binding StateBadge}" FontWeight="Bold" FontSize="16"
-                           Foreground="White" />
-            </Border>
-            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                <Button Content="시작" Command="{Binding StartCommand}" Width="84" Margin="6,0" />
-                <Button Content="중지" Command="{Binding StopCommand}" Width="84" />
+        <!-- 고정 헤더: 핵심 상태와 방송 조작을 어디서든 볼 수 있다. -->
+        <DockPanel Grid.Row="0" Margin="0,0,0,16" LastChildFill="True">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                <TextBlock Text="SilentStream" FontSize="24" FontWeight="SemiBold" Margin="0,0,18,0" />
+                <Border Background="{Binding StateColor}" CornerRadius="15" Padding="12,6">
+                    <TextBlock Text="{Binding StateBadge}" FontWeight="SemiBold" Foreground="White" />
+                </Border>
             </StackPanel>
-            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center"
-                        VerticalAlignment="Center">
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <Button Content="방송 시작" Command="{Binding StartCommand}" Width="106" Margin="8,0,0,0" />
+                <Button Content="중지" Command="{Binding StopCommand}" Width="84" Margin="8,0,0,0"
+                        Background="#3C1F2A" BorderBrush="#CC4E62" BorderThickness="1" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
                 <TextBlock Text="{Binding BitrateText}" Style="{StaticResource MetricText}" />
                 <TextBlock Text="{Binding FpsText}" Style="{StaticResource MetricText}" />
                 <TextBlock Text="{Binding CpuText, StringFormat=CPU {0}}" Style="{StaticResource MetricText}" />
@@ -53,290 +102,300 @@
             </StackPanel>
         </DockPanel>
 
-        <!-- 마이크 무음 경고 배너 -->
-        <Border Grid.Row="1" Margin="0,0,0,10" CornerRadius="4" Padding="10,7"
-                Background="#5A2020" BorderBrush="#E74C3C" BorderThickness="1"
+        <Border Grid.Row="1" Margin="0,0,0,12" CornerRadius="8" Padding="12,9"
+                Background="#45212A" BorderBrush="#D45C70" BorderThickness="1"
                 Visibility="{Binding MicWarningVisible, Converter={StaticResource B2V}}">
             <TextBlock Text="{Binding MicWarningText}" Foreground="White" TextWrapping="Wrap" />
         </Border>
 
-        <!-- 본문: 좌(믹서+로그) / 우(캡처·자원·녹화·설정) -->
-        <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="3*" />
-                <ColumnDefinition Width="2*" />
-            </Grid.ColumnDefinitions>
+        <!-- 좌측은 기능 탐색, 우측은 한 기능에 필요한 카드만 보여 준다. -->
+        <TabControl Grid.Row="2" TabStripPlacement="Left" Background="Transparent" BorderThickness="0"
+                    Padding="0" ItemContainerStyle="{StaticResource NavTab}">
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="▦" FontSize="18" Margin="0,0,11,0" /><TextBlock Text="대시보드" /></StackPanel>
+                </TabItem.Header>
+                <Grid Margin="22,0,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="3*" />
+                        <RowDefinition Height="2*" />
+                    </Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="3*" />
+                        <ColumnDefinition Width="2*" />
+                    </Grid.ColumnDefinitions>
 
-            <!-- 왼쪽 열 -->
-            <Grid Grid.Column="0" Margin="0,0,8,0">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="3*" />
-                    <RowDefinition Height="2*" />
-                </Grid.RowDefinitions>
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,12,12">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <TextBlock Text="송출 미리보기" Style="{StaticResource SectionTitle}" />
+                            <Border Grid.Row="1" Background="#080E1A" CornerRadius="7" Padding="4">
+                                <Image Source="{Binding PreviewImage}" Stretch="Uniform" StretchDirection="Both" />
+                            </Border>
+                        </Grid>
+                    </Border>
 
-                <GroupBox Grid.Row="0" Header="오디오 믹서" Margin="0,0,0,8">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel Margin="6">
-                            <!-- 소스 카드 목록 (시스템 + 마이크 N개) -->
-                            <ItemsControl ItemsSource="{Binding AudioSources}">
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate>
-                                        <Border Background="#22222A" CornerRadius="6" Padding="8" Margin="0,0,0,6">
-                                            <StackPanel>
-                                                <DockPanel>
-                                                    <Button DockPanel.Dock="Right" Content="✕" Width="24" Padding="0"
-                                                            Background="#5A2020"
-                                                            Command="{Binding RemoveCommand}"
-                                                            ToolTip="이 소스 제거"
-                                                            Visibility="{Binding CanRemove, Converter={StaticResource B2V}}" />
-                                                    <CheckBox DockPanel.Dock="Right" Content="음소거" Margin="0,0,8,0"
-                                                              IsChecked="{Binding Muted, Mode=TwoWay}" />
-                                                    <TextBlock Text="{Binding Name}" FontWeight="Bold"
-                                                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                                                </DockPanel>
+                    <StackPanel Grid.Row="0" Grid.Column="1" Margin="0,0,0,12">
+                        <Border Style="{StaticResource SectionCard}" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="현재 송출" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="{Binding QualityText}" FontSize="14" FontWeight="SemiBold" />
+                                <TextBlock Text="네트워크와 시스템 상태에 맞춰 품질을 자동 조절합니다."
+                                           Style="{StaticResource DimLabel}" Margin="0,6,0,0" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource SectionCard}">
+                            <StackPanel>
+                                <TextBlock Text="녹화 상태" Style="{StaticResource SectionTitle}" />
+                                <TextBlock Text="{Binding RecordingFileText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding RecordingFileText}" />
+                                <TextBlock Text="{Binding RecordingUsageText, StringFormat=누적 용량: {0}}" Style="{StaticResource DimLabel}" Margin="0,7,0,0" />
+                                <TextBlock Text="{Binding FreeDiskText, StringFormat=남은 디스크: {0}}" Style="{StaticResource DimLabel}" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
 
-                                                <!-- 마이크 장치 선택 -->
-                                                <ComboBox Margin="0,6,0,0"
-                                                          ItemsSource="{Binding AvailableDevices}"
-                                                          SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
-                                                          DisplayMemberPath="Name"
-                                                          Visibility="{Binding IsMic, Converter={StaticResource B2V}}" />
+                    <Border Grid.Row="1" Grid.ColumnSpan="2" Style="{StaticResource SectionCard}">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <TextBlock Text="활동 로그" Style="{StaticResource SectionTitle}" />
+                            <ListBox x:Name="LogList" Grid.Row="1" ItemsSource="{Binding LogLines}"
+                                     FontFamily="Consolas" FontSize="11" Padding="8"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                     VirtualizingPanel.IsVirtualizing="True" />
+                        </Grid>
+                    </Border>
+                </Grid>
+            </TabItem>
 
-                                                <!-- 실시간 레벨 미터 -->
-                                                <ProgressBar Style="{StaticResource Meter}"
-                                                             Value="{Binding MeterRms, Mode=OneWay}"
-                                                             Foreground="{Binding MeterBrush}" />
-
-                                                <!-- 증폭(게인) -->
-                                                <DockPanel Margin="0,4,0,0">
-                                                    <TextBlock DockPanel.Dock="Left" Text="증폭" Width="34"
-                                                               VerticalAlignment="Center" />
-                                                    <TextBlock DockPanel.Dock="Right" Text="{Binding GainDbText}"
-                                                               Width="64" TextAlignment="Right"
-                                                               VerticalAlignment="Center" FontFamily="Consolas" />
-                                                    <Slider Minimum="0" Maximum="4" Value="{Binding Gain, Mode=TwoWay}"
-                                                            TickFrequency="0.05" IsSnapToTickEnabled="True"
-                                                            ToolTip="0=무음, 1=원음, 1 초과는 증폭(최대 약 +12dB)" />
-                                                </DockPanel>
-
-                                                <!-- 노이즈 게이트 -->
-                                                <DockPanel Margin="0,2,0,0">
-                                                    <CheckBox DockPanel.Dock="Left" Content="게이트" Width="64"
-                                                              IsChecked="{Binding GateEnabled, Mode=TwoWay}"
-                                                              VerticalAlignment="Center"
-                                                              ToolTip="조용할 때 잡음을 차단합니다." />
-                                                    <TextBlock DockPanel.Dock="Right" Width="64" TextAlignment="Right"
-                                                               VerticalAlignment="Center" FontFamily="Consolas"
-                                                               Foreground="{StaticResource DimBrush}"
-                                                               Text="{Binding GateThresholdDb, StringFormat={}{0:0} dB}" />
-                                                    <Slider Minimum="-80" Maximum="0"
-                                                            Value="{Binding GateThresholdDb, Mode=TwoWay}"
-                                                            IsEnabled="{Binding GateEnabled}"
-                                                            TickFrequency="1" IsSnapToTickEnabled="True" />
-                                                </DockPanel>
-                                            </StackPanel>
-                                        </Border>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
-
-                            <DockPanel Margin="0,2,0,0">
-                                <Button DockPanel.Dock="Left" Content="+ 마이크 추가" Width="120"
-                                        Command="{Binding AddMicCommand}" />
-                                <Button DockPanel.Dock="Right" Content="↺ 장치 새로고침" Width="120"
-                                        Background="#333A46" Command="{Binding RefreshDevicesCommand}" />
-                                <TextBlock />
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="♩" FontSize="20" Margin="0,0,11,0" /><TextBlock Text="입력 · 오디오" /></StackPanel>
+                </TabItem.Header>
+                <Grid Margin="22,0,0,0">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="3*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+                    <Border Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,12,0">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <TextBlock Text="입력 소스" Style="{StaticResource SectionTitle}" />
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <ItemsControl ItemsSource="{Binding AudioSources}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#111B2B" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                                                    CornerRadius="8" Padding="12" Margin="0,0,0,8">
+                                                <StackPanel>
+                                                    <DockPanel>
+                                                        <Button DockPanel.Dock="Right" Content="✕" Width="28" Padding="0" Background="#45212A"
+                                                                Command="{Binding RemoveCommand}" ToolTip="이 소스 제거"
+                                                                Visibility="{Binding CanRemove, Converter={StaticResource B2V}}" />
+                                                        <CheckBox DockPanel.Dock="Right" Content="음소거" Margin="0,0,12,0" IsChecked="{Binding Muted, Mode=TwoWay}" />
+                                                        <TextBlock Text="{Binding Name}" FontWeight="SemiBold" FontSize="14"
+                                                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                                    </DockPanel>
+                                                    <ComboBox Margin="0,10,0,0" ItemsSource="{Binding AvailableDevices}"
+                                                              SelectedItem="{Binding SelectedDevice, Mode=TwoWay}" DisplayMemberPath="Name"
+                                                              Visibility="{Binding IsMic, Converter={StaticResource B2V}}" />
+                                                    <ProgressBar Style="{StaticResource Meter}" Value="{Binding MeterRms, Mode=OneWay}" Foreground="{Binding MeterBrush}" />
+                                                    <DockPanel Margin="0,5,0,0">
+                                                        <TextBlock DockPanel.Dock="Left" Text="증폭" Width="38" VerticalAlignment="Center" />
+                                                        <TextBlock DockPanel.Dock="Right" Text="{Binding GainDbText}" Width="64" TextAlignment="Right" FontFamily="Consolas" VerticalAlignment="Center" />
+                                                        <Slider Minimum="0" Maximum="4" Value="{Binding Gain, Mode=TwoWay}" TickFrequency="0.05" IsSnapToTickEnabled="True" ToolTip="0=무음, 1=원음, 1 초과는 증폭" />
+                                                    </DockPanel>
+                                                    <DockPanel Margin="0,3,0,0">
+                                                        <CheckBox DockPanel.Dock="Left" Content="게이트" Width="64" IsChecked="{Binding GateEnabled, Mode=TwoWay}" VerticalAlignment="Center" ToolTip="조용할 때 잡음을 차단합니다." />
+                                                        <TextBlock DockPanel.Dock="Right" Width="64" TextAlignment="Right" FontFamily="Consolas" Foreground="{StaticResource DimBrush}" VerticalAlignment="Center" Text="{Binding GateThresholdDb, StringFormat={}{0:0} dB}" />
+                                                        <Slider Minimum="-80" Maximum="0" Value="{Binding GateThresholdDb, Mode=TwoWay}" IsEnabled="{Binding GateEnabled}" TickFrequency="1" IsSnapToTickEnabled="True" />
+                                                    </DockPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                            <DockPanel Grid.Row="2" Margin="0,12,0,0">
+                                <Button Content="+ 마이크 추가" Command="{Binding AddMicCommand}" Width="126" />
+                                <Button DockPanel.Dock="Right" Content="장치 새로고침" Command="{Binding RefreshDevicesCommand}" Width="126" Style="{StaticResource SecondaryButton}" />
                             </DockPanel>
+                        </Grid>
+                    </Border>
 
-                            <Separator Margin="0,10,0,8" />
-
-                            <!-- 마스터 -->
-                            <TextBlock Text="마스터 출력" FontWeight="Bold" />
-                            <ProgressBar Style="{StaticResource Meter}"
-                                         Value="{Binding MasterMeterRms, Mode=OneWay}"
-                                         Foreground="{Binding MasterMeterBrush}" />
-                            <TextBlock Style="{StaticResource DimLabel}"
-                                       Text="아래 필터는 다음 세션부터 적용됩니다." Margin="0,2,0,4" />
+                    <Border Grid.Column="1" Style="{StaticResource SectionCard}">
+                        <StackPanel>
+                            <TextBlock Text="마스터 출력" Style="{StaticResource SectionTitle}" />
+                            <ProgressBar Style="{StaticResource Meter}" Value="{Binding MasterMeterRms, Mode=OneWay}" Foreground="{Binding MasterMeterBrush}" />
+                            <TextBlock Text="아래 필터는 다음 세션부터 적용됩니다." Style="{StaticResource DimLabel}" Margin="0,5,0,14" />
                             <CheckBox Content="노이즈 억제 (afftdn)" IsChecked="{Binding NoiseSuppressionEnabled, Mode=TwoWay}" />
-                            <Slider Minimum="1" Maximum="40" Value="{Binding NoiseSuppressionDb, Mode=TwoWay}"
-                                    IsEnabled="{Binding NoiseSuppressionEnabled}"
-                                    TickFrequency="1" IsSnapToTickEnabled="True"
-                                    ToolTip="잡음 감소량(dB). 높을수록 강하게 억제." />
-                            <CheckBox Content="컴프레서 (음량 평준화)" Margin="0,6,0,0"
-                                      IsChecked="{Binding CompressorEnabled, Mode=TwoWay}" />
-                            <CheckBox Content="리미터 (클리핑 방지)" Margin="0,4,0,0"
-                                      IsChecked="{Binding LimiterEnabled, Mode=TwoWay}" />
-                            <DockPanel Margin="0,6,0,0">
-                                <TextBlock DockPanel.Dock="Left" Text="마스터 게인" Width="74"
-                                           VerticalAlignment="Center" />
-                                <TextBlock DockPanel.Dock="Right" Text="{Binding MasterGainText}" Width="64"
-                                           TextAlignment="Right" VerticalAlignment="Center" FontFamily="Consolas" />
-                                <Slider Minimum="-12" Maximum="12" Value="{Binding MasterGainDb, Mode=TwoWay}"
-                                        TickFrequency="0.5" IsSnapToTickEnabled="True" />
+                            <Slider Minimum="1" Maximum="40" Value="{Binding NoiseSuppressionDb, Mode=TwoWay}" IsEnabled="{Binding NoiseSuppressionEnabled}" TickFrequency="1" IsSnapToTickEnabled="True" ToolTip="잡음 감소량(dB)" />
+                            <CheckBox Content="컴프레서 (음량 평준화)" Margin="0,14,0,0" IsChecked="{Binding CompressorEnabled, Mode=TwoWay}" />
+                            <CheckBox Content="리미터 (클리핑 방지)" Margin="0,9,0,0" IsChecked="{Binding LimiterEnabled, Mode=TwoWay}" />
+                            <DockPanel Margin="0,16,0,0">
+                                <TextBlock DockPanel.Dock="Left" Text="마스터 게인" Width="82" VerticalAlignment="Center" />
+                                <TextBlock DockPanel.Dock="Right" Text="{Binding MasterGainText}" Width="64" TextAlignment="Right" FontFamily="Consolas" VerticalAlignment="Center" />
+                                <Slider Minimum="-12" Maximum="12" Value="{Binding MasterGainDb, Mode=TwoWay}" TickFrequency="0.5" IsSnapToTickEnabled="True" />
                             </DockPanel>
                         </StackPanel>
-                    </ScrollViewer>
-                </GroupBox>
+                    </Border>
+                </Grid>
+            </TabItem>
 
-                <GroupBox Grid.Row="1" Header="로그 (최근 1000줄)">
-                    <ListBox x:Name="LogList" ItemsSource="{Binding LogLines}"
-                             FontFamily="Consolas" FontSize="11"
-                             ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                             VirtualizingPanel.IsVirtualizing="True" />
-                </GroupBox>
-            </Grid>
-
-            <!-- 오른쪽 열 -->
-            <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
-                <StackPanel>
-                    <GroupBox Header="송출 미리보기">
-                        <Border Background="#0E1014" CornerRadius="4" Margin="6" Height="150">
-                            <Image Source="{Binding PreviewImage}" Stretch="Uniform" StretchDirection="Both" />
-                        </Border>
-                    </GroupBox>
-
-                    <GroupBox Header="캡처" Margin="0,8,0,0">
-                        <StackPanel Margin="6">
-                            <TextBlock Text="모니터" />
-                            <ComboBox ItemsSource="{Binding Monitors}"
-                                      SelectedItem="{Binding SelectedMonitor, Mode=TwoWay}"
-                                      DisplayMemberPath="Display" />
-                            <TextBlock Text="영역 (X / Y / 너비 / 높이, 픽셀)" Margin="0,8,0,0" />
-                            <UniformGrid Columns="4" Margin="0,2,0,0">
-                                <TextBox Text="{Binding RegionX, Mode=TwoWay}" Margin="0,0,3,0" />
-                                <TextBox Text="{Binding RegionY, Mode=TwoWay}" Margin="0,0,3,0" />
-                                <TextBox Text="{Binding RegionWidth, Mode=TwoWay}" Margin="0,0,3,0" />
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="▣" FontSize="18" Margin="0,0,11,0" /><TextBlock Text="화면 · 송출" /></StackPanel>
+                </TabItem.Header>
+                <Grid Margin="22,0,0,0">
+                    <Grid.RowDefinitions><RowDefinition Height="1.15*" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="3*" /><ColumnDefinition Width="2*" /></Grid.ColumnDefinitions>
+                    <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,12,12">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <TextBlock Text="송출 미리보기" Style="{StaticResource SectionTitle}" />
+                            <Border Grid.Row="1" Background="#080E1A" CornerRadius="7" Padding="4">
+                                <Image Source="{Binding PreviewImage}" Stretch="Uniform" StretchDirection="Both" />
+                            </Border>
+                        </Grid>
+                    </Border>
+                    <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource SectionCard}" Margin="0,0,0,12">
+                        <StackPanel>
+                            <TextBlock Text="캡처 소스" Style="{StaticResource SectionTitle}" />
+                            <TextBlock Text="모니터" Style="{StaticResource DimLabel}" Margin="0,0,0,5" />
+                            <ComboBox ItemsSource="{Binding Monitors}" SelectedItem="{Binding SelectedMonitor, Mode=TwoWay}" DisplayMemberPath="Display" />
+                            <TextBlock Text="영역 (X / Y / 너비 / 높이, 픽셀)" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                            <UniformGrid Columns="4">
+                                <TextBox Text="{Binding RegionX, Mode=TwoWay}" Margin="0,0,4,0" />
+                                <TextBox Text="{Binding RegionY, Mode=TwoWay}" Margin="0,0,4,0" />
+                                <TextBox Text="{Binding RegionWidth, Mode=TwoWay}" Margin="0,0,4,0" />
                                 <TextBox Text="{Binding RegionHeight, Mode=TwoWay}" />
                             </UniformGrid>
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,4,0,0"
-                                       Text="너비/높이가 0이면 모니터 전체를 캡처합니다. 모니터·영역은 [설정 저장] 후 다음 세션부터 적용됩니다." />
+                            <TextBlock Text="너비와 높이가 0이면 모니터 전체를 캡처합니다." Style="{StaticResource DimLabel}" Margin="0,8,0,0" />
                         </StackPanel>
-                    </GroupBox>
-
-                    <GroupBox Header="인코딩" Margin="0,8,0,0">
-                        <StackPanel Margin="6">
-                            <TextBlock Text="해상도" />
-                            <ComboBox ItemsSource="{Binding ResolutionOptions}"
-                                      SelectedItem="{Binding Resolution, Mode=TwoWay}" />
-                            <TextBlock Text="프레임레이트 (FPS)" Margin="0,8,0,0" />
-                            <ComboBox ItemsSource="{Binding FpsOptions}"
-                                      SelectedItem="{Binding Fps, Mode=TwoWay}" />
-                            <TextBlock Text="비디오 비트레이트 (kbps, 0=자동)" Margin="0,8,0,0" />
+                    </Border>
+                    <Border Grid.Row="1" Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,12,0">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                            <TextBlock Text="비디오 출력" Style="{StaticResource SectionTitle}" />
+                            <Grid Grid.Row="1">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="140" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                <TextBlock Text="해상도" Style="{StaticResource DimLabel}" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding ResolutionOptions}" SelectedItem="{Binding Resolution, Mode=TwoWay}" />
+                                <TextBlock Grid.Row="1" Text="프레임레이트" Style="{StaticResource DimLabel}" VerticalAlignment="Center" Margin="0,12,0,0" />
+                                <ComboBox Grid.Row="1" Grid.Column="1" ItemsSource="{Binding FpsOptions}" SelectedItem="{Binding Fps, Mode=TwoWay}" Margin="0,12,0,0" />
+                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="해상도와 FPS가 source이면 캡처 모니터 설정을 따릅니다." Style="{StaticResource DimLabel}" Margin="0,12,0,0" />
+                            </Grid>
+                        </Grid>
+                    </Border>
+                    <Border Grid.Row="1" Grid.Column="1" Style="{StaticResource SectionCard}">
+                        <StackPanel>
+                            <TextBlock Text="자원 사용 제한" Style="{StaticResource SectionTitle}" />
+                            <ComboBox ItemsSource="{Binding ResourceLimits}" SelectedItem="{Binding SelectedResourceLimit, Mode=TwoWay}" ToolTip="스레드/우선순위/프리셋 기반의 근사 상한입니다." />
+                            <TextBlock Text="정확한 % 제한이 아닌 근사 상한이며, 다음 세션부터 적용됩니다." Style="{StaticResource DimLabel}" Margin="0,10,0,0" />
+                            <TextBlock Text="비디오 비트레이트 (kbps, 0=자동)" Style="{StaticResource DimLabel}" Margin="0,16,0,5" />
                             <TextBox Text="{Binding VideoBitrateKbps, Mode=TwoWay}" />
-                            <TextBlock Text="오디오 비트레이트 (kbps)" Margin="0,8,0,0" />
+                            <TextBlock Text="오디오 비트레이트 (kbps)" Style="{StaticResource DimLabel}" Margin="0,12,0,5" />
                             <TextBox Text="{Binding AudioBitrateKbps, Mode=TwoWay}" />
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,4,0,0"
-                                       Text="해상도/FPS가 source면 캡처 모니터를 따릅니다. [설정 저장] 후 다음 세션부터 적용." />
                         </StackPanel>
-                    </GroupBox>
+                    </Border>
+                </Grid>
+            </TabItem>
 
-                    <GroupBox Header="자원 사용 제한" Margin="0,8,0,0">
-                        <StackPanel Margin="6">
-                            <ComboBox ItemsSource="{Binding ResourceLimits}"
-                                      SelectedItem="{Binding SelectedResourceLimit, Mode=TwoWay}"
-                                      ToolTip="스레드/우선순위/프리셋 기반의 근사 상한입니다. 정확한 % 제한이 아닙니다." />
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,8,0,0"
-                                       Text="25/50/75/제한 없음. 정확한 % 제한이 아닌 근사 상한이며, 다음 세션부터 적용됩니다." />
-                        </StackPanel>
-                    </GroupBox>
+            <TabItem>
+                <TabItem.Header>
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="⚙" FontSize="18" Margin="0,0,11,0" /><TextBlock Text="환경설정" /></StackPanel>
+                </TabItem.Header>
+                <TabControl Margin="22,0,0,0" Background="Transparent" BorderThickness="0">
+                    <TabItem Header="일반 · 녹화">
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,8,0">
+                                <StackPanel>
+                                    <TextBlock Text="일반" Style="{StaticResource SectionTitle}" />
+                                    <CheckBox Content="방송 상태 박스 표시 (좌상단 6px)" IsChecked="{Binding ShowStatusBox, Mode=TwoWay}" />
+                                    <TextBlock Text="이 항목은 저장 없이 바로 적용됩니다." Style="{StaticResource DimLabel}" Margin="0,4,0,14" />
+                                    <TextBlock Text="호실명" Style="{StaticResource DimLabel}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding RoomName, Mode=TwoWay}" ToolTip="라이브와 VOD 제목 앞에 붙일 호실명" />
+                                    <TextBlock Text="제어판 단축키" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <TextBox Text="{Binding HotkeyText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                    <TextBlock Text="자동 시작 방식" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <ComboBox ItemsSource="{Binding AutostartMethods}" SelectedItem="{Binding AutostartMethod, Mode=TwoWay}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SectionCard}" Margin="8,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="녹화 보관" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Text="녹화 폴더" Style="{StaticResource DimLabel}" Margin="0,0,0,5" />
+                                    <TextBox Text="{Binding RecordingFolder, Mode=TwoWay}" />
+                                    <TextBlock Text="용량 한도 (GB)" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <TextBox Text="{Binding MaxSizeGb, Mode=TwoWay}" />
+                                    <TextBlock Text="보존 일수" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <TextBox Text="{Binding RetentionDays, Mode=TwoWay}" />
+                                    <Separator Margin="0,18,0,12" />
+                                    <TextBlock Text="{Binding RecordingUsageText, StringFormat=누적 용량: {0}}" />
+                                    <TextBlock Text="{Binding FreeDiskText, StringFormat=남은 디스크: {0}}" Style="{StaticResource DimLabel}" Margin="0,5,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="알림">
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource SectionCard}" Margin="0,0,8,0">
+                                <StackPanel>
+                                    <TextBlock Text="텔레그램 알림" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Text="송출 끊김, 무음, 디스크 부족 등의 상태를 휴대폰으로 알립니다." Style="{StaticResource DimLabel}" Margin="0,0,0,14" />
+                                    <CheckBox Content="알림 사용" IsChecked="{Binding TelegramEnabled, Mode=TwoWay}" />
+                                    <TextBlock Text="봇 토큰" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <TextBox Text="{Binding TelegramBotToken, Mode=TwoWay}" />
+                                    <TextBlock Text="채팅 ID" Style="{StaticResource DimLabel}" Margin="0,14,0,5" />
+                                    <TextBox Text="{Binding TelegramChatId, Mode=TwoWay}" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SectionCard}" Margin="8,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="수신 기준" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Text="알림 수준" Style="{StaticResource DimLabel}" Margin="0,0,0,5" />
+                                    <ComboBox ItemsSource="{Binding TelegramNotifyLevels}" SelectedItem="{Binding TelegramNotifyLevel, Mode=TwoWay}" />
+                                    <TextBlock Text="선택한 수준 이상의 이벤트만 알립니다." Style="{StaticResource DimLabel}" Margin="0,8,0,16" />
+                                    <Button Content="테스트 알림 보내기" Command="{Binding SendTestAlertCommand}" />
+                                    <TextBlock Text="{Binding TelegramStatusText}" Style="{StaticResource DimLabel}" Margin="0,10,0,0" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="폰 원격 제어">
+                        <Grid Margin="0,16,0,0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Style="{StaticResource SectionCard}">
+                                <StackPanel>
+                                    <TextBlock Text="원격 제어 연결" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Text="{Binding RemoteStatusText}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{Binding RemotePinText}" FontFamily="Consolas" FontSize="26" FontWeight="SemiBold" Margin="0,16,0,0" />
+                                </StackPanel>
+                            </Border>
+                            <Border Grid.Column="1" Style="{StaticResource SectionCard}" Margin="16,0,0,0">
+                                <StackPanel>
+                                    <TextBlock Text="안내" Style="{StaticResource SectionTitle}" />
+                                    <TextBlock Text="휴대폰으로 연결하면 방송 상태를 확인하고, 허용된 원격 제어 기능을 사용할 수 있습니다." Style="{StaticResource DimLabel}" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </TabItem>
+        </TabControl>
 
-                    <GroupBox Header="녹화" Margin="0,8,0,0">
-                        <StackPanel Margin="6">
-                            <TextBlock Text="{Binding RecordingFileText}" TextTrimming="CharacterEllipsis"
-                                       ToolTip="{Binding RecordingFileText}" />
-                            <TextBlock Text="{Binding RecordingUsageText, StringFormat=누적 용량: {0}}"
-                                       Margin="0,6,0,0" />
-                            <TextBlock Text="{Binding FreeDiskText, StringFormat=남은 디스크: {0}}"
-                                       Margin="0,2,0,0" />
-                        </StackPanel>
-                    </GroupBox>
-
-                    <GroupBox Header="설정" Margin="0,8,0,0">
-                        <StackPanel Margin="6">
-                            <CheckBox Content="방송 상태 박스 표시 (좌상단 6px)"
-                                      IsChecked="{Binding ShowStatusBox, Mode=TwoWay}"
-                                      ToolTip="화면 좌상단 모서리의 방송 상태 표시 박스(🟢 라이브 / 🟡 연결 중 / 🔴 오류·중지)를 켜고 끕니다." />
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,8"
-                                       Text="기본값은 꺼짐이며, 이 항목은 [설정 저장] 없이 즉시 적용됩니다." />
-
-                            <TextBlock Text="호실명 (라이브·VOD 제목 표시)" />
-                            <TextBox Text="{Binding RoomName, Mode=TwoWay}"
-                                     ToolTip="이 PC의 호실명(예: 201호). 라이브/교시 VOD 제목 앞에 [201호] 형태로 붙어 여러 PC가 한 채널에 송출해도 제목으로 구분됩니다. 비워두면 표시되지 않습니다. [설정 저장] 후 다음 방송/교시부터 적용됩니다." />
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,0"
-                                       Text="여러 PC가 한 채널에 송출할 때 제목을 호실별로 구분합니다. 비워두면 접두사가 생략됩니다." />
-
-                            <TextBlock Text="제어판 단축키" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding HotkeyText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
-
-                            <TextBlock Text="자동 시작 방식" Margin="0,8,0,0" />
-                            <ComboBox ItemsSource="{Binding AutostartMethods}"
-                                      SelectedItem="{Binding AutostartMethod, Mode=TwoWay}"
-                                      ToolTip="startup: 시작 프로그램(로그인 후) / scheduler: 작업 스케줄러(로그인 전 가능)" />
-
-                            <TextBlock Text="녹화 폴더" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding RecordingFolder, Mode=TwoWay}" />
-
-                            <TextBlock Text="용량 한도 (GB)" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding MaxSizeGb, Mode=TwoWay}" />
-
-                            <TextBlock Text="보존 일수" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding RetentionDays, Mode=TwoWay}" />
-
-                            <Separator Margin="0,12,0,8" />
-                            <TextBlock Text="텔레그램 알림 (폰 푸시)" FontWeight="Bold" />
-                            <TextBlock Style="{StaticResource DimLabel}" Margin="0,2,0,4" TextWrapping="Wrap"
-                                       Text="봇 토큰과 채팅 ID를 저장하면 무음·송출 끊김·디스크 부족 등의 이상을 폰으로 알립니다." />
-                            <CheckBox Content="알림 사용" IsChecked="{Binding TelegramEnabled, Mode=TwoWay}"
-                                      Margin="0,4,0,0" />
-
-                            <TextBlock Text="봇 토큰" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding TelegramBotToken, Mode=TwoWay}"
-                                     ToolTip="@BotFather에서 발급한 봇 토큰. [설정 저장] 시 DPAPI로 암호화되어 평문은 남지 않습니다. 비우고 저장하면 저장된 토큰이 삭제됩니다." />
-
-                            <TextBlock Text="채팅 ID" Margin="0,8,0,0" />
-                            <TextBox Text="{Binding TelegramChatId, Mode=TwoWay}"
-                                     ToolTip="알림을 받을 채팅의 숫자 ID. 봇에게 먼저 말을 건 뒤 @userinfobot 등으로 확인할 수 있습니다." />
-
-                            <TextBlock Text="알림 수준" Margin="0,8,0,0" />
-                            <ComboBox ItemsSource="{Binding TelegramNotifyLevels}"
-                                      SelectedItem="{Binding TelegramNotifyLevel, Mode=TwoWay}"
-                                      ToolTip="이 수준 이상의 이벤트만 폰으로 알립니다. warn 권장(무음/끊김/디스크 부족/업로드 실패)." />
-
-                            <Button Content="테스트 알림 보내기" Command="{Binding SendTestAlertCommand}"
-                                    Margin="0,10,0,0"
-                                    ToolTip="먼저 [설정 저장]으로 저장한 뒤 누르세요. 폰에 테스트 메시지가 도착해야 정상입니다." />
-                            <TextBlock Text="{Binding TelegramStatusText}" Style="{StaticResource DimLabel}"
-                                       TextWrapping="Wrap" Margin="0,4,0,0" />
-
-                            <Button Content="설정 저장" Command="{Binding SaveSettingsCommand}"
-                                    Margin="0,12,0,0" />
-
-                            <Separator Margin="0,12,0,8" />
-                            <TextBlock Text="폰 원격 제어" FontWeight="Bold" />
-                            <TextBlock Text="{Binding RemoteStatusText}" TextWrapping="Wrap"
-                                       Foreground="{StaticResource DimBrush}" Margin="0,2,0,0" />
-                            <TextBlock Text="{Binding RemotePinText}" FontFamily="Consolas" FontSize="18"
-                                       Margin="0,4,0,0" />
-                        </StackPanel>
-                    </GroupBox>
-                </StackPanel>
-            </ScrollViewer>
-        </Grid>
-
-        <!-- 하단 상태바: 현재 실행 버전 + 적용 품질(적응형) + 자동 업데이트 안내(적용 대기 중일 때만) -->
-        <Border Grid.Row="3" Margin="0,10,0,0" Padding="10,5" CornerRadius="4" Background="#15151A">
+        <!-- 저장은 고정된 하단 바에서 실행해 현재 페이지와 무관하게 찾기 쉽다. -->
+        <Border Grid.Row="3" Margin="0,16,0,0" Padding="14,10" Background="#0B1220"
+                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="8">
             <DockPanel>
-                <TextBlock DockPanel.Dock="Left" Text="{Binding VersionText}"
-                           Foreground="{StaticResource DimBrush}" FontFamily="Consolas" FontSize="11"
-                           VerticalAlignment="Center" ToolTip="현재 실행 중인 버전" />
-                <TextBlock DockPanel.Dock="Right" Text="{Binding UpdateStatusText}"
-                           Foreground="#2ECC40" FontWeight="Bold" FontSize="11"
-                           VerticalAlignment="Center"
-                           Visibility="{Binding UpdateAvailable, Converter={StaticResource B2V}}" />
-                <TextBlock Text="{Binding QualityText}" Margin="14,0,0,0"
-                           Foreground="{StaticResource DimBrush}" FontSize="11"
-                           VerticalAlignment="Center"
-                           ToolTip="적용 중인 송출 품질 — 부하·네트워크에 따라 자동 조절(폰 원격에서 수동 고정 가능)" />
+                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding VersionText}" Foreground="{StaticResource DimBrush}" FontFamily="Consolas" FontSize="11" />
+                    <TextBlock Text="{Binding QualityText}" Margin="16,0,0,0" Foreground="{StaticResource DimBrush}" FontSize="11" />
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                    <TextBlock Text="{Binding UpdateStatusText}" Foreground="#5EE4A7" FontWeight="SemiBold" FontSize="11" Margin="0,0,16,0" VerticalAlignment="Center"
+                               Visibility="{Binding UpdateAvailable, Converter={StaticResource B2V}}" />
+                    <Button Content="변경사항 저장" Command="{Binding SaveSettingsCommand}" Width="136" />
+                </StackPanel>
             </DockPanel>
         </Border>
     </Grid>
