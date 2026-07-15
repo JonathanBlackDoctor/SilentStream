@@ -1,6 +1,7 @@
 using System.Text.Json;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Models;
+using SilentStream.Core.Remote;
 
 namespace SilentStream.Core.Implementations;
 
@@ -224,6 +225,15 @@ public sealed class ConfigStore : IConfigStore
             config.Provisioning.Completed = true;
             config.Version = 9;
         }
+
+        // v10 migration: legacy configurations remain editable; malformed persisted values fail
+        // closed so a typo never unexpectedly opens remote settings changes.
+        config.Remote.SettingsLockMode = RemoteSettingsLock.Normalize(config.Remote.SettingsLockMode);
+        if (config.Version < 10)
+        {
+            config.Version = 10;
+        }
+
         // v11 migration: update the previous built-in templates while preserving titles the
         // operator deliberately customized.
         if (config.Version < 11)
@@ -239,6 +249,13 @@ public sealed class ConfigStore : IConfigStore
             }
 
             config.Version = 11;
+        }
+
+        // v12 migration: AutomaticOperationEnabled is a non-nullable bool, so legacy files keep
+        // the established automatic-start behaviour unless an operator explicitly turns it off.
+        if (config.Version < 12)
+        {
+            config.Version = 12;
         }
         return config;
     }

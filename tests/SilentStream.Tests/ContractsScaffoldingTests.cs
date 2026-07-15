@@ -99,7 +99,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(11, config.Version); // schema v11 (YouTube 제목 규칙)
+        Assert.Equal(12, config.Version); // schema v12 (automatic operation switch)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);
@@ -108,5 +108,6 @@ public class ContractsScaffoldingTests
         Assert.Equal(5, config.Recording.MinFreeGb);
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.Equal("startup", config.Autostart);
+        Assert.True(config.AutomaticOperationEnabled);
     }
 }

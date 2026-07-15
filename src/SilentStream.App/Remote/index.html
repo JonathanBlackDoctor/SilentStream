@@ -17,6 +17,16 @@
            padding:max(20px,env(safe-area-inset-top)) 16px calc(24px + env(safe-area-inset-bottom)); }
     h1 { display:flex; align-items:center; gap:9px; margin:1px 0 21px; color:#f5f8fc; font-size:18px; font-weight:760; letter-spacing:-.055em; }
     h1 .brand-mark { color:var(--accent-strong); } h1 small { padding-left:9px; border-left:1px solid #33475d; color:#8e9fb3; font-size:10px; font-weight:800; letter-spacing:.13em; }
+    .app-top { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:1px 0 21px; }
+    .app-top h1 { margin:0; flex:none; }
+    .quick-lock { display:flex; align-items:center; justify-content:flex-end; gap:7px; color:#9eb2c8; font-size:11px; font-weight:750; white-space:nowrap; }
+    .quick-lock button { width:auto; margin:0; padding:6px 8px; color:#bad8f5; background:#1d2c3e; border:1px solid #3a5674; border-radius:9px; font-size:11px; }
+    .lock-switch { position:relative; width:38px; height:22px; flex:none; }
+    .lock-switch input { position:absolute; opacity:0; width:1px; height:1px; }
+    .lock-switch i { display:block; width:38px; height:22px; border:1px solid #4d6279; border-radius:14px; background:#293846; transition:background .15s,border-color .15s; }
+    .lock-switch i::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:#d6e1ed; transition:transform .15s; }
+    .lock-switch input:checked + i { background:#2e6b55; border-color:#58bc8d; }
+    .lock-switch input:checked + i::after { transform:translateX(16px); background:#f0fff7; }
     .card { background:linear-gradient(145deg,rgba(24,34,47,.96),rgba(17,25,35,.96)); border:1px solid var(--line); border-radius:18px; padding:17px; margin-bottom:12px; box-shadow:0 12px 28px rgba(0,0,0,.12); }
     .card h2 { font-size:11px; text-transform:uppercase; letter-spacing:.12em; color:#91a4b9; margin:0 0 13px; }
     .badge { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:20px; font-weight:750; font-size:11px; letter-spacing:.04em; }
@@ -28,7 +38,7 @@
     button.stop { color:#ffd7d8; background: linear-gradient(to right, rgba(255,255,255,0.18) var(--hold, 0%), #3e222b var(--hold, 0%)); border:1px solid #79404a; } button.ghost { color:#c2d2e4; background:#202b39; border:1px solid #35475a; }
     button:disabled { opacity:.38; }
     .btnrow { display:flex; gap:8px; } .btnrow button { margin-top:0; }
-    input { font:inherit; background:#0d141e; border:1px solid var(--line); color:var(--fg);
+    input, select { font:inherit; background:#0d141e; border:1px solid var(--line); color:var(--fg);
             border-radius:10px; padding:10px; width:100%; }
     input.time { width:100%; text-align:center; }
     table { width:100%; border-collapse:collapse; } td,th { padding:5px 4px; text-align:center; font-size:14px; }
@@ -156,7 +166,14 @@
   </style>
 </head>
 <body>
-  <h1><span>silent<span class="brand-mark">stream</span></span><small>REMOTE CONTROL</small></h1>
+  <div class="app-top">
+    <h1><span>silent<span class="brand-mark">stream</span></span><small>REMOTE CONTROL</small></h1>
+    <div class="quick-lock" aria-label="설정 잠금">
+      <span id="settingsLockLabel">설정 잠금</span>
+      <label class="lock-switch"><input id="settingsLockToggle" type="checkbox" role="switch" aria-label="설정 잠금" /><i></i></label>
+      <button id="scheduleOnlyQuick" class="hidden" type="button">시간표만 수정</button>
+    </div>
+  </div>
 
   <!-- 페어링(호실 추가) 화면 -->
   <section id="pair" class="hidden">
@@ -303,6 +320,16 @@
       <small class="muted" id="pushScope"></small>
     </div>
 
+    <details class="card" id="deviceActionsCard">
+      <summary><span>기기 제어</span><small id="automationState" class="muted">자동 운행 확인 중</small></summary>
+      <div class="fold-body">
+        <button id="automationToggleBtn" class="ghost">자동 운행 확인 중</button>
+        <p class="muted" id="automationHint" style="margin:8px 0 0"></p>
+        <button id="systemShutdownBtn" class="stop" style="margin-top:14px">PC 종료</button>
+        <small class="muted">PC 종료는 녹화와 방송을 안전하게 종료한 뒤 진행됩니다.</small>
+      </div>
+    </details>
+
     <button id="restartAppBtn" class="ghost" style="margin-top:0">앱 다시 시작</button>
 
     <div class="card" id="recoveryCard">
@@ -345,6 +372,9 @@
     let assetItems = [], assetLoading = false;
     let renderedSrcKey = "", audioReloading = false;
     let currentTimeline = null, timelineRemainingMs = null, timelineReceivedAt = 0;
+    // Start fail-closed until the connected PC reports the persisted mode.
+    let settingsLock = {mode:"locked", scheduleEditable:false, otherSettingsEditable:false};
+    let automation = {enabled:true};
     const rstate = new Map(); // baseUrl → {online:null|bool, authFailed, summary, thumbUrl}
     // 로컬 파일로 열거나 URL에 ?demo=1을 붙인 디자인 점검용 화면. 실제 원격 연결·인증·저장값은 건드리지 않는다.
     const demoMode = location.protocol === "file:" || new URLSearchParams(location.search).has("demo");
@@ -695,6 +725,7 @@
         state:"Live", badge:"LIVE", room:"201호",
         metrics:{ bitrateKbps:6230, fps:29.97, cpu:32, gpu:18 },
         recording:{ file:"2026-07-13_2교시.mp4", usedBytes:9020000000, freeBytes:197568495616 },
+        automation:{ enabled:true },
         audio:{ micWarning:false, silent:[] },
         quality:{ levelName:"표준", mode:"auto", level:0, current:{ width:1920, height:1080, fps:30, videoBitrateKbps:6200 } },
         today:{ date:"2026-07-13", hasOverride:false },
@@ -718,7 +749,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery()]);
+      const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
       connectWs();
@@ -761,9 +792,10 @@
       } catch(e){ toast("스냅샷 저장에 실패했습니다."); }
     };
     // 안전장치: 어떤 중지든 2초간 꾹 누른 뒤 확인 모달을 통과해야 실행된다(실수 방지).
-    function makeHoldable(btnId, holdTimeMs, onTrigger) {
+    function makeHoldable(btnId, holdTimeMs, onTrigger, holdHint="작업하려면 버튼을 길게 누르세요.") {
       const btn = $(btnId);
       if (!btn) return;
+      if (holdHint) btn.dataset.holdHint = holdHint;
 
       let animFrame = null;
       let startTime = null;
@@ -802,6 +834,7 @@
 
       btn.onclick = (e) => {
         if (!wasTriggered) {
+          if (btn.dataset.holdHint) { toast(btn.dataset.holdHint); return; }
           toast("중지하려면 버튼을 2초간 꾹 누르세요.");
         }
       };
@@ -854,6 +887,21 @@
       } catch(e){ toast("앱 재시작 요청에 실패했습니다."); }
     });
 
+    makeHoldable("automationToggleBtn", 2000, () => changeAutomation(!automation.enabled),
+      "자동 운행을 바꾸려면 버튼을 2초간 길게 누르세요.");
+    makeHoldable("systemShutdownBtn", 3000, async () => {
+      const room = cur;
+      if (!await confirmAsk("PC를 종료할까요?",
+        "녹화와 방송을 안전하게 종료한 뒤 이 기기의 전원을 끕니다. 종료 후에는 원격 제어에 다시 연결할 수 없습니다.",
+        "PC 종료")) return;
+      if (cur !== room) return;
+      try {
+        const response = await api(room, "/api/system/shutdown", {method:"POST"});
+        const data = await response.json();
+        toast(data.message || (data.ok ? "PC 종료를 준비합니다." : "PC 종료를 준비하지 못했습니다."));
+      } catch(e){ toast("PC 종료 요청에 실패했습니다. 연결을 확인하세요."); }
+    }, "PC를 종료하려면 버튼을 3초간 길게 누르세요.");
+
     async function loadRecovery(){
       if (!cur) return;
       try { renderRecovery(await (await api(cur, "/api/recovery/status")).json()); }
@@ -886,6 +934,8 @@
     function renderStatus(s){
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (s.recovery) renderRecovery(s.recovery);
+      if (s.automation) renderAutomation(s.automation);
+      if (s.settingsLock) renderSettingsLock(s.settingsLock);
       if (cur) syncLabel(cur, s.room);
       const rn=$("roomName"); if(rn) rn.textContent = s.room || "연결된 강의실";
       document.title = s.room ? (s.room+" · Media Capture Helper 원격") : "Media Capture Helper 원격";
@@ -1169,6 +1219,114 @@
       }
     }
 
+    // ---- 설정 잠금: 화면 비활성화는 실수 방지용이고, 실제 권한 검사는 PC 서버가 수행한다. ----
+    const LOCK_MODE_COPY = {
+      unlocked: ["모든 설정 수정 가능", "음량·품질·알림과 시간표를 모두 변경할 수 있습니다."],
+      scheduleOnly: ["시간표만 수정 가능", "시간표만 변경할 수 있습니다. 음량·품질·알림 설정은 잠겨 있습니다."],
+      locked: ["모든 설정 잠금", "원격 설정 변경이 모두 잠겨 있습니다. 라이브 제어는 계속 사용할 수 있습니다."]
+    };
+
+    function setSettingsDisabled(selector, disabled){
+      document.querySelectorAll(selector).forEach(el => { el.disabled = disabled; });
+    }
+    function applySettingsLockUi(){
+      const scheduleLocked = !settingsLock.scheduleEditable;
+      const otherLocked = !settingsLock.otherSettingsEditable;
+      setSettingsDisabled("#todayRows input, #todayRows button, #addTodayRow, #saveToday, #clearToday", scheduleLocked);
+      setSettingsDisabled("#weekRows input, #weekRows button, #addWeekRow, #saveWeek", scheduleLocked);
+      setSettingsDisabled("#qualPills button, #srcList button, #srcList input, #pushToggle, #automationToggleBtn", otherLocked);
+    }
+    function renderSettingsLock(payload){
+      const mode = ["unlocked", "scheduleOnly", "locked"].includes(payload && payload.mode)
+        ? payload.mode : "locked";
+      settingsLock = {
+        mode,
+        scheduleEditable: mode !== "locked",
+        otherSettingsEditable: mode === "unlocked"
+      };
+      const copy = LOCK_MODE_COPY[mode];
+      $("settingsLockToggle").checked = mode !== "unlocked";
+      $("settingsLockLabel").textContent = mode === "unlocked" ? "설정 열림" : "설정 잠금";
+      const scheduleQuick = $("scheduleOnlyQuick");
+      scheduleQuick.classList.toggle("hidden", mode === "unlocked");
+      scheduleQuick.textContent = mode === "scheduleOnly" ? "시간표 수정 중" : "시간표만 수정";
+      scheduleQuick.setAttribute("aria-pressed", mode === "scheduleOnly" ? "true" : "false");
+      scheduleQuick.title = copy[0] + " — " + copy[1];
+      applySettingsLockUi();
+    }
+    async function loadSettingsLock(){
+      const room = cur;
+      const response = await api(room, "/api/settings-lock");
+      const data = await response.json();
+      if (cur === room) renderSettingsLock(data);
+    }
+    async function handleSettingsLockError(response){
+      if (response.status !== 423) return false;
+      let data = {};
+      try { data = await response.json(); } catch(e) {}
+      if (data.settingsLock) renderSettingsLock(data.settingsLock);
+      toast(data.error || "설정이 잠겨 있어 변경할 수 없습니다.");
+      return true;
+    }
+    async function changeSettingsLockMode(mode) {
+      if (mode === settingsLock.mode){ toast("이미 적용된 잠금 모드입니다."); return; }
+      const copy = LOCK_MODE_COPY[mode] || LOCK_MODE_COPY.locked;
+      if (!await confirmAsk("설정 잠금 모드를 바꿀까요?", copy[1], "변경")){
+        renderSettingsLock(settingsLock);
+        return;
+      }
+      try {
+        const response = await api(cur, "/api/settings-lock", {method:"PUT", body:JSON.stringify({mode})});
+        const data = await response.json();
+        if (!response.ok || !data.ok){ toast(data.error || "잠금 모드를 바꾸지 못했습니다."); return; }
+        renderSettingsLock(data.settingsLock);
+        toast("설정 잠금 모드를 변경했습니다.");
+      } catch(e){
+        renderSettingsLock(settingsLock);
+        toast("잠금 모드를 바꾸지 못했습니다. 연결을 확인하세요.");
+      }
+    };
+    $("settingsLockToggle").onchange = () =>
+      changeSettingsLockMode($("settingsLockToggle").checked ? "locked" : "unlocked");
+    $("scheduleOnlyQuick").onclick = () =>
+      changeSettingsLockMode(settingsLock.mode === "scheduleOnly" ? "locked" : "scheduleOnly");
+
+    function renderAutomation(payload){
+      automation = {enabled: !payload || payload.enabled !== false};
+      const enabled = automation.enabled;
+      $("automationState").textContent = enabled ? "자동 운행 켜짐" : "자동 운행 중지됨";
+      $("automationToggleBtn").textContent = enabled ? "자동 운행 중지" : "자동 운행 다시 켜기";
+      $("automationHint").textContent = enabled
+        ? "앱을 시작하면 녹화와 방송이 자동으로 시작됩니다. 중지하면 현재 운행도 끝납니다."
+        : "자동 녹화와 방송이 중지되어 있습니다. 원격 제어와 수동 시작은 계속 사용할 수 있습니다.";
+      applySettingsLockUi();
+    }
+    async function loadAutomation(){
+      const room = cur;
+      const response = await api(room, "/api/automation");
+      const data = await response.json();
+      if (cur === room) renderAutomation(data);
+    }
+    async function changeAutomation(enabled){
+      const room = cur;
+      if (!room) return;
+      const title = enabled ? "자동 운행을 다시 켤까요?" : "자동 녹화와 방송을 중지할까요?";
+      const desc = enabled
+        ? "다음 앱 시작부터 녹화와 방송이 자동으로 시작됩니다. 지금은 수동 시작으로만 운행합니다."
+        : "현재 녹화와 방송을 모두 종료하고, 다음 앱 시작 때도 자동으로 시작하지 않습니다. 원격 제어는 계속 연결됩니다.";
+      const label = enabled ? "자동 운행 켜기" : "자동 운행 중지";
+      if (!await confirmAsk(title, desc, label)) return;
+      if (cur !== room) return;
+      try {
+        const response = await api(room, "/api/automation", {method:"PUT", body:JSON.stringify({enabled})});
+        if (await handleSettingsLockError(response)) return;
+        const data = await response.json();
+        if (!response.ok || !data.ok){ toast(data.error || "자동 운행 설정을 바꾸지 못했습니다."); return; }
+        renderAutomation(data.automation);
+        toast(enabled ? "자동 운행을 켰습니다." : "자동 녹화와 방송을 중지했습니다.");
+      } catch(e){ toast("자동 운행 설정을 바꾸지 못했습니다. 연결을 확인하세요."); }
+    }
+
     function rowsHtml(periods){
       return periods.map((p,idx)=>`<tr data-i="${idx}">
         <td><input class="time" value="${esc(p.no)}" inputmode="numeric" style="width:46px" data-f="no"></td>
@@ -1187,10 +1345,10 @@
 
     // ---- 오늘 시간표 ----
     let todayPeriods=[];
-    function renderToday(){ $("todayRows").innerHTML=rowsHtml(todayPeriods); wireDelete($("todayRows")); }
+    function renderToday(){ $("todayRows").innerHTML=rowsHtml(todayPeriods); wireDelete($("todayRows")); applySettingsLockUi(); }
     $("addTodayRow").onclick=()=>{ todayPeriods=readRows($("todayRows")); todayPeriods.push({no:todayPeriods.length+1,start:"09:00",end:"09:50"}); renderToday(); };
-    $("saveToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); toast("오늘 시간표를 저장했습니다."); };
-    $("clearToday").onclick=async()=>{ await api(cur,"/api/schedule/today",{method:"DELETE"}); toast("기본값으로 되돌렸습니다."); loadToday().catch(()=>{}); };
+    $("saveToday").onclick=async()=>{ const r=await api(cur,"/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("save-today"); toast("오늘 시간표를 저장했습니다."); };
+    $("clearToday").onclick=async()=>{ const r=await api(cur,"/api/schedule/today",{method:"DELETE"}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("clear-today"); toast("기본값으로 되돌렸습니다."); loadToday().catch(()=>{}); };
     async function loadToday(){ const room=cur; const r=await api(room,"/api/schedule/today"); const d=await r.json(); if(cur!==room) return; todayPeriods=d.periods; renderToday(); }
 
     // ---- 요일별 기본 ----
@@ -1198,9 +1356,9 @@
       $("weekTabs").innerHTML=WEEKDAYS.map(d=>`<button data-d="${d}" class="${d===activeDay?'active':''}">${WEEKDAY_KR[d]}</button>`).join("");
       $("weekTabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{ weekData[activeDay]=readRows($("weekRows")); activeDay=b.dataset.d; renderTabs(); renderWeek(); });
     }
-    function renderWeek(){ $("weekRows").innerHTML=rowsHtml(weekData[activeDay]||[]); wireDelete($("weekRows")); }
+    function renderWeek(){ $("weekRows").innerHTML=rowsHtml(weekData[activeDay]||[]); wireDelete($("weekRows")); applySettingsLockUi(); }
     $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00",end:"09:50"}); weekData[activeDay]=cur2; renderWeek(); };
-    $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
+    $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); const r=await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("save-week"); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
     async function loadWeek(){ const room=cur; const r=await api(room,"/api/schedule"); const d=await r.json(); if(cur!==room) return; weekData=d; renderTabs(); renderWeek(); }
 
     // ---- 송출 품질 (적응형 품질: 프리셋 수동 고정 + 자동 복귀) ----
@@ -1213,6 +1371,7 @@
         `<button data-q="auto" class="${qualMode==="auto"?'active':''}">자동</button>` +
         rungs.map(r=>`<button data-q="${r.level}" class="${qualMode==="manual"&&qualLevel===r.level?'active':''}">${esc(r.name)}</button>`).join("");
       $("qualPills").querySelectorAll("button").forEach(b=>b.onclick=()=>putQuality(b.dataset.q));
+      applySettingsLockUi();
       $("qualHint").textContent =
         qualMode==="manual" ? "수동 고정 중 — 전체 중지 시 자동으로 복귀합니다."
         : qualLevel>0 ? "자동 절약 중 — 여건이 회복되면 쉬는 시간에 원본으로 돌아갑니다."
@@ -1227,6 +1386,7 @@
       const body = q==="auto" ? {mode:"auto"} : {mode:"manual", level:+q};
       try{
         const d = await (await api(cur,"/api/quality",{method:"PUT",body:JSON.stringify(body)})).json();
+        if(d.settingsLock) renderSettingsLock(d.settingsLock);
         if(!d.ok){ toast(d.error||"요청이 잘못되었습니다."); return; }
         toast(d.applied==="swapped" ? "품질 전환 중 — 잠시 화면이 끊길 수 있습니다." : "다음 시작부터 적용됩니다.");
         qualLadder = d.quality.ladder||[]; qualMode = d.quality.mode; qualLevel = d.quality.level;
@@ -1262,14 +1422,15 @@
         </div>`).join("");
       $("srcList").querySelectorAll("[data-mute]").forEach(b=>b.onclick=async()=>{
         const id=b.dataset.mute, on=!b.classList.contains("on");
-        try{ await api(cur,"/api/audio/mute",{method:"POST",body:JSON.stringify({id,muted:on})});
+        try{ const r=await api(cur,"/api/audio/mute",{method:"POST",body:JSON.stringify({id,muted:on})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("mute");
           b.classList.toggle("on",on); b.textContent=on?"음소거됨":"음소거"; }catch(e){}
       });
       $("srcList").querySelectorAll("[data-gain]").forEach(sl=>sl.onchange=async()=>{
-        try{ await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); }catch(e){}
+        try{ const r=await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("gain"); }catch(e){}
       });
       updateMicWarn(d.micWarning, d.silent);
       renderedSrcKey = d.sources.map(s=>s.id).join("|");
+      applySettingsLockUi();
     }
     function renderLevels(m){
       // The PC can add/remove a source mid-session; if the live ids no longer match the rendered
@@ -1406,9 +1567,11 @@
       const on = !!(await currentPushSub());
       btn.textContent = on ? "🔕 폰 알림 끄기" : "🔔 폰 알림 켜기";
       btn.dataset.on = on ? "1" : "";
+      applySettingsLockUi();
     }
 
     async function enablePush(){
+      if (!settingsLock.otherSettingsEditable){ toast("설정이 잠겨 있어 알림 설정을 바꿀 수 없습니다."); return; }
       if (!swReg) await registerServiceWorker();
       if (!swReg){ toast("이 브라우저·연결에서는 알림을 쓸 수 없습니다 (HTTPS 필요)."); return; }
       if (await Notification.requestPermission() !== "granted"){ toast("알림 권한이 거부되었습니다."); return; }
@@ -1451,6 +1614,7 @@
     }
 
     async function disablePush(){
+      if (!settingsLock.otherSettingsEditable){ toast("설정이 잠겨 있어 알림 설정을 바꿀 수 없습니다."); return; }
       const sub = await currentPushSub();
       if (!sub){ setPushScope("폰 알림 구독이 없습니다."); refreshPushButton(); return; }
       const endpoint = sub.endpoint;
@@ -1475,6 +1639,9 @@
     (function(){ const b = $("pushToggle"); if (b) b.onclick = () => b.dataset.on ? disablePush() : enablePush(); })();
 
     window.onpopstate = () => { if (rooms.length > 1 && view !== "grid") openGrid(); };
+
+    renderSettingsLock(settingsLock);
+    renderAutomation(automation);
 
     if (demoMode) openDemo();
     else {

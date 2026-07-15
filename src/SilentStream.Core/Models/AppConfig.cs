@@ -19,10 +19,13 @@ public sealed class AppConfig
     /// stream-quality section (<see cref="EncodingConfig.Adaptive"/>); v8 adds approval-based
     /// period splitting (<see cref="PeriodsConfig.RequireApproval"/>) and seeds the built-in
     /// Mon–Fri timetable when no schedule exists; v9 adds first-install room provisioning
-    /// (<see cref="ProvisioningConfig"/>); v11 standardizes live and per-period YouTube titles. Missing keys
-    /// deserialize to their defaults, so an older file loads cleanly and is migrated on the next save.
+    /// (<see cref="ProvisioningConfig"/>); v10 adds the phone-remote settings lock; v11
+    /// standardizes live and per-period YouTube titles; v12 adds the automatic-operation switch.
+    /// Missing keys
+    /// deserialize to their defaults,
+    /// so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 11;
+    public int Version { get; set; } = 12;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -59,6 +62,13 @@ public sealed class AppConfig
 
     /// <summary>Auto-start mechanism: "startup" (registry Run) or "scheduler" (Task Scheduler).</summary>
     public string Autostart { get; set; } = "startup";
+
+    /// <summary>
+    /// Starts recording and broadcasting automatically when the application launches. Turning this
+    /// off keeps the app and phone remote online, but prevents automatic operation on this and
+    /// future launches. Schema v12.
+    /// </summary>
+    public bool AutomaticOperationEnabled { get; set; } = true;
 
     /// <summary>
     /// Per-device room label (호실명, e.g. "201호") stamped onto live + VOD titles through the
@@ -357,6 +367,12 @@ public sealed class RemoteConfig
 
     /// <summary>SHA-256 hashes of paired device tokens (D11). Never stores raw tokens.</summary>
     public List<string> DeviceTokens { get; set; } = new();
+
+    /// <summary>
+    /// Phone-remote settings editing mode: <c>unlocked</c>, <c>scheduleOnly</c>, or <c>locked</c>.
+    /// Live controls remain available; this only guards persisted remote settings. Schema v10.
+    /// </summary>
+    public string SettingsLockMode { get; set; } = "unlocked";
 
     /// <summary>
     /// Cloudflare named-tunnel token (used when Mode="cloudflare"). The tunnel dials outbound to the

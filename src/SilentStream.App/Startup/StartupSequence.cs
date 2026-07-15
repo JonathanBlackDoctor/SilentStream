@@ -58,8 +58,16 @@ public static class StartupSequence
         services.GetRequiredService<IHealthMonitor>().Start(_lifetimeCts.Token);
         await StartRemoteServerAsync(services, log, _lifetimeCts.Token).ConfigureAwait(false);
 
-        // 자동 송출+녹화 시작 (30초 워밍업은 orchestrator 내부).
-        await orchestrator.StartAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        // 자동 송출+녹화 시작 (30초 워밍업은 orchestrator 내부). 원격에서 자동 운행을
+        // 껐으면 제어 서버만 유지해, 현장 방문 없이 다시 켜거나 수동으로 시작할 수 있게 한다.
+        if (configStore.Load().AutomaticOperationEnabled)
+        {
+            await orchestrator.StartAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        }
+        else
+        {
+            log.Warn("자동 녹화·방송이 중지되어 있습니다. 원격 제어와 수동 시작만 사용할 수 있습니다.");
+        }
     }
 
     /// <summary>

@@ -63,6 +63,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IPushSubscriptionStore _pushSubscriptions;
     private readonly IVapidKeyStore _vapidKeys;
     private readonly RemoteAppRestartService _appRestart;
+    private readonly RemoteSystemShutdownService _systemShutdown;
     private readonly RemoteUninstallService _appUninstall;
     private readonly RecoveryCoordinator _recovery;
     private readonly ILogService _log;
@@ -110,6 +111,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         IPushSubscriptionStore pushSubscriptions,
         IVapidKeyStore vapidKeys,
         RemoteAppRestartService appRestart,
+        RemoteSystemShutdownService systemShutdown,
         RemoteUninstallService appUninstall,
         RecoveryCoordinator recovery,
         ILogService log)
@@ -131,6 +133,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _pushSubscriptions = pushSubscriptions;
         _vapidKeys = vapidKeys;
         _appRestart = appRestart;
+        _systemShutdown = systemShutdown;
         _appUninstall = appUninstall;
         _recovery = recovery;
         _log = log;
@@ -557,14 +560,63 @@ public sealed class RemoteControlServer : IRemoteControlServer
         // 멀티 호실 그리드 카드용 경량 요약(Phase 2). 시간표/업로드 큐 등 무거운 부분은 /api/status에만 둔다.
         app.MapGet("/api/summary", () => Results.Json(BuildSummary(), Json));
 
-        app.MapGet("/api/schedule", () => Results.Json(GetWeekdayDefaults(), Json));
-        app.MapPut("/api/schedule", async ctx =>
+        // This endpoint remains reachable in every mode so the operator can deliberately change
+        // the lock after the confirmation shown by the remote UI. Each protected write below is
+        // still checked on the server, so an old or hand-written client cannot bypass the lock.
+        app.MapGet("/api/settings-lock", () => Results.Json(BuildSettingsLock(), Json));
+        app.MapPut("/api/settings-lock", async Task<IResult> (HttpContext ctx) =>
         {
+            var body = await ReadJsonAsync<SettingsLockRequest>(ctx).ConfigureAwait(false);
+            if (!RemoteSettingsLock.TryParse(body?.Mode, out var mode))
+            {
+                return Results.Json(new { ok = false, error = "알 수 없는 설정 잠금 모드입니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            _configStore.Update(config => config.Remote.SettingsLockMode = mode);
+            _log.Info($"원격 설정 잠금 모드가 '{mode}'(으)로 변경되었습니다.");
+            return Results.Json(new { ok = true, settingsLock = BuildSettingsLock() }, Json);
+        });
+
+        app.MapGet("/api/automation", () => Results.Json(BuildAutomation(), Json));
+        app.MapPut("/api/automation", async Task<IResult> (HttpContext ctx) =>
+        {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
+
+            var body = await ReadJsonAsync<AutomationRequest>(ctx).ConfigureAwait(false);
+            if (body?.Enabled is not bool enabled)
+            {
+                return Results.Json(new { ok = false, error = "자동 운행 설정이 올바르지 않습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            _configStore.Update(config => config.AutomaticOperationEnabled = enabled);
+            if (!enabled)
+            {
+                await _orchestrator.StopAsync().ConfigureAwait(false);
+            }
+
+            _log.Warn(enabled
+                ? "원격 요청으로 자동 녹화·방송을 다음 앱 시작부터 다시 켰습니다."
+                : "원격 요청으로 자동 녹화·방송을 중지했습니다.");
+            return Results.Json(new { ok = true, automation = BuildAutomation() }, Json);
+        });
+
+        app.MapGet("/api/schedule", () => Results.Json(GetWeekdayDefaults(), Json));
+        app.MapPut("/api/schedule", async Task<IResult> (HttpContext ctx) =>
+        {
+            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<Dictionary<string, List<PeriodDto>>>(ctx).ConfigureAwait(false);
             if (body is null)
             {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                return;
+                return Results.Json(new { ok = false, error = "시간표 형식이 올바르지 않습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
             }
             foreach (var (key, rows) in body)
             {
@@ -575,7 +627,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             }
             _scheduler.NotifyScheduleChanged();
             _log.Info("요일별 기본 시간표가 갱신되었습니다(원격).");
-            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+            return Results.Json(new { ok = true }, Json);
         });
 
         app.MapGet("/api/schedule/today", () =>
@@ -588,17 +640,25 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             }, Json);
         });
-        app.MapPut("/api/schedule/today", async ctx =>
+        app.MapPut("/api/schedule/today", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
+            {
+                return blocked;
+            }
             var rows = await ReadJsonAsync<List<PeriodDto>>(ctx).ConfigureAwait(false) ?? [];
             var today = DateOnly.FromDateTime(DateTime.Now);
             _scheduleStore.SetOverride(today, ToDaySchedule(rows));
             _scheduler.NotifyScheduleChanged();
             _log.Info($"오늘({today:yyyy-MM-dd}) 시간표 덮어쓰기가 적용되었습니다(원격).");
-            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+            return Results.Json(new { ok = true }, Json);
         });
         app.MapDelete("/api/schedule/today", () =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
+            {
+                return blocked;
+            }
             var today = DateOnly.FromDateTime(DateTime.Now);
             _scheduleStore.ClearOverride(today);
             _scheduler.NotifyScheduleChanged();
@@ -632,38 +692,50 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         // ---- audio mixer (다중 채널 + 증폭 + 실시간 미터) ----
         app.MapGet("/api/audio", () => Results.Json(BuildAudio(), Json));
-        app.MapPost("/api/audio/mute", async ctx =>
+        app.MapPost("/api/audio/mute", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<AudioMuteRequest>(ctx).ConfigureAwait(false);
             if (string.IsNullOrEmpty(body?.Id))
             {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                return;
+                return Results.Json(new { ok = false, error = "오디오 입력을 찾을 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
             }
             _audioMixer.SetMuted(body.Id, body.Muted);
             PersistSourceChange(body.Id, s => s.Muted = body.Muted);
-            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+            return Results.Json(new { ok = true }, Json);
         });
-        app.MapPost("/api/audio/gain", async ctx =>
+        app.MapPost("/api/audio/gain", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<AudioGainRequest>(ctx).ConfigureAwait(false);
             if (string.IsNullOrEmpty(body?.Id))
             {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-                return;
+                return Results.Json(new { ok = false, error = "오디오 입력을 찾을 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
             }
             var gain = Math.Clamp(body.Gain, 0, 4);
             _audioMixer.SetGain(body.Id, gain);
             PersistSourceChange(body.Id, s => s.Gain = gain);
-            await ctx.Response.WriteAsJsonAsync(new { ok = true }).ConfigureAwait(false);
+            return Results.Json(new { ok = true }, Json);
         });
 
         // ---- 송출 품질 (적응형 품질 §7.2: 조회 + 수동 고정/자동 복귀) ----
         app.MapGet("/api/quality", () => Results.Json(
             QualityRemote.BuildDto(_quality, _orchestrator.CurrentQuality,
                 _configStore.Load().Encoding.Adaptive.Enabled), Json));
-        app.MapPut("/api/quality", async ctx =>
+        app.MapPut("/api/quality", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<QualityRemote.PutRequest>(ctx).ConfigureAwait(false);
             var result = QualityRemote.Apply(body, _quality, _orchestrator.CurrentQuality,
                 _configStore.Load().Encoding.Adaptive.Enabled,
@@ -672,25 +744,30 @@ public sealed class RemoteControlServer : IRemoteControlServer
             {
                 _log.Info($"원격 품질 요청: mode={result.Quality.Mode}, level={result.Quality.Level} → {result.Applied}");
             }
-            else
-            {
-                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
-            }
-            await ctx.Response.WriteAsJsonAsync(result, Json).ConfigureAwait(false);
+            return Results.Json(result, Json,
+                statusCode: result.Ok ? StatusCodes.Status200OK : StatusCodes.Status400BadRequest);
         });
 
         // ---- 폰 PWA Web Push 구독 (원격 컨트롤러 개선 Phase 3) ----
         // /api 아래라 토큰 게이트 뒤 — 페어링된 기기만 구독한다. VAPID 공개키는 비밀이 아니지만 구독이
         // 페어링 후에만 의미 있으므로 같은 게이트를 공유한다.
         app.MapGet("/api/push/vapid", () => Results.Json(PushRemote.GetVapid(_vapidKeys), Json));
-        app.MapPost("/api/push/subscribe", async (HttpContext ctx) =>
+        app.MapPost("/api/push/subscribe", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<PushRemote.SubscribeRequest>(ctx).ConfigureAwait(false);
             var result = PushRemote.Subscribe(_pushSubscriptions, body);
             return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
         });
-        app.MapDelete("/api/push/subscribe", async (HttpContext ctx) =>
+        app.MapDelete("/api/push/subscribe", async Task<IResult> (HttpContext ctx) =>
         {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
+            {
+                return blocked;
+            }
             var body = await ReadJsonAsync<PushRemote.SubscribeRequest>(ctx).ConfigureAwait(false);
             var result = PushRemote.Unsubscribe(_pushSubscriptions, body?.Endpoint);
             return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
@@ -752,6 +829,17 @@ public sealed class RemoteControlServer : IRemoteControlServer
             {
                 ok,
                 message = ok ? "앱을 안전하게 다시 시작합니다." : "앱 재시작이 이미 진행 중입니다."
+            }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+        });
+        app.MapPost("/api/system/shutdown", () =>
+        {
+            var ok = _systemShutdown.RequestShutdown();
+            return Results.Json(new
+            {
+                ok,
+                message = ok
+                    ? "PC 종료를 준비합니다. 녹화와 방송을 안전하게 마친 뒤 전원을 끕니다."
+                    : "PC 종료가 이미 준비 중입니다."
             }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
         app.MapPost("/api/app/uninstall", async (HttpContext ctx) =>
@@ -1135,6 +1223,38 @@ public sealed class RemoteControlServer : IRemoteControlServer
             _health.ActiveEvents,
             InMemoryLogSink.Snapshot());
 
+    private object BuildAutomation() => new
+    {
+        enabled = _configStore.Load().AutomaticOperationEnabled
+    };
+
+    private object BuildSettingsLock()
+    {
+        var mode = RemoteSettingsLock.Normalize(_configStore.Load().Remote.SettingsLockMode);
+        return new
+        {
+            mode,
+            scheduleEditable = RemoteSettingsLock.Allows(mode, RemoteSettingsSection.Schedule),
+            otherSettingsEditable = RemoteSettingsLock.Allows(mode, RemoteSettingsSection.Other)
+        };
+    }
+
+    private IResult? BlockSettingsChange(RemoteSettingsSection section)
+    {
+        var mode = RemoteSettingsLock.Normalize(_configStore.Load().Remote.SettingsLockMode);
+        if (RemoteSettingsLock.Allows(mode, section))
+        {
+            return null;
+        }
+
+        return Results.Json(new
+        {
+            ok = false,
+            error = RemoteSettingsLock.DenialMessage(section),
+            settingsLock = BuildSettingsLock()
+        }, Json, statusCode: StatusCodes.Status423Locked);
+    }
+
     private object BuildStatus()
     {
         var state = _orchestrator.State;
@@ -1156,6 +1276,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             live = state == StreamState.Live,
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
             recovery = _recovery.Status,
+            automation = BuildAutomation(),
+            settingsLock = BuildSettingsLock(),
 
             // 적용 중인 송출 품질(적응형 품질) — 폰 상태 카드의 품질 줄 + 프리셋 하이라이트용.
             quality = new
@@ -1454,6 +1576,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
     }
 
     private sealed record PairRequest(string? Pin);
+
+    private sealed record SettingsLockRequest(string? Mode);
+
+    private sealed record AutomationRequest(bool? Enabled);
 
     private sealed record PeriodDto(int No, string Start, string End);
 
