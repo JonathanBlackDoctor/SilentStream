@@ -125,6 +125,53 @@ public class VodSegmentServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Multi_part_range_cuts_each_overlap_and_joins_one_vod()
+    {
+        var first = MakeSessionFile();
+        var second = Path.Combine(_dir, "MediaCaptureHelper_REC_2026-06-14_0930.mp4");
+        File.WriteAllBytes(second, new byte[1024]);
+        var service = Create(session: null);
+        var start = new DateTime(2026, 6, 14, 9, 0, 0);
+        var boundary = new DateTime(2026, 6, 14, 9, 30, 0);
+        var end = new DateTime(2026, 6, 14, 10, 0, 0);
+
+        var result = await service.ExtractRangeAsync(
+            [
+                new RecordingSegment(first, new DateTime(2026, 6, 14, 8, 59, 0), boundary),
+                new RecordingSegment(second, boundary, null)
+            ],
+            start, end, "1교시", CancellationToken.None);
+
+        Assert.NotNull(result);
+        Assert.Equal(3, _runner.Calls.Count); // two part cuts + concat
+        Assert.Equal(60d, ParseArg(_runner.Calls[0], "-ss"), 3);
+        Assert.Equal(1800d, ParseArg(_runner.Calls[0], "-t"), 3);
+        Assert.Equal(0d, ParseArg(_runner.Calls[1], "-ss"), 3);
+        Assert.Equal(1800d, ParseArg(_runner.Calls[1], "-t"), 3);
+        Assert.Contains("-f concat", _runner.Calls[2]);
+        Assert.Contains("-c copy", _runner.Calls[2]);
+    }
+
+    [Fact]
+    public async Task Multi_part_range_refuses_to_publish_when_any_required_part_is_missing()
+    {
+        var first = MakeSessionFile();
+        var start = new DateTime(2026, 6, 14, 9, 0, 0);
+        var boundary = start.AddMinutes(30);
+        var service = Create(session: null);
+
+        var result = await service.ExtractRangeAsync(
+            [
+                new RecordingSegment(first, start, boundary),
+                new RecordingSegment(Path.Combine(_dir, "missing-part.mp4"), boundary, null)
+            ],
+            start, start.AddHours(1), "1교시", CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.False(_runner.WasCalled);
+    }
+
+    [Fact]
     public async Task Returns_null_and_does_not_crash_when_ffmpeg_fails()
     {
         var sessionFile = MakeSessionFile();
@@ -154,6 +201,7 @@ public class VodSegmentServiceTests : IDisposable
     private sealed class FakeRunner : IProcessRunner
     {
         public string LastArgs = string.Empty;
+        public List<string> Calls { get; } = [];
         public bool WasCalled;
         public bool SimulateFailure;
 
@@ -162,6 +210,7 @@ public class VodSegmentServiceTests : IDisposable
         {
             WasCalled = true;
             LastArgs = arguments;
+            Calls.Add(arguments);
             if (SimulateFailure)
             {
                 return Task.FromResult((1, "Conversion failed!"));

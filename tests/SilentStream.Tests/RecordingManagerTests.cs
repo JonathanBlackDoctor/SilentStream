@@ -61,6 +61,29 @@ public class RecordingManagerTests : IDisposable
     }
 
     [Fact]
+    public void Recording_part_history_is_atomic_persistent_and_covers_restart_windows()
+    {
+        var manager = CreateManager();
+        var firstStart = new DateTime(2026, 6, 12, 9, 0, 0);
+        var secondStart = new DateTime(2026, 6, 12, 9, 30, 0);
+        var first = manager.CreateSessionFilePath(firstStart);
+        File.WriteAllBytes(first, new byte[10]);
+        var second = manager.CreateSessionFilePath(secondStart);
+        File.WriteAllBytes(second, new byte[10]);
+
+        var segments = manager.GetSegments(firstStart.AddMinutes(10), secondStart.AddMinutes(20));
+
+        Assert.Equal(2, segments.Count);
+        Assert.Equal(secondStart, segments[0].EndLocal);
+        Assert.Null(segments[1].EndLocal);
+        Assert.True(File.Exists(Path.Combine(_configStore.Load().Recording.Folder, ".recording-segments.json")));
+
+        var afterRestart = CreateManager();
+        Assert.Null(afterRestart.Current); // historical parts are not mistaken for a live writer
+        Assert.Equal(2, afterRestart.GetSegments(firstStart, secondStart.AddHours(1)).Count);
+    }
+
+    [Fact]
     public async Task Files_past_retention_days_are_deleted()
     {
         var manager = CreateManager();

@@ -10,6 +10,18 @@ public interface IRecordingSessionInfo
 {
     /// <summary>The active recording session, or null when nothing is being recorded.</summary>
     RecordingSession? Current { get; }
+
+    /// <summary>
+    /// Returns every recording part that overlaps the requested wall-clock window. The default
+    /// keeps older implementations source-compatible while recording managers can expose history.
+    /// </summary>
+    IReadOnlyList<RecordingSegment> GetSegments(DateTime startLocal, DateTime endLocal)
+    {
+        var current = Current;
+        return current is null || endLocal <= current.StartLocal
+            ? []
+            : [new RecordingSegment(current.FilePath, current.StartLocal, null)];
+    }
 }
 
 /// <summary>
@@ -19,3 +31,6 @@ public interface IRecordingSessionInfo
 /// <param name="FilePath">Absolute path of the session mp4.</param>
 /// <param name="StartLocal">Local timestamp mapped to file position 0.</param>
 public sealed record RecordingSession(string FilePath, DateTime StartLocal);
+
+/// <summary>A physical recording part and the wall-clock interval represented by that file.</summary>
+public sealed record RecordingSegment(string FilePath, DateTime StartLocal, DateTime? EndLocal);

@@ -25,4 +25,23 @@ public interface IVodSegmentService
     Task<string?> ExtractRangeAsync(
         RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
         CancellationToken ct);
+
+    /// <summary>
+    /// Extracts a window that may span several physical recording parts created by watchdog or
+    /// quality restarts. Implementations concatenate the overlapping pieces into one upload file.
+    /// </summary>
+    Task<string?> ExtractRangeAsync(
+        IReadOnlyList<RecordingSegment> segments, DateTime startLocal, DateTime endLocal,
+        string fileBaseLabel, CancellationToken ct)
+    {
+        if (segments.Count == 0)
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        var first = segments[0];
+        return ExtractRangeAsync(
+            new RecordingSession(first.FilePath, first.StartLocal), startLocal, endLocal,
+            fileBaseLabel, ct);
+    }
 }

@@ -16,7 +16,7 @@
     <StartupObject>SilentStream.App.Program</StartupObject>
     <!-- 릴리스 버전(단일 진실 공급원). CI는 태그에서 Version 프로퍼티를 덮어쓰고
          vpk pack 의 packVersion 에도 같은 값을 넘긴다. -->
-    <Version>0.1.0</Version>
+    <Version>0.3.3</Version>
     <!-- Allows compiling (not running) on Linux when the SDK ships WindowsDesktop
          (official MS SDK; Ubuntu's apt SDK cannot build WPF). -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>

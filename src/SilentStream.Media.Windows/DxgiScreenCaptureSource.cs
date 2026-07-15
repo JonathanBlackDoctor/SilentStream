@@ -196,6 +196,26 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
 
         while (!ct.IsCancellationRequested)
         {
+            // Initialize() can fail transiently while Windows changes display topology. When that
+            // happens the prior implementation left the loop alive with null DXGI resources and
+            // CaptureOneFrame simply returned forever. Retry until frames can be produced again.
+            if (_device is null || _duplication is null || _stagingTexture is null || _frameBuffer is null)
+            {
+                if (!CaptureRecoveryPolicy.TryInitialize(ReleaseDuplication, Initialize, out var initError))
+                {
+                    _log.Error("Capture reinitialization failed; retrying in 1 second.", initError!);
+                    if (ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(1)))
+                    {
+                        break;
+                    }
+                    continue;
+                }
+
+                _log.Info($"Capture reinitialized: {Width}x{Height}");
+                interval = TimeSpan.FromSeconds(1.0 / Math.Max(1, Fps));
+                next = clock.Elapsed + interval;
+            }
+
             try
             {
                 CaptureOneFrame(ct);
@@ -526,5 +546,26 @@ public sealed class DxgiScreenCaptureSource : IScreenCaptureSource
         _cts?.Cancel();
         ReleaseDuplication();
         _cts?.Dispose();
+    }
+}
+
+/// <summary>Ensures a failed DXGI rebuild is clean and remains retryable.</summary>
+internal static class CaptureRecoveryPolicy
+{
+    internal static bool TryInitialize(Action release, Action initialize, out Exception? error)
+    {
+        release();
+        try
+        {
+            initialize();
+            error = null;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            release();
+            error = ex;
+            return false;
+        }
     }
 }

@@ -464,8 +464,17 @@ public sealed class SplitApprovalService : ISplitApprovalService
 
         try
         {
-            var session = new RecordingSession(item.SessionFilePath, item.SessionStartLocal);
-            var path = await _vod.ExtractRangeAsync(session, start, end, label, ct)
+            var segments = (item.RecordingSegments ?? [])
+                .Concat(_sessionInfo.GetSegments(start, end))
+                .GroupBy(s => s.FilePath, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.OrderByDescending(s => s.EndLocal).First())
+                .OrderBy(s => s.StartLocal)
+                .ToList();
+            if (segments.Count == 0)
+            {
+                segments.Add(new RecordingSegment(item.SessionFilePath, item.SessionStartLocal, null));
+            }
+            var path = await _vod.ExtractRangeAsync(segments, start, end, label, ct)
                 .ConfigureAwait(false);
             if (path is null)
             {
@@ -574,11 +583,16 @@ public sealed class SplitApprovalService : ISplitApprovalService
         // The deadline counts from now (not the boundary) so a late-created split still gives the
         // operator the full decision window. Config is read at creation; later edits affect new splits.
         var minutes = _configStore.Load().Periods.AutoApproveMinutes;
+        var segments = _sessionInfo.GetSegments(start, end);
+        if (segments.Count == 0)
+        {
+            segments = [new RecordingSegment(sessionFile, sessionStart, null)];
+        }
         return new PendingSplit(
             _idFactory(), date, periods, start, end, sessionFile, sessionStart,
             PendingSplitStatus.Pending, now,
             minutes is { } m ? now.AddMinutes(m) : null,
-            null, null, null, null, null);
+            null, null, null, null, null, segments);
     }
 
     private SchoolPeriod? NextScheduledPeriod(DateOnly date, int afterNumber) =>

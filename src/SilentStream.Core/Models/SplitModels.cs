@@ -1,3 +1,5 @@
+using SilentStream.Core.Contracts;
+
 namespace SilentStream.Core.Models;
 
 /// <summary>Pending-split lifecycle states persisted in pending_splits.json.</summary>
@@ -56,7 +58,8 @@ public sealed record PendingSplit(
     DateTime? ResolvedStartLocal,
     DateTime? ResolvedEndLocal,
     string? Title,
-    string? FailReason);
+    string? FailReason,
+    IReadOnlyList<RecordingSegment>? RecordingSegments = null);
 
 /// <summary>
 /// An open 연강 (merge) chain: "don't cut yet — fold the next period's end into one VOD". Created

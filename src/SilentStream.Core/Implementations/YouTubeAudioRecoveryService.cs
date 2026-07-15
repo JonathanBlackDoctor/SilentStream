@@ -178,6 +178,7 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
         string? completedAudioPath = null;
         var catalogCommitted = false;
         var encodingStarted = false;
+        var recoveryCompleted = false;
 
         try
         {
@@ -235,8 +236,8 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             }
 
             catalogCommitted = true;
-            SetStatus(job, AudioRecoveryStatus.Available);
             _log.Info($"YouTube 음성 복구 완료: asset={asset.Id}, file={Path.GetFileName(completedAudioPath)}");
+            recoveryCompleted = true;
         }
         catch (OperationCanceledException)
         {
@@ -268,6 +269,13 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             if (temporaryDirectory is not null)
             {
                 TryDeleteTemporaryDirectory(temporaryDirectory);
+            }
+            // Available is externally observable. Publish it only after the per-job temporary
+            // directory has been removed so callers never see a terminal state with cleanup
+            // still pending (the race is especially visible on Linux runners).
+            if (recoveryCompleted)
+            {
+                SetStatus(job, AudioRecoveryStatus.Available);
             }
             if (enteredExecutionGate)
             {

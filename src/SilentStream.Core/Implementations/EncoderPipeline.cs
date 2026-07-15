@@ -17,6 +17,7 @@ namespace SilentStream.Core.Implementations;
 public sealed class EncoderPipeline : IEncoderPipeline
 {
     private const string AudioPipeName = "mediacapturehelper_audio";
+    private static readonly TimeSpan StartupProgressTimeout = TimeSpan.FromSeconds(15);
 
     private readonly IScreenCaptureSource _capture;
     private readonly IAudioMixer _audioMixer;
@@ -41,6 +42,7 @@ public sealed class EncoderPipeline : IEncoderPipeline
     private int _rtmpLegDown;
     private TimeSpan _lastEncoderCpuTime;
     private DateTime _lastEncoderCpuSampleUtc;
+    private TaskCompletionSource<bool>? _firstProgress;
 
     public EncoderPipeline(
         IScreenCaptureSource capture,
@@ -114,6 +116,7 @@ public sealed class EncoderPipeline : IEncoderPipeline
         Volatile.Write(ref _rtmpLegDown, 0);
         _lastEncoderCpuTime = default;
         _lastEncoderCpuSampleUtc = default;
+        _firstProgress = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Audio pipe must exist before ffmpeg tries to open it.
         _audioPipe = new NamedPipeServerStream(
@@ -136,6 +139,8 @@ public sealed class EncoderPipeline : IEncoderPipeline
         _process.ErrorDataReceived += OnFfmpegStderr;
         _process.Exited += (_, _) =>
         {
+            _firstProgress?.TrySetException(
+                new InvalidOperationException("FFmpeg exited before the first progress sample."));
             // Distinguish a crash/external kill (we still want to be running → watchdog recovers)
             // from a graceful stop (StopAsync cleared the flag first → nothing to do).
             if (_intendedRunning)
@@ -189,6 +194,21 @@ public sealed class EncoderPipeline : IEncoderPipeline
         // From here on, an ffmpeg exit is unexpected (handled by the watchdog).
         _lastProgressUtc = DateTime.UtcNow;
         _intendedRunning = true;
+        try
+        {
+            // A spawned process is not yet a working stream. Wait until ffmpeg has consumed
+            // media and emitted its first stats sample before the orchestrator reports Live.
+            await _firstProgress.Task.WaitAsync(StartupProgressTimeout, ct).ConfigureAwait(false);
+            if (RtmpLegDown)
+            {
+                throw new InvalidOperationException("RTMP output failed during encoder startup.");
+            }
+        }
+        catch
+        {
+            await CleanupSessionAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     public async Task StopAsync()
@@ -263,6 +283,8 @@ public sealed class EncoderPipeline : IEncoderPipeline
         _sessionCts = null;
         _videoChannel = null;
         _audioChannel = null;
+        _firstProgress?.TrySetCanceled();
+        _firstProgress = null;
     }
 
     public void Dispose()
@@ -335,6 +357,7 @@ public sealed class EncoderPipeline : IEncoderPipeline
         if (metrics is not null)
         {
             _lastProgressUtc = DateTime.UtcNow; // feed is alive; resets the stall watchdog
+            _firstProgress?.TrySetResult(true);
             var windowed = _windower?.Apply(metrics) ?? metrics;
             MetricsUpdated?.Invoke(this, windowed with
             {
@@ -361,6 +384,8 @@ public sealed class EncoderPipeline : IEncoderPipeline
             // broadcast is silently dead. Latch the sticky flag; the watchdog rebuilds (§5.4).
             if (Interlocked.Exchange(ref _rtmpLegDown, 1) == 0)
             {
+                _firstProgress?.TrySetException(
+                    new InvalidOperationException("RTMP output failed before encoder startup completed."));
                 _log.Warn($"RTMP 송출 경로 실패 감지 — 워치독이 파이프라인을 재구성합니다: {e.Data}");
             }
             return;

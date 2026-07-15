@@ -119,6 +119,158 @@ public sealed class VodSegmentService : IVodSegmentService
         }
     }
 
+    public async Task<string?> ExtractRangeAsync(
+        IReadOnlyList<RecordingSegment> segments, DateTime startLocal, DateTime endLocal,
+        string fileBaseLabel, CancellationToken ct)
+    {
+        var ordered = segments.OrderBy(s => s.StartLocal).ToList();
+        if (ordered.Count == 0)
+        {
+            return null;
+        }
+        if (ordered.Count == 1)
+        {
+            var only = ordered[0];
+            return await ExtractRangeAsync(
+                new RecordingSession(only.FilePath, only.StartLocal), startLocal, endLocal,
+                fileBaseLabel, ct).ConfigureAwait(false);
+        }
+
+        if (ordered.Any(s => !File.Exists(s.FilePath)))
+        {
+            _log.Warn($"{fileBaseLabel}: one or more recording parts are missing; refusing a partial VOD.");
+            return null;
+        }
+
+        // Watchdog restarts can leave a short hole. Accept normal restart latency, but do not label
+        // a substantially incomplete class as a successful VOD.
+        var coverage = startLocal;
+        var maxRestartGap = TimeSpan.FromSeconds(30);
+        foreach (var segment in ordered)
+        {
+            var partStart = segment.StartLocal < startLocal ? startLocal : segment.StartLocal;
+            var partEnd = segment.EndLocal is { } recordedEnd && recordedEnd < endLocal
+                ? recordedEnd
+                : endLocal;
+            if (partEnd <= startLocal || partStart >= endLocal)
+            {
+                continue;
+            }
+            if (partStart - coverage > maxRestartGap)
+            {
+                _log.Warn($"{fileBaseLabel}: recording gap exceeds {maxRestartGap.TotalSeconds:0}s at {coverage:HH:mm:ss}.");
+                return null;
+            }
+            if (partEnd > coverage)
+            {
+                coverage = partEnd;
+            }
+        }
+        if (endLocal - coverage > maxRestartGap)
+        {
+            _log.Warn($"{fileBaseLabel}: recording ends before the requested window ({coverage:HH:mm:ss}).");
+            return null;
+        }
+
+        Directory.CreateDirectory(_outputDir);
+        var outputPath = BuildOutputPath(fileBaseLabel, DateOnly.FromDateTime(startLocal));
+        var workDir = Path.Combine(_outputDir, $".{Path.GetFileNameWithoutExtension(outputPath)}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDir);
+        var pieces = new List<string>();
+
+        try
+        {
+            for (var i = 0; i < ordered.Count; i++)
+            {
+                var segment = ordered[i];
+                var partStart = segment.StartLocal < startLocal ? startLocal : segment.StartLocal;
+                var partEnd = segment.EndLocal is { } recordedEnd && recordedEnd < endLocal
+                    ? recordedEnd
+                    : endLocal;
+                if (partEnd <= partStart)
+                {
+                    continue;
+                }
+
+                var piece = Path.Combine(workDir, $"part-{i + 1:000}.mp4");
+                var args = string.Join(' ',
+                    "-hide_banner", "-loglevel warning", "-y",
+                    $"-ss {Seconds(partStart - segment.StartLocal)}",
+                    $"-i \"{segment.FilePath}\"",
+                    $"-t {Seconds(partEnd - partStart)}",
+                    "-c copy", "-avoid_negative_ts make_zero", "-movflags +faststart",
+                    $"\"{piece}\"");
+                var (exitCode, output) = await _processRunner
+                    .RunAsync(FfmpegLocator.Resolve(), args, CutTimeout, ct).ConfigureAwait(false);
+                if (exitCode != 0 || !File.Exists(piece) || new FileInfo(piece).Length == 0)
+                {
+                    _log.Warn($"{fileBaseLabel}: recording part {i + 1} cut failed (exit={exitCode}). {Tail(output)}");
+                    return null;
+                }
+                pieces.Add(piece);
+            }
+
+            if (pieces.Count == 0)
+            {
+                return null;
+            }
+
+            var concatFile = Path.Combine(workDir, "concat.txt");
+            await File.WriteAllLinesAsync(
+                concatFile,
+                pieces.Select(p => $"file '{p.Replace("'", "'\\''")}'"),
+                ct).ConfigureAwait(false);
+
+            var concatArgs = string.Join(' ',
+                "-hide_banner", "-loglevel warning", "-y",
+                "-f concat", "-safe 0", $"-i \"{concatFile}\"",
+                "-c copy", "-movflags +faststart", $"\"{outputPath}\"");
+            var (concatExit, concatOutput) = await _processRunner
+                .RunAsync(FfmpegLocator.Resolve(), concatArgs, CutTimeout, ct).ConfigureAwait(false);
+
+            if (concatExit != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+            {
+                // Quality changes may alter stream parameters between parts. Re-encode only as a
+                // compatibility fallback; normal same-profile joins stay lossless.
+                TryDelete(outputPath);
+                concatArgs = string.Join(' ',
+                    "-hide_banner", "-loglevel warning", "-y",
+                    "-f concat", "-safe 0", $"-i \"{concatFile}\"",
+                    "-vf \"scale=1280:720:force_original_aspect_ratio=decrease," +
+                    "pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=30,format=yuv420p\"",
+                    "-c:v libx264", "-preset veryfast", "-c:a aac", "-movflags +faststart",
+                    $"\"{outputPath}\"");
+                (concatExit, concatOutput) = await _processRunner
+                    .RunAsync(FfmpegLocator.Resolve(), concatArgs, CutTimeout, ct).ConfigureAwait(false);
+            }
+
+            if (concatExit != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+            {
+                _log.Warn($"{fileBaseLabel}: recording parts could not be joined (exit={concatExit}). {Tail(concatOutput)}");
+                TryDelete(outputPath);
+                return null;
+            }
+
+            _log.Info($"{fileBaseLabel}: joined {pieces.Count} recording parts into {Path.GetFileName(outputPath)}.");
+            return outputPath;
+        }
+        catch (OperationCanceledException)
+        {
+            TryDelete(outputPath);
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _log.Error($"{fileBaseLabel}: multi-part VOD extraction failed", ex);
+            TryDelete(outputPath);
+            return null;
+        }
+        finally
+        {
+            try { Directory.Delete(workDir, recursive: true); } catch (IOException) { }
+        }
+    }
+
     private string BuildOutputPath(string fileBaseLabel, DateOnly date)
     {
         var baseName = $"{fileBaseLabel}_{date:yyyy-MM-dd}";

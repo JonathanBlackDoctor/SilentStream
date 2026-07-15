@@ -715,7 +715,15 @@ public sealed class RemoteControlServer : IRemoteControlServer
             {
                 return blocked;
             }
-            var rows = await ReadJsonAsync<List<PeriodDto>>(ctx).ConfigureAwait(false) ?? [];
+            var rows = await ReadJsonAsync<List<PeriodDto>>(ctx).ConfigureAwait(false);
+            if (rows is null)
+            {
+                return Results.Json(new
+                {
+                    ok = false,
+                    error = "시간표 본문은 교시 배열이어야 합니다. 기존 시간표는 변경되지 않았습니다."
+                }, Json, statusCode: StatusCodes.Status400BadRequest);
+            }
             var today = DateOnly.FromDateTime(DateTime.Now);
             _scheduleStore.SetOverride(today, ToDaySchedule(rows));
             _scheduler.NotifyScheduleChanged();
@@ -1355,6 +1363,12 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var now = DateTime.Now;
         var today = DateOnly.FromDateTime(now);
         var quality = _orchestrator.CurrentQuality;
+        var metrics = _lastMetrics;
+        var nowUtc = DateTime.UtcNow;
+        var metricsAgeSeconds = metrics.TimestampUtc == DateTime.UnixEpoch
+            ? (double?)null
+            : Math.Max(0, (nowUtc - metrics.TimestampUtc).TotalSeconds);
+        var metricsStale = metricsAgeSeconds is null or > 15;
         string[] silentMics;
         lock (_silentMicsGate)
         {
@@ -1363,6 +1377,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         return new
         {
+            updatedAtUtc = nowUtc,
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
@@ -1394,10 +1409,14 @@ public sealed class RemoteControlServer : IRemoteControlServer
             },
             metrics = new
             {
-                bitrateKbps = _lastMetrics.UploadBitrateKbps,
-                fps = _lastMetrics.Fps,
-                cpu = _lastMetrics.CpuPercent,
-                gpu = _lastMetrics.GpuPercent
+                bitrateKbps = metrics.UploadBitrateKbps,
+                fps = metrics.Fps,
+                cpu = metrics.CpuPercent,
+                gpu = metrics.GpuPercent,
+                updatedAtUtc = metrics.TimestampUtc == DateTime.UnixEpoch ? (DateTime?)null : metrics.TimestampUtc,
+                ageSeconds = metricsAgeSeconds,
+                stale = metricsStale,
+                captureHealthy = state == StreamState.Live ? !metricsStale && metrics.Fps > 0 : null as bool?
             },
             recording = new
             {

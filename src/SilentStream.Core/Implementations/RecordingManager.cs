@@ -1,5 +1,6 @@
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Models;
+using System.Text.Json;
 
 namespace SilentStream.Core.Implementations;
 
@@ -18,6 +19,8 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
     private readonly ILogService _log;
     private readonly Func<DateTime> _now;
     private readonly Func<string, long> _freeBytesProvider;
+    private readonly object _sessionGate = new();
+    private readonly List<RecordingSegment> _segments;
 
     private string? _currentFilePath;
     private DateTime _currentSessionStart;
@@ -38,6 +41,7 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
         _log = log;
         _now = now;
         _freeBytesProvider = freeBytesProvider;
+        _segments = LoadSegmentHistory();
     }
 
     public string CreateSessionFilePath(DateTime sessionStartLocal)
@@ -54,8 +58,22 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
             path = Path.Combine(config.Folder, $"{baseName}_part{part}.mp4");
         }
 
-        _currentFilePath = path;
-        _currentSessionStart = sessionStartLocal;
+        lock (_sessionGate)
+        {
+            for (var i = _segments.Count - 1; i >= 0; i--)
+            {
+                if (_segments[i].EndLocal is null)
+                {
+                    _segments[i] = _segments[i] with { EndLocal = sessionStartLocal };
+                    break;
+                }
+            }
+
+            _currentFilePath = path;
+            _currentSessionStart = sessionStartLocal;
+            _segments.Add(new RecordingSegment(path, sessionStartLocal, null));
+            PersistSegmentHistoryLocked();
+        }
         return path;
     }
 
@@ -63,8 +81,29 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
     /// Current recording session for the VOD cut (확장계획서 §4.1). StartLocal is the value
     /// passed to <see cref="CreateSessionFilePath"/> for the active file, i.e. file offset 0.
     /// </summary>
-    public RecordingSession? Current =>
-        _currentFilePath is null ? null : new RecordingSession(_currentFilePath, _currentSessionStart);
+    public RecordingSession? Current
+    {
+        get
+        {
+            lock (_sessionGate)
+            {
+                return _currentFilePath is null
+                    ? null
+                    : new RecordingSession(_currentFilePath, _currentSessionStart);
+            }
+        }
+    }
+
+    public IReadOnlyList<RecordingSegment> GetSegments(DateTime startLocal, DateTime endLocal)
+    {
+        lock (_sessionGate)
+        {
+            return _segments
+                .Where(s => s.StartLocal < endLocal && (s.EndLocal ?? DateTime.MaxValue) > startLocal)
+                .OrderBy(s => s.StartLocal)
+                .ToList();
+        }
+    }
 
     public RecordingStatus GetStatus()
     {
@@ -189,5 +228,47 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
     {
         var root = Path.GetPathRoot(Path.GetFullPath(folder));
         return new DriveInfo(root!).AvailableFreeSpace;
+    }
+
+    private string SegmentHistoryFile =>
+        Path.Combine(_configStore.Load().Recording.Folder, ".recording-segments.json");
+
+    private List<RecordingSegment> LoadSegmentHistory()
+    {
+        try
+        {
+            var path = SegmentHistoryFile;
+            if (!File.Exists(path))
+            {
+                return [];
+            }
+
+            return JsonSerializer.Deserialize<List<RecordingSegment>>(
+                       File.ReadAllText(path), new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                   ?? [];
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            _log.Warn($"Recording segment history could not be read: {ex.Message}");
+            return [];
+        }
+    }
+
+    private void PersistSegmentHistoryLocked()
+    {
+        var path = SegmentHistoryFile;
+        var temp = path + ".tmp";
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            var json = JsonSerializer.Serialize(_segments, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(temp, json);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"Recording segment history could not be saved: {ex.Message}");
+            try { File.Delete(temp); } catch (IOException) { }
+        }
     }
 }
