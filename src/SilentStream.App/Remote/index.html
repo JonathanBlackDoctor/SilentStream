@@ -73,6 +73,11 @@
     .mutebtn.on { color:#ffd0d2; background:#4f2830; border-color:#80414a; }
     input[type=range] { width:100%; margin-top:4px; accent-color:var(--accent); }
     .warn { color:#ffcecf; background:#4a242b; border:1px solid #85434c; border-radius:11px; padding:10px 12px; margin-bottom:10px; font-size:13px; }
+    .offline-notice { display:flex; align-items:flex-start; gap:10px; color:#ffd6d8; background:#4a242b; border:1px solid #98515a;
+                      border-radius:13px; padding:12px 14px; margin-bottom:12px; font-size:13px; }
+    .offline-notice b { display:block; margin-bottom:2px; color:#fff0f1; }
+    .offline-notice span { color:#dfb7bb; font-size:12px; }
+    .offline-notice.hidden { display:none; }
     .preview { width:100%; display:block; border:1px solid #2d4054; border-radius:12px; background:#0a1017; min-height:150px; object-fit:contain; }
 
     /* Command Deck: 현재 세션·핵심 수치·안전한 제어를 한 덩어리로 묶는다. */
@@ -206,6 +211,10 @@
   <!-- 단일 호실 대시보드 -->
   <section id="dash" class="hidden">
     <button id="backBtn" class="ghost hidden">← 전체 호실</button>
+    <div id="offlineNotice" class="offline-notice hidden" role="status" aria-live="polite">
+      <div aria-hidden="true">●</div>
+      <div><b>기기가 오프라인입니다</b><span>기기가 꺼져 있거나 네트워크에 연결되지 않았습니다. 기기를 켜면 자동으로 다시 연결합니다.</span></div>
+    </div>
     <div class="card command-card">
       <div class="command-main">
         <div class="command-top">
@@ -597,6 +606,32 @@
       el.style.background = "var(" + (bgVar || BADGE_COLORS[state] || "--muted") + ")";
       el.style.color = (!bgVar && (state==="Warmup" || state==="ConnectingYouTube" || state==="RecordingOnly")) ? "#000" : "#fff";
     }
+    function setRoomOnline(room, online){
+      const st = stateOf(room);
+      st.online = online;
+      if (view !== "dash" || cur !== room) return;
+
+      $("offlineNotice").classList.toggle("hidden", online);
+      if (online) return;
+
+      paintBadge($("badge"), null, "오프라인", "--red");
+      $("stateTitle").textContent = "기기가 오프라인입니다";
+      $("stateSub").textContent = "저장된 컨트롤 화면입니다. 기기가 켜지면 실시간 상태로 자동 전환됩니다.";
+      $("bitrate").textContent = "- kbps";
+      $("fps").textContent = "-";
+      $("cpu").textContent = "-";
+      $("gpu").textContent = "-";
+      $("diagClock").textContent = "PC 오프라인";
+      currentTimeline = null;
+      $("healthList").innerHTML = '<div class="muted">기기가 켜지면 진단 신호를 다시 확인합니다.</div>';
+      for (const id of ["startBtn", "stopBroadcastBtn", "stopBtn", "retryBtn", "snapshotBtn"]){
+        $(id).disabled = true;
+      }
+      const img = $("preview");
+      if (img.src && img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+      img.removeAttribute("src");
+      img.alt = "기기 오프라인";
+    }
     function renderGrid(){
       const filter = $("problemOnly").checked;
       let visible = 0;
@@ -731,8 +766,16 @@
       bb.disabled = false;
       bb.classList.toggle("hidden", rooms.length < 2);
       $("roomName").textContent = room.label || "연결된 강의실";
+      $("offlineNotice").classList.add("hidden");
+      paintBadge($("badge"), null, "확인 중", "--muted");
+      $("stateTitle").textContent = "상태를 확인하고 있습니다";
+      $("stateSub").textContent = "호실과 연결되면 실시간 정보가 표시됩니다.";
+      for (const id of ["startBtn", "stopBroadcastBtn", "stopBtn", "retryBtn", "snapshotBtn"]){
+        $(id).disabled = true;
+      }
       renderedSplitKey = ""; // 다른 호실의 승인 카드가 남지 않게 강제 재렌더
       $("splitArea").classList.add("hidden");
+      if (stateOf(room).online === false) setRoomOnline(room, false);
       startDash();
       refreshPushButton();
     }
@@ -770,7 +813,7 @@
       const room = cur;
       const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery(), loadInspection()]);
       if (view !== "dash" || cur !== room) return;
-      if (results.every(x => x.status === "rejected")) toast("호실에 연결할 수 없습니다.");
+      if (results.every(x => x.status === "rejected")) setRoomOnline(room, false);
       connectWs();
       refreshPreview();
     }
@@ -1004,6 +1047,7 @@
     });
 
     function renderStatus(s){
+      if (cur) setRoomOnline(cur, true);
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (s.recovery) renderRecovery(s.recovery);
       if (s.automation) renderAutomation(s.automation);
@@ -1052,6 +1096,10 @@
     // ---- 진단: 시간표 카운트다운 + 헬스 신호등 + 최근 경고/오류 ----
     function renderTimeline(){
       const box=$("diagTimeline"), t=currentTimeline;
+      if (cur && stateOf(cur).online === false){
+        box.innerHTML='<span class="label">시간표 상태</span><b>기기 오프라인</b>';
+        return;
+      }
       if(!t || t.state==="none" || !t.targetLocal){
         box.innerHTML='<span class="label">시간표 상태</span><b>오늘 남은 교시가 없습니다</b>';
         return;
@@ -1639,13 +1687,32 @@
         ws = new WebSocket(`${wsBase}/ws/status?token=${encodeURIComponent(room.token)}`);
         ws.binaryType="arraybuffer";
         ws.onmessage = e => {
-          if(typeof e.data!=="string") { paintPreview(new Blob([e.data], {type:"image/jpeg"})); return; }
-          const m=JSON.parse(e.data); if(m.type==="levels") renderLevels(m); else renderStatus(m);
+          if(typeof e.data!=="string") { setRoomOnline(room, true); paintPreview(new Blob([e.data], {type:"image/jpeg"})); return; }
+          const m=JSON.parse(e.data); if(m.type==="levels") { setRoomOnline(room, true); renderLevels(m); } else renderStatus(m);
         };
-        ws.onclose = () => { ws=null; setTimeout(()=>{ if(view==="dash" && cur===room) connectWs(); }, 4000); };
+        ws.onclose = () => {
+          ws=null;
+          if(view==="dash" && cur===room){
+            setRoomOnline(room, false);
+            setTimeout(()=>{ if(view==="dash" && cur===room) connectWs(); }, 4000);
+          }
+        };
       } catch(e){ /* fall back to polling */ }
     }
-    async function pollOnce(){ const room=cur; if(!room) return; const r=await api(room,"/api/status"); const d=await r.json(); if(cur!==room) return; renderStatus(d); }
+    async function pollOnce(){
+      const room=cur;
+      if(!room) return;
+      try {
+        const r=await api(room,"/api/status");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const d=await r.json();
+        if(cur!==room) return;
+        renderStatus(d);
+      } catch(e) {
+        if(cur===room && !stateOf(room).authFailed) setRoomOnline(room, false);
+        throw e;
+      }
+    }
 
     // ---- 주기 갱신 (화면 상태로 게이트: 중복 인터벌 없이 한 번만 등록) ----
     setInterval(()=>{ if(view==="dash" && cur && (!ws || ws.readyState!==1)) pollOnce().catch(()=>{}); }, 5000);
@@ -1664,12 +1731,13 @@
     // (그 경우 텔레그램 알림이 계속 담당한다.) 브라우저 구독은 서비스워커당 1개이므로,
     // 공유 VAPID 키가 같은 호실에 그 하나의 구독을 모두 등록한다. 키가 다른 호실은 기존 구독을
     // 폐기하지 않고, 결과에 별도로 표시해 전체 알림으로 오인하지 않게 한다.
-    const pushSupported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+    const serviceWorkerSupported = "serviceWorker" in navigator;
+    const pushSupported = serviceWorkerSupported && "PushManager" in window && "Notification" in window;
     let swReg = null;
 
     async function registerServiceWorker(){
-      if (!pushSupported || demoMode) return;
-      try { swReg = await navigator.serviceWorker.register("/service-worker.js"); }
+      if (!serviceWorkerSupported || demoMode) return;
+      try { swReg = await navigator.serviceWorker.register("/service-worker.js", { updateViaCache:"none" }); }
       catch(e){ swReg = null; }
     }
 
