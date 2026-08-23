@@ -48,7 +48,7 @@ public sealed class SessionAgentHost
     private static SecurityIdentifier CoordinatorServiceSid()
     {
         try { return (SecurityIdentifier)new NTAccount("NT SERVICE", "SilentStreamInspectionCoordinator").Translate(typeof(SecurityIdentifier)); }
-        catch (IdentityNotMappedException) { return new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null); }
+        catch (IdentityNotMappedException ex) { throw new InvalidOperationException("Coordinator service SID is unavailable; refusing to create a broader session pipe ACL.", ex); }
     }
 
     private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken token)
@@ -149,11 +149,16 @@ public sealed class SessionAgentHost
         if (!Path.GetFileName(installer).EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Installer must be an executable file.");
         var expected = RequiredString(payload, "sha256");
-        var approvedRoot = Path.GetFullPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "MediaCaptureHelper", "Inspection", "installer-cache")) + Path.DirectorySeparatorChar;
+        var installRoot = Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))?.FullName
+            ?? throw new InvalidDataException("Inspection install root is unavailable.");
+        var productRoot = Directory.GetParent(installRoot)?.FullName
+            ?? throw new InvalidDataException("Inspection product root is unavailable.");
+        var approvedRoot = Path.GetFullPath(Path.Combine(productRoot, "InspectionPolicy", "installer-cache")) + Path.DirectorySeparatorChar;
         if (!installer.StartsWith(approvedRoot, StringComparison.OrdinalIgnoreCase))
             throw new UnauthorizedAccessException("Installer is outside the inspection installer cache.");
-        var actual = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(installer).ConfigureAwait(false))).ToLowerInvariant();
+        await using var installerStream = new FileStream(installer, FileMode.Open, FileAccess.Read, FileShare.Read,
+            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var actual = Convert.ToHexString(await SHA256.HashDataAsync(installerStream).ConfigureAwait(false)).ToLowerInvariant();
         if (expected.Length != actual.Length || !CryptographicOperations.FixedTimeEquals(Convert.FromHexString(actual), Convert.FromHexString(expected)))
             throw new CryptographicException("Installer hash changed after broker approval.");
         await RunHiddenAsync(installer, TimeSpan.FromMinutes(5), "--silent").ConfigureAwait(false);

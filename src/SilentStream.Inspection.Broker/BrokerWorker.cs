@@ -43,7 +43,7 @@ public sealed class BrokerWorker : BackgroundService
     private static SecurityIdentifier CoordinatorServiceSid()
     {
         try { return (SecurityIdentifier)new NTAccount("NT SERVICE", "SilentStreamInspectionCoordinator").Translate(typeof(SecurityIdentifier)); }
-        catch (IdentityNotMappedException) { return new SecurityIdentifier(WellKnownSidType.LocalServiceSid, null); }
+        catch (IdentityNotMappedException ex) { throw new InvalidOperationException("Coordinator service SID is unavailable; refusing to create a broader broker pipe ACL.", ex); }
     }
 
     private async Task HandleClientAsync(NamedPipeServerStream pipe, CancellationToken token)
@@ -134,12 +134,11 @@ public sealed class BrokerWorker : BackgroundService
         if (!package.StartsWith(incoming, StringComparison.OrdinalIgnoreCase) || !File.Exists(package))
             throw new UnauthorizedAccessException("Agent update package is outside the incoming update directory.");
         var verifier = new InspectionAgentUpdateVerifier(_configuration.PublicKeys);
-        var verified = verifier.VerifyAndExtract(package, Path.Combine(_configuration.Root, "broker-verified-agent-updates"));
+        var verified = verifier.VerifyAndExtract(package, _configuration.TrustedStagingRoot);
         if (Version.Parse(verified.Manifest.Version) <= Version.Parse(InspectionProtocol.AgentVersion))
             throw new InvalidDataException("Agent update version must be newer than the installed version.");
-        var runnerDirectory = Path.Combine(_configuration.Root, "update-runner");
-        Directory.CreateDirectory(runnerDirectory);
-        var runner = Path.Combine(runnerDirectory, "SilentStreamInspectionUpdater.exe");
+        Directory.CreateDirectory(_configuration.UpdateRunnerRoot);
+        var runner = Path.Combine(_configuration.UpdateRunnerRoot, "SilentStreamInspectionUpdater.exe");
         File.Copy(Environment.ProcessPath ?? throw new InvalidOperationException("Broker executable path is unavailable."), runner, true);
         var start = DetachedHidden(runner, "--apply-agent-update", verified.ExtractedPath, _configuration.InstallRoot,
             _configuration.Root, verified.Manifest.Version, package);
@@ -186,17 +185,37 @@ public sealed class BrokerWorker : BackgroundService
     private async Task<string> VerifyCachedInstallerAsync(CancellationToken token)
     {
         RequireFile(_configuration.CachedInstallerPath, "Cached installer");
-        var actual = Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(_configuration.CachedInstallerPath, token))).ToLowerInvariant();
+        await using var installer = new FileStream(_configuration.CachedInstallerPath, FileMode.Open, FileAccess.Read, FileShare.Read,
+            128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var actual = Convert.ToHexString(await SHA256.HashDataAsync(installer, token)).ToLowerInvariant();
         if (string.IsNullOrWhiteSpace(_configuration.CachedInstallerSha256) || _configuration.CachedInstallerSha256.Length != actual.Length
             || !CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(actual), Encoding.ASCII.GetBytes(_configuration.CachedInstallerSha256)))
             throw new CryptographicException("Cached installer SHA-256 does not match the approved value.");
         return actual;
     }
 
-    private static int KillAllowed(string name)
+    private int KillAllowed(string name)
     {
         if (!AllowedProcesses.Contains(name)) throw new InvalidDataException("Process is not allowed.");
-        var count = 0; foreach (var process in Process.GetProcessesByName(name)) { try { process.Kill(true); count++; } catch { } finally { process.Dispose(); } }
+        var expectedPath = name.ToLowerInvariant() switch
+        {
+            "mediacapturehelper" => Path.GetFullPath(_configuration.AppExecutablePath),
+            "ffmpeg" => Path.GetFullPath(Path.Combine(Path.GetDirectoryName(_configuration.AppExecutablePath) ?? string.Empty, "ffmpeg", "ffmpeg.exe")),
+            "cloudflared" => Path.GetFullPath(Path.Combine(_configuration.InstallRoot, "cloudflared", "cloudflared.exe")),
+            _ => throw new InvalidDataException("Process is not allowed.")
+        };
+        var count = 0;
+        foreach (var process in Process.GetProcessesByName(name))
+        {
+            try
+            {
+                var actualPath = process.MainModule?.FileName;
+                if (actualPath is null || !Path.GetFullPath(actualPath).Equals(expectedPath, StringComparison.OrdinalIgnoreCase)) continue;
+                process.Kill(true); count++;
+            }
+            catch { }
+            finally { process.Dispose(); }
+        }
         return count;
     }
 

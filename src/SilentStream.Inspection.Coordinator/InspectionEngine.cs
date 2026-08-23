@@ -69,10 +69,17 @@ public sealed class InspectionEngine : BackgroundService
             if (run is null) return;
             if (run.CancelRequested)
             {
-                _store.UpdateRun(runId, InspectionRunStatus.Cancelled, "Cancelled by operator.");
-                return;
+                var cancellationStates = _store.GetSteps(runId);
+                foreach (var pending in bundle.Manifest.Plan.Steps.Where(candidate => candidate.Type != InspectionStepType.Cleanup
+                    && !InspectionStore.IsTerminal(cancellationStates[candidate.Id].Status)))
+                {
+                    var pendingState = cancellationStates[pending.Id];
+                    _store.UpdateStep(runId, pending.Id, InspectionRunStatus.Cancelled, pendingState.Attempt,
+                        "Cancelled by operator before cleanup.");
+                }
+                _store.UpdateRun(runId, InspectionRunStatus.Running, "Cancellation requested; running signed cleanup steps.");
             }
-            if (run.PauseRequested)
+            if (run.PauseRequested && !run.CancelRequested)
             {
                 _store.UpdateRun(runId, InspectionRunStatus.Paused, "Paused by operator.");
                 await Task.Delay(1000, serviceToken).ConfigureAwait(false);
@@ -113,6 +120,16 @@ public sealed class InspectionEngine : BackgroundService
         }
 
         var finalStates = _store.GetSteps(runId);
+        var finalRun = _store.GetStoredRun(runId);
+        if (finalRun?.CancelRequested == true)
+        {
+            var cleanupFailed = bundle.Manifest.Plan.Steps.Any(step => step.Type == InspectionStepType.Cleanup
+                && finalStates[step.Id].Status != InspectionRunStatus.Pass);
+            _store.UpdateRun(runId, InspectionRunStatus.Cancelled, cleanupFailed
+                ? "Cancelled; one or more signed cleanup steps did not pass."
+                : "Cancelled after signed cleanup completed.");
+            return;
+        }
         var requiredFailure = bundle.Manifest.Plan.Steps.Any(step => step.Required && finalStates[step.Id].Status != InspectionRunStatus.Pass);
         _store.UpdateRun(runId, requiredFailure ? InspectionRunStatus.Fail : InspectionRunStatus.Pass,
             requiredFailure ? "One or more required steps did not pass." : "All required steps passed.");

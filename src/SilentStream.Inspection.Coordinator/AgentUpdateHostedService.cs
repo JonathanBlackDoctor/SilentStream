@@ -72,7 +72,8 @@ public sealed class AgentUpdateHostedService : BackgroundService
         if (!Directory.Exists(source)) return;
         foreach (var path in Directory.EnumerateFiles(source, "*.zip", SearchOption.TopDirectoryOnly))
         {
-            var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+            using var stream = File.OpenRead(path);
+            var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
             var target = Path.Combine(_options.IncomingAgentUpdatesPath, $"app-{hash}.zip");
             if (!File.Exists(target) && !Directory.EnumerateFiles(_options.IncomingAgentUpdatesPath, $"app-{hash}.zip*", SearchOption.TopDirectoryOnly).Any())
                 File.Copy(path, target, false);

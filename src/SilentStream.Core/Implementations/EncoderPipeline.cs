@@ -104,7 +104,7 @@ public sealed class EncoderPipeline : IEncoderPipeline
         var args = FfmpegArgumentsBuilder.Build(spec);
         _log.Info($"FFmpeg 기동: {encoder.ToFfmpegName()}, {options.Width}x{options.Height}@{options.Fps}fps, " +
                   $"{options.VideoBitrateKbps}kbps");
-        _log.Debug($"ffmpeg {args}");
+        _log.Debug($"ffmpeg {FfmpegArgumentsBuilder.RedactSensitiveArguments(args, spec.RtmpUrl)}");
 
         _sessionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var sessionToken = _sessionCts.Token;

@@ -52,9 +52,10 @@ public sealed class CoordinatorOptionsStore
     public string UpdateResultsPath => Path.Combine(Root, "update-results");
     public CoordinatorOptions Current { get; private set; }
 
-    public CoordinatorOptionsStore()
+    public CoordinatorOptionsStore(string? rootOverride = null)
     {
-        Root = Environment.GetEnvironmentVariable("SILENTSTREAM_INSPECTION_ROOT")
+        Root = rootOverride
+            ?? Environment.GetEnvironmentVariable("SILENTSTREAM_INSPECTION_ROOT")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "MediaCaptureHelper", "Inspection");
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(BundlesPath);

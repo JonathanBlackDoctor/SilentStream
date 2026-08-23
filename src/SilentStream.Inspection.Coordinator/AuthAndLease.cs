@@ -8,8 +8,11 @@ namespace SilentStream.Inspection.Coordinator;
 public sealed class InspectionAuthenticator
 {
     private readonly CoordinatorOptionsStore _options;
+    private readonly object _pairingGate = new();
     private readonly ConcurrentDictionary<string, (int Count, DateTimeOffset BlockedUntil)> _pairingAttempts = new();
     private readonly ConcurrentDictionary<string, DateTimeOffset> _lastUsageWrite = new();
+    private int _globalPairingFailures;
+    private DateTimeOffset _globalPairingBlockedUntil;
 
     public InspectionAuthenticator(CoordinatorOptionsStore options) => _options = options;
 
@@ -35,23 +38,35 @@ public sealed class InspectionAuthenticator
 
     public PairResponse? Pair(string remoteAddress, PairRequest request)
     {
-        var now = DateTimeOffset.UtcNow;
-        var state = _pairingAttempts.GetOrAdd(remoteAddress, _ => (0, DateTimeOffset.MinValue));
-        if (state.BlockedUntil > now) return null;
-        if (!CryptographicEquals(request.Pin, _options.Current.PairingPin))
+        lock (_pairingGate)
         {
-            var count = state.Count + 1;
-            _pairingAttempts[remoteAddress] = count >= 5 ? (0, now.AddMinutes(10)) : (count, DateTimeOffset.MinValue);
-            return null;
-        }
+            var now = DateTimeOffset.UtcNow;
+            if (_globalPairingBlockedUntil > now) return null;
+            var state = _pairingAttempts.GetOrAdd(remoteAddress, _ => (0, DateTimeOffset.MinValue));
+            if (state.BlockedUntil > now) return null;
+            if (!CryptographicEquals(request.Pin, _options.Current.PairingPin))
+            {
+                var count = state.Count + 1;
+                _pairingAttempts[remoteAddress] = count >= 5 ? (0, now.AddMinutes(10)) : (count, DateTimeOffset.MinValue);
+                _globalPairingFailures++;
+                if (_globalPairingFailures >= 20)
+                {
+                    _globalPairingFailures = 0;
+                    _globalPairingBlockedUntil = now.AddMinutes(10);
+                }
+                return null;
+            }
 
-        _pairingAttempts.TryRemove(remoteAddress, out _);
-        var token = InspectionToken.Create();
-        _options.Update(options => options.Tokens.Add(new InspectionTokenEntry(
-            InspectionToken.Hash(token), InspectionRole.Operator,
-            string.IsNullOrWhiteSpace(request.DeviceName) ? "paired-device" : request.DeviceName.Trim()[..Math.Min(80, request.DeviceName.Trim().Length)],
-            now)));
-        return new PairResponse(token, InspectionRole.Operator);
+            _pairingAttempts.TryRemove(remoteAddress, out _);
+            _globalPairingFailures = 0;
+            _globalPairingBlockedUntil = DateTimeOffset.MinValue;
+            var token = InspectionToken.Create();
+            _options.Update(options => options.Tokens.Add(new InspectionTokenEntry(
+                InspectionToken.Hash(token), InspectionRole.Operator,
+                string.IsNullOrWhiteSpace(request.DeviceName) ? "paired-device" : request.DeviceName.Trim()[..Math.Min(80, request.DeviceName.Trim().Length)],
+                now)));
+            return new PairResponse(token, InspectionRole.Operator);
+        }
     }
 
     public static bool HasRole(HttpContext context, InspectionRole minimum)

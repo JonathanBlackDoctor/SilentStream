@@ -60,6 +60,11 @@ public sealed record EncoderSessionSpec(
 /// </summary>
 public static class FfmpegArgumentsBuilder
 {
+    public static string RedactSensitiveArguments(string arguments, string? rtmpUrl) =>
+        string.IsNullOrWhiteSpace(rtmpUrl)
+            ? arguments
+            : arguments.Replace(rtmpUrl, "[RTMP_URL_REDACTED]", StringComparison.Ordinal);
+
     public static string Build(EncoderSessionSpec spec) =>
         Build(spec, Environment.ProcessorCount);
 

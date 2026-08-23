@@ -4,9 +4,19 @@ using Microsoft.AspNetCore.Http.Features;
 using SilentStream.Inspection;
 using SilentStream.Inspection.Coordinator;
 
-var optionsStore = new CoordinatorOptionsStore();
-var builder = WebApplication.CreateBuilder(args);
-builder.Host.UseWindowsService(service => service.ServiceName = "SilentStream Inspection Coordinator");
+var consoleMode = args.Any(value => value.Equals("--console", StringComparison.Ordinal));
+var rootArgument = args.FirstOrDefault(value => value.StartsWith("--inspection-root=", StringComparison.Ordinal));
+var rootOverride = rootArgument is null ? null : rootArgument["--inspection-root=".Length..];
+var hostArgs = args.Where(value => !value.Equals("--console", StringComparison.Ordinal)
+    && !value.StartsWith("--inspection-root=", StringComparison.Ordinal)).ToArray();
+var optionsStore = new CoordinatorOptionsStore(string.IsNullOrWhiteSpace(rootOverride) ? null : rootOverride);
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = hostArgs,
+    WebRootPath = Path.Combine(AppContext.BaseDirectory, "wwwroot")
+});
+if (!consoleMode)
+    builder.Host.UseWindowsService(service => service.ServiceName = "SilentStream Inspection Coordinator");
 builder.WebHost.UseUrls($"http://{optionsStore.Current.BindAddress}:{optionsStore.Current.Port}");
 builder.Services.Configure<FormOptions>(options => options.MultipartBodyLengthLimit = 270L * 1024 * 1024);
 builder.Services.AddSingleton(optionsStore);
@@ -24,6 +34,18 @@ builder.Services.AddHostedService<CloudflaredHostedService>();
 
 var app = builder.Build();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(10) });
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws: wss:";
+    context.Response.Headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=(), usb=()";
+    context.Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin";
+    context.Response.Headers["Cross-Origin-Resource-Policy"] = "same-origin";
+    if (context.Request.Path.StartsWithSegments("/inspect")) context.Response.Headers.CacheControl = "no-store";
+    await next();
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
@@ -31,7 +53,7 @@ app.Use(async (context, next) =>
 {
     var origin = context.Request.Headers.Origin.ToString();
     if (!string.IsNullOrWhiteSpace(origin) && (!Uri.TryCreate(origin, UriKind.Absolute, out var originUri)
-        || !string.Equals(originUri.Host, context.Request.Host.Host, StringComparison.OrdinalIgnoreCase)))
+        || !string.Equals(originUri.Authority, context.Request.Host.Value, StringComparison.OrdinalIgnoreCase)))
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
@@ -55,9 +77,11 @@ app.MapGet("/inspect/api/v1/health", (CoordinatorOptionsStore options) => Result
 
 app.MapPost("/inspect/api/v1/pair", (HttpContext context, PairRequest request, InspectionAuthenticator auth, InspectionStore store) =>
 {
-    var forwarded = context.Request.Headers["CF-Connecting-IP"].FirstOrDefault();
+    var connectionAddress = context.Connection.RemoteIpAddress;
+    var forwarded = System.Net.IPAddress.IsLoopback(connectionAddress ?? System.Net.IPAddress.None)
+        ? context.Request.Headers["CF-Connecting-IP"].FirstOrDefault() : null;
     var remote = System.Net.IPAddress.TryParse(forwarded, out var forwardedAddress)
-        ? forwardedAddress.ToString() : context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        ? forwardedAddress.ToString() : connectionAddress?.ToString() ?? "unknown";
     var result = auth.Pair(remote, request);
     store.Audit("pairing", "pair", result is null ? "denied" : "ok", remote);
     return result is null ? Results.Unauthorized() : Results.Json(result, InspectionProtocol.Json);
@@ -72,12 +96,12 @@ app.MapGet("/inspect/api/v1/me", (HttpContext context, CoordinatorOptionsStore o
 
 app.MapGet("/inspect/api/v1/tokens", (HttpContext context, CoordinatorOptionsStore options) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     return Results.Json(options.Current.Tokens.Select(t => new { tokenId=t.Hash[..Math.Min(12,t.Hash.Length)],role=t.Role.ToString().ToLowerInvariant(),t.Label,t.CreatedAtUtc,t.ExpiresAtUtc,t.RevokedAtUtc,t.LastUsedAtUtc }), InspectionProtocol.Json);
 });
 app.MapDelete("/inspect/api/v1/tokens/{tokenId}", (HttpContext context, string tokenId, CoordinatorOptionsStore options, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     if (tokenId.Length < 12 || !options.RevokeToken(tokenId)) return Results.NotFound();
     store.Audit(Owner(context), "token.revoke", "ok", tokenId[..12]); return Results.NoContent();
 });
@@ -85,7 +109,7 @@ app.MapDelete("/inspect/api/v1/tokens/{tokenId}", (HttpContext context, string t
 app.MapGet("/inspect/api/v1/bundles", (InspectionStore store) => Results.Json(store.ListBundles(), InspectionProtocol.Json));
 app.MapPost("/inspect/api/v1/bundles", async (HttpContext context, CoordinatorOptionsStore options, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var form = await context.Request.ReadFormAsync(context.RequestAborted);
     var upload = form.Files.GetFile("bundle");
     if (upload is null || upload.Length is <= 0 or > 268_435_456) return Results.BadRequest(new { error = "A bundle ZIP up to 256 MiB is required." });
@@ -96,8 +120,7 @@ app.MapPost("/inspect/api/v1/bundles", async (HttpContext context, CoordinatorOp
         var verifier = new InspectionBundleVerifier(options.Current.PublicKeys);
         var verified = verifier.VerifyAndExtract(temp, options.BundlesPath);
         var existing = store.GetBundle(verified.Manifest.BundleId);
-        if (existing is not null && Version.Parse(verified.Manifest.Version) < Version.Parse(existing.Manifest.Version))
-            throw new InvalidDataException($"Bundle downgrade is not allowed ({existing.Manifest.Version} -> {verified.Manifest.Version}).");
+        InspectionApiPolicy.EnsureBundleReplacementAllowed(existing, verified);
         store.SaveBundle(verified); store.Audit(Owner(context), "bundle.upload", "ok", verified.Manifest.BundleId);
         return Results.Json(new { verified.Manifest.BundleId, verified.Manifest.Version, verified.Manifest.Plan.Name }, InspectionProtocol.Json);
     }
@@ -111,7 +134,7 @@ app.MapPost("/inspect/api/v1/bundles", async (HttpContext context, CoordinatorOp
 
 app.MapPost("/inspect/api/v1/agent-updates", async (HttpContext context, CoordinatorOptionsStore options, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var form = await context.Request.ReadFormAsync(context.RequestAborted);
     var upload = form.Files.GetFile("update");
     if (upload is null || upload.Length is <= 0 or > 268_435_456) return Results.BadRequest(new { error = "A signed agent-update ZIP up to 256 MiB is required." });
@@ -137,14 +160,14 @@ app.MapPost("/inspect/api/v1/agent-updates", async (HttpContext context, Coordin
 
 app.MapPost("/inspect/api/v1/destructive-confirmations", (HttpContext context, DestructiveConfirmationRequest request, ConfirmationManager confirmations, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var response = confirmations.Create(Owner(context), request);
     store.Audit(Owner(context), "destructive.confirm", "ok", $"{request.Action}:{request.RunId}");
     return Results.Json(response, InspectionProtocol.Json);
 });
 app.MapPost("/inspect/api/v1/destructive/confirm", (HttpContext context, DestructiveConfirmationRequest request, ConfirmationManager confirmations, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var response = confirmations.Create(Owner(context), request);
     store.Audit(Owner(context), "destructive.confirm", "ok", $"{request.Action}:{request.RunId}");
     return Results.Json(response, InspectionProtocol.Json);
@@ -152,7 +175,7 @@ app.MapPost("/inspect/api/v1/destructive/confirm", (HttpContext context, Destruc
 
 app.MapPost("/inspect/api/v1/runs", (HttpContext context, RunRequest request, InspectionStore store, ConfirmationManager confirmations) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var bundle = store.GetBundle(request.BundleId);
     if (bundle is null) return Results.NotFound();
     var destructive = bundle.Manifest.Plan.Steps.Any(s => s.Type is InspectionStepType.Privileged or InspectionStepType.Fault ||
@@ -179,18 +202,22 @@ app.MapGet("/inspect/api/v1/runs/{runId}/report", (string runId, InspectionStore
     store.GetRunSnapshot(runId) is { } snapshot ? Results.Json(new { run=snapshot,events=store.GetEvents(runId,0,10000),artifacts=store.ListArtifacts(runId),auditChainValid=store.VerifyAuditChain() }, InspectionProtocol.Json) : Results.NotFound());
 app.MapPost("/inspect/api/v1/runs/{runId}/acks/{channel}", (HttpContext context, string runId, string channel, InspectionStore store) =>
 {
-    if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.Forbid();
-    if(channel.Length is < 1 or > 40 || channel.Any(c=>!char.IsLetterOrDigit(c)&&c is not '-' and not '_'))return Results.BadRequest();
-    if(store.GetStoredRun(runId) is null)return Results.NotFound();store.SaveAck(runId,channel,Owner(context));store.Audit(Owner(context),"external.ack","ok",$"{runId}:{channel}");return Results.Accepted();
+    if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if(!InspectionApiPolicy.IsSafeExternalAcknowledgementChannel(channel))return Results.BadRequest(new { error = "The acknowledgement channel is reserved or invalid." });
+    var run=store.GetStoredRun(runId);if(run is null)return Results.NotFound();
+    var bundle=store.GetBundle(run.BundleId);if(bundle is null)return Results.NotFound();
+    if(!InspectionApiPolicy.IsMatchingRunningCheckpoint(bundle,store.GetSteps(runId),channel))return Results.Conflict(new { error = "The matching checkpoint is not currently waiting for acknowledgement." });
+    store.SaveAck(runId,channel,Owner(context));store.Audit(Owner(context),"external.ack","ok",$"{runId}:{channel}");return Results.Accepted();
 });
 app.MapPost("/inspect/api/v1/runs/{runId}/destructive/{stepId}/approve", (HttpContext context, string runId, string stepId, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Admin)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var run = store.GetStoredRun(runId);
     if (run is null) return Results.NotFound();
     var bundle = store.GetBundle(run.BundleId);
     var step = bundle?.Manifest.Plan.Steps.SingleOrDefault(candidate => candidate.Id.Equals(stepId, StringComparison.Ordinal));
-    if (step is null || step.Input.ValueKind != JsonValueKind.Object || !step.Input.TryGetProperty("action", out var actionValue)) return Results.BadRequest();
+    if (step is null || step.Type is not (InspectionStepType.Privileged or InspectionStepType.Fault or InspectionStepType.Cleanup)
+        || step.Input.ValueKind != JsonValueKind.Object || !step.Input.TryGetProperty("action", out var actionValue)) return Results.BadRequest();
     var action = actionValue.GetString();
     if (action is not ("uninstall-app" or "nic-bounce" or "reboot")) return Results.BadRequest();
     if (!store.GetSteps(runId).TryGetValue(stepId, out var state) || state.Status != InspectionRunStatus.Running) return Results.Conflict(new { error = "The destructive step is not currently waiting for approval." });
@@ -199,9 +226,9 @@ app.MapPost("/inspect/api/v1/runs/{runId}/destructive/{stepId}/approve", (HttpCo
     store.Audit(Owner(context), "destructive.execute", "approved", $"{runId}:{stepId}:{action}");
     return Results.Accepted();
 });
-app.MapPost("/inspect/api/v1/runs/{runId}/pause", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.Forbid();store.SetRunRequest(runId, pause: true);store.Audit(Owner(context),"run.pause","ok",runId);return Results.Accepted(); });
-app.MapPost("/inspect/api/v1/runs/{runId}/resume", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.Forbid();store.SetRunRequest(runId, pause: false);store.Audit(Owner(context),"run.resume","ok",runId);return Results.Accepted(); });
-app.MapPost("/inspect/api/v1/runs/{runId}/cancel", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.Forbid();store.SetRunRequest(runId, cancel: true);store.Audit(Owner(context),"run.cancel","ok",runId);return Results.Accepted(); });
+app.MapPost("/inspect/api/v1/runs/{runId}/pause", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.StatusCode(StatusCodes.Status403Forbidden);store.SetRunRequest(runId, pause: true);store.Audit(Owner(context),"run.pause","ok",runId);return Results.Accepted(); });
+app.MapPost("/inspect/api/v1/runs/{runId}/resume", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.StatusCode(StatusCodes.Status403Forbidden);store.SetRunRequest(runId, pause: false);store.Audit(Owner(context),"run.resume","ok",runId);return Results.Accepted(); });
+app.MapPost("/inspect/api/v1/runs/{runId}/cancel", (HttpContext context, string runId, InspectionStore store) => { if(!InspectionAuthenticator.HasRole(context,InspectionRole.Operator))return Results.StatusCode(StatusCodes.Status403Forbidden);store.SetRunRequest(runId, cancel: true);store.Audit(Owner(context),"run.cancel","ok",runId);return Results.Accepted(); });
 
 app.MapGet("/inspect/api/v1/runs/{runId}/artifacts/{artifactId}", (string runId, string artifactId, InspectionStore store, CoordinatorOptionsStore options) =>
 {
@@ -224,7 +251,7 @@ app.MapGet("/inspect/api/v1/desktop/monitors", async (SessionAgentClient session
 
 app.MapPost("/inspect/api/v1/control/lease", async (HttpContext context, ControlLeaseRequest request, ControlLeaseManager leases, SessionAgentClient session, InspectionStore store) =>
 {
-    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator)) return Results.Forbid();
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator)) return Results.StatusCode(StatusCodes.Status403Forbidden);
     var lease = leases.Acquire(Owner(context));
     if (lease is null) return Results.Conflict(new { error = "Another controller currently owns this room." });
     try { await session.SendAsync("reset-control", null, context.RequestAborted); } catch { }

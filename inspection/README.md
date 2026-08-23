@@ -23,6 +23,8 @@ SilentStreamInspectionCli agent-update sign .\새버전-bin 0.4.1 school-ops-202
 
 설치기는 기존 연결 토큰을 `operator`로 옮기고, 내부 앱 점검 전용 토큰을 별도로 생성합니다. 원문 토큰은 설정 파일에 저장하지 않고 SHA-256 해시 또는 LocalMachine DPAPI 암호문으로만 보관합니다. Windows 자동 로그인은 만들거나 변경하지 않습니다. 로그인 세션이 없을 때 포털·점검 기록은 유지되지만 화면/입력 단계는 성공 처리되지 않습니다.
 
+변경 가능한 실행 기록·번들·감사 DB는 `%ProgramData%\MediaCaptureHelper\Inspection`에 두고 Coordinator 서비스 SID에만 수정 권한을 줍니다. Broker가 신뢰하는 공개키, 앱 경로, 설치 파일 해시와 재설치 캐시는 `%ProgramFiles%\MediaCaptureHelper\InspectionPolicy`에 분리하며 SYSTEM과 Administrators만 수정할 수 있습니다.
+
 실제 제거·재설치 점검을 하려면 현재 배포용 `MediaCaptureHelper-Setup-*.exe`를 `원격점검_설치.exe`와 같은 폴더에 둔 상태에서 최초 설치합니다. 설치기는 이 파일을 서비스 전용 캐시에 복사하고 SHA-256을 고정합니다. 제거 직전 Broker가 캐시를 다시 검증하며, 실제 제거와 설치는 로그인 사용자 세션에서 숨김으로 실행됩니다. 검증된 캐시가 없거나 해시가 달라지면 제거부터 거부합니다.
 정식 배포 ZIP에는 같은 소스에서 만든 v0.4.0 Setup이 포함됩니다. 별도로 조립할 때는 `Build-AppSetup.ps1`을 먼저 실행한 뒤 `Build-InspectionPackage.ps1`을 실행합니다.
 
@@ -39,3 +41,13 @@ SilentStreamInspectionCli bundle sign .\full-v0.4.0 silentstream-full 0.4.0 0.4.
 ## 안전 중단
 
 실기기에서 `Ctrl+Alt+Shift+F12`를 누르면 원격 입력이 즉시 해제됩니다. NIC 차단은 최대 30초이며 별도 복구 감시 프로세스가 먼저 시작됩니다. 제거/재설치는 검증된 캐시 설치 파일과 관리자 5분 승인 없이는 실행되지 않습니다.
+
+## 원격기기 없는 로컬 검증
+
+관리자 권한, 서비스 설치, NIC 변경 없이 Coordinator를 임시 localhost 포트와 격리된 임시 데이터 폴더로 실행해 인증 경계를 확인할 수 있습니다.
+
+```powershell
+.\inspection\local\Invoke-LocalhostSmoke.ps1
+```
+
+결과 JSON은 `inspection\reports`에 생성되고 임시 Coordinator 프로세스와 데이터 폴더는 실행 후 제거됩니다. 이 스모크는 실제 Windows 서비스 SID, SYSTEM Broker, 로그인 세션 화면 에이전트, Cloudflare 외부 경로, 재부팅을 대신하지 않습니다.

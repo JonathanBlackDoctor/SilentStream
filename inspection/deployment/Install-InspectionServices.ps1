@@ -26,6 +26,12 @@ function New-RandomToken {
   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   return [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
 }
+function New-CryptographicPin {
+  $bytes = New-Object byte[] 4
+  [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  $value = [BitConverter]::ToUInt32($bytes,0) % 1000000
+  return $value.ToString('D6')
+}
 function Get-TokenHash([string]$Value) {
   $sha = [Security.Cryptography.SHA256]::Create()
   try { return ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Value)))).Replace('-','').ToLowerInvariant() }
@@ -72,7 +78,7 @@ if ($appConfig -and $appConfig.remote) {
 $adminToken = ''
 $appApiToken = New-RandomToken
 $brokerSecret = New-RandomToken
-$pairingPin = (Get-Random -Minimum 0 -Maximum 1000000).ToString('D6')
+$pairingPin = New-CryptographicPin
 $tokens = @()
 if ($appConfig -and $appConfig.remote -and $appConfig.remote.deviceTokens) {
   foreach ($hash in $appConfig.remote.deviceTokens) {
@@ -105,8 +111,15 @@ if ($appConfig) {
 $programFilesRoot = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
 $resolvedInstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if (-not $resolvedInstallRoot.StartsWith($programFilesRoot,[StringComparison]::OrdinalIgnoreCase)) { throw '설치 경로는 Program Files 내부여야 합니다.' }
+$productRoot = Split-Path $resolvedInstallRoot -Parent
+$policyRoot = Join-Path $productRoot 'InspectionPolicy'
+$stagingRoot = Join-Path $productRoot 'InspectionAgentStaging'
+$updaterRoot = Join-Path $productRoot 'InspectionUpdater'
 if (Test-Path -LiteralPath $resolvedInstallRoot) { Remove-Item -LiteralPath $resolvedInstallRoot -Recurse -Force }
+foreach ($old in @($policyRoot,$stagingRoot,$updaterRoot)) { if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force } }
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $policyRoot -Force | Out-Null
+& icacls.exe $policyRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'coordinator') -Destination $InstallRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'broker') -Destination $InstallRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'session') -Destination $InstallRoot -Recurse -Force
@@ -114,6 +127,7 @@ if (Test-Path -LiteralPath (Join-Path $SourceRoot 'cli')) { Copy-Item -LiteralPa
 
 $dataRoot = Join-Path $env:ProgramData 'MediaCaptureHelper\Inspection'
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
+& icacls.exe $dataRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
 if ($preseed) {
   $packageRoot = [IO.Path]::GetFullPath((Split-Path $PreseedFile -Parent)).TrimEnd('\') + '\'
   foreach ($group in @(@{ Values=@($preseed.bundles);Target='preseed-bundles' },@{ Values=@($preseed.agentUpdates);Target='incoming-agent-updates' })) {
@@ -128,7 +142,7 @@ if ($preseed) {
 $cachedPath = '';$cachedHash = ''
 if (-not [string]::IsNullOrWhiteSpace($CachedInstallerPath)) {
   if (-not (Test-Path -LiteralPath $CachedInstallerPath)) { throw "재설치 캐시 파일 없음: $CachedInstallerPath" }
-  $cacheDir = Join-Path $dataRoot 'installer-cache';New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+  $cacheDir = Join-Path $policyRoot 'installer-cache';New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
   $cachedPath = Join-Path $cacheDir (Split-Path $CachedInstallerPath -Leaf);Copy-Item -LiteralPath $CachedInstallerPath -Destination $cachedPath -Force
   $cachedHash = (Get-FileHash -LiteralPath $cachedPath -Algorithm SHA256).Hash.ToLowerInvariant()
 }
@@ -149,6 +163,11 @@ $config = [ordered]@{
   appExecutablePath=$AppExecutablePath;appConfigPath=$AppConfigPath;cachedInstallerPath=$cachedPath;cachedInstallerSha256=$cachedHash
 }
 Write-JsonAtomic (Join-Path $dataRoot 'coordinator.json') $config
+$brokerPolicy = [ordered]@{
+  schemaVersion=1;publicKeys=$publicKeys;appExecutablePath=$AppExecutablePath
+  cachedInstallerPath=$cachedPath;cachedInstallerSha256=$cachedHash
+}
+Write-JsonAtomic (Join-Path $policyRoot 'broker-policy.json') $brokerPolicy
 
 $coordinatorExe = Join-Path $InstallRoot 'coordinator\SilentStreamInspectionCoordinator.exe'
 $brokerExe = Join-Path $InstallRoot 'broker\SilentStreamInspectionBroker.exe'
@@ -161,8 +180,11 @@ Start-Sleep -Seconds 2
 & sc.exe sidtype SilentStreamInspectionBroker unrestricted | Out-Null
 foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) { & sc.exe failure $name 'reset= 86400' 'actions= restart/5000/restart/15000/restart/60000' | Out-Null }
 
-& icacls.exe $dataRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
-if (-not [string]::IsNullOrWhiteSpace($cachedPath)) { & icacls.exe $cachedPath '/grant:r' "$($identity.Name):(R,X)" | Out-Null }
+& icacls.exe $dataRoot '/grant' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
+if (-not [string]::IsNullOrWhiteSpace($cachedPath)) {
+  & icacls.exe (Split-Path $cachedPath -Parent) '/grant' "$($identity.Name):(OI)(CI)RX" | Out-Null
+  & icacls.exe $cachedPath '/grant' "$($identity.Name):(R,X)" | Out-Null
+}
 if (Test-Path -LiteralPath (Split-Path $AppConfigPath -Parent)) {
   & icacls.exe (Split-Path $AppConfigPath -Parent) '/grant' 'SYSTEM:(OI)(CI)F' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
 }
@@ -172,7 +194,7 @@ $taskName = 'SilentStream Inspection Session Agent'
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 $action = New-ScheduledTaskAction -Execute $sessionExe
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-$taskPrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Highest
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $settings | Out-Null
 Start-ScheduledTask -TaskName $taskName

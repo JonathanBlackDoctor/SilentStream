@@ -170,6 +170,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $inspection = "inspection-dist"
+          New-Item -ItemType Directory -Force -Path "$inspection/bin" | Out-Null
           $projects = @{
             coordinator = "src/SilentStream.Inspection.Coordinator/SilentStream.Inspection.Coordinator.csproj"
             broker = "src/SilentStream.Inspection.Broker/SilentStream.Inspection.Broker.csproj"
@@ -181,16 +183,17 @@ jobs:
             $singleFile = if ($name -in @("installer", "broker")) { "true" } else { "false" }
             dotnet publish $projects[$name] -c Release -r win-x64 --self-contained true `
               -p:Version=${{ steps.ver.outputs.version }} "-p:PublishSingleFile=$singleFile" `
-              -p:IncludeNativeLibrariesForSelfExtract=true -o "publish/inspection/bin/$name"
+              -p:IncludeNativeLibrariesForSelfExtract=true -o "$inspection/bin/$name"
             if ($LASTEXITCODE -ne 0) { throw "inspection publish failed: $name" }
           }
-          Copy-Item inspection/deployment/Install-InspectionServices.ps1 publish/inspection/Install-InspectionServices.ps1
-          Copy-Item inspection/deployment/Uninstall-InspectionServices.ps1 publish/inspection/Uninstall-InspectionServices.ps1
-          Copy-Item inspection/bundles publish/inspection/bundles -Recurse
-          Copy-Item inspection/README.md publish/inspection/README.md
-          New-Item -ItemType Directory -Force publish/inspection/bin/cloudflared | Out-Null
-          Copy-Item publish/cloudflared/cloudflared.exe publish/inspection/bin/cloudflared/cloudflared.exe
-          Copy-Item publish/inspection/bin/installer/SilentStreamInspectionInstaller.exe publish/inspection/원격점검_설치.exe
+          Copy-Item inspection/deployment/Install-InspectionServices.ps1 "$inspection/Install-InspectionServices.ps1"
+          Copy-Item inspection/deployment/Uninstall-InspectionServices.ps1 "$inspection/Uninstall-InspectionServices.ps1"
+          Copy-Item inspection/bundles "$inspection/bundles" -Recurse
+          Copy-Item inspection/README.md "$inspection/README.md"
+          New-Item -ItemType Directory -Force "$inspection/bin/cloudflared" | Out-Null
+          Copy-Item publish/cloudflared/cloudflared.exe "$inspection/bin/cloudflared/cloudflared.exe"
+          Copy-Item "$inspection/bin/installer/SilentStreamInspectionInstaller.exe" "$inspection/원격점검_설치.exe"
+          Remove-Item "$inspection/bin/installer" -Recurse -Force
 
       # 3) OAuth 데스크톱 클라이언트 시크릿을 동봉(앱이 최초 실행 시 %AppData% 로 1회 복사).
       #    데스크톱 OAuth 시크릿은 사양상 기밀이 아니나, 리포 시크릿으로 주입해 git 추적은 피한다.
@@ -245,6 +248,16 @@ jobs:
           --packTitle "Media Capture Helper"
           --packAuthors "Media Capture Helper"
 
+      - name: Build separate remote inspection package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $setup = Get-ChildItem Releases -Filter "*Setup*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Velopack Setup executable was not created." }
+          Copy-Item $setup.FullName inspection-dist -Force
+          $archive = "inspection-package-v${{ steps.ver.outputs.version }}.zip"
+          Compress-Archive -Path "inspection-dist/*" -DestinationPath $archive -CompressionLevel Optimal
+
       # 7) GitHub Releases 에 게시(자산 업로드 + 릴리스 발행). 앱은 이 피드를 읽어 자동 업데이트한다.
       - name: Publish to GitHub Releases
         shell: pwsh
@@ -258,3 +271,9 @@ jobs:
           --pre ${{ steps.ver.outputs.pre }}
           --releaseName "Media Capture Helper ${{ steps.ver.outputs.version }}"
           --tag ${{ github.ref_name }}
+
+      - name: Upload remote inspection package
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "inspection-package-v${{ steps.ver.outputs.version }}.zip" --clobber

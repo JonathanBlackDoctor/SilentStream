@@ -72,6 +72,15 @@ public sealed class BundleVerifierTests : IDisposable
     }
 
     [Fact]
+    public void MalformedSigningKeyEncodingIsRejectedAsCryptographicInput()
+    {
+        using var signer = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var zip = CreateBundle(signer, [WaitStep("wait")]);
+        var verifier = new InspectionBundleVerifier(new Dictionary<string, string> { ["test"] = "not-base64" });
+        Assert.Throws<CryptographicException>(() => verifier.VerifyAndExtract(zip, Path.Combine(_root, "out")));
+    }
+
+    [Fact]
     public void PathTraversalEntryIsRejectedBeforeExtraction()
     {
         var zip = Path.Combine(_root, "traversal.zip");
@@ -86,6 +95,34 @@ public sealed class BundleVerifierTests : IDisposable
         var zip = Path.Combine(_root, "duplicate.zip");
         using (var archive = ZipFile.Open(zip, ZipArchiveMode.Create)) { archive.CreateEntry("same.txt"); archive.CreateEntry("same.txt"); }
         Assert.Throws<InvalidDataException>(() => new InspectionBundleVerifier(new Dictionary<string, string>()).VerifyAndExtract(zip, Path.Combine(_root, "out")));
+    }
+
+    [Fact]
+    public void CaseCollidingZipEntriesAreRejectedForWindowsExtraction()
+    {
+        var zip = Path.Combine(_root, "case-collision.zip");
+        using (var archive = ZipFile.Open(zip, ZipArchiveMode.Create)) { archive.CreateEntry("payload.txt"); archive.CreateEntry("PAYLOAD.txt"); }
+        Assert.Throws<InvalidDataException>(() => new InspectionBundleVerifier(new Dictionary<string, string>()).VerifyAndExtract(zip, Path.Combine(_root, "out")));
+    }
+
+    [Fact]
+    public void UnsafeBundleIdentifierIsRejectedEvenWhenSigned()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var zip = CreateBundle(key, [WaitStep("wait")], bundleId: "../collision");
+        var verifier = new InspectionBundleVerifier(new Dictionary<string, string> { ["test"] = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) });
+        Assert.Throws<InvalidDataException>(() => verifier.VerifyAndExtract(zip, Path.Combine(_root, "out")));
+    }
+
+    [Fact]
+    public void PreviouslyExtractedBundleTamperingIsDetected()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var zip = CreateBundle(key, [WaitStep("wait")]);
+        var verifier = new InspectionBundleVerifier(new Dictionary<string, string> { ["test"] = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) });
+        var verified = verifier.VerifyAndExtract(zip, Path.Combine(_root, "out"));
+        File.WriteAllText(Path.Combine(verified.ExtractedPath, "payload.txt"), "changed");
+        Assert.Throws<InvalidDataException>(() => verifier.VerifyAndExtract(zip, Path.Combine(_root, "out")));
     }
 
     [Fact]
@@ -170,14 +207,31 @@ public sealed class BundleVerifierTests : IDisposable
         Assert.Throws<InvalidDataException>(() => verifier.VerifyAndExtract(zip, Path.Combine(_root, "agent-out")));
     }
 
+    [Fact]
+    public void AgentUpdateRejectsCaseCollidingEntries()
+    {
+        var zip = Path.Combine(_root, "agent-case-collision.zip");
+        using (var archive = ZipFile.Open(zip, ZipArchiveMode.Create)) { archive.CreateEntry("broker/file.exe"); archive.CreateEntry("BROKER/file.exe"); }
+        Assert.Throws<InvalidDataException>(() => new InspectionAgentUpdateVerifier(new Dictionary<string, string>()).VerifyAndExtract(zip, Path.Combine(_root, "agent-out")));
+    }
+
+    [Fact]
+    public void AgentUpdateRejectsMalformedVersionAsInvalidData()
+    {
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var zip = CreateAgentUpdate(key, "not-a-version");
+        var verifier = new InspectionAgentUpdateVerifier(new Dictionary<string, string> { ["test"] = Convert.ToBase64String(key.ExportSubjectPublicKeyInfo()) });
+        Assert.Throws<InvalidDataException>(() => verifier.VerifyAndExtract(zip, Path.Combine(_root, "agent-out")));
+    }
+
     private static InspectionStep WaitStep(string id) => new() { Id = id, Type = InspectionStepType.Wait, Input = JsonSerializer.SerializeToElement(new { seconds = 1 }) };
 
-    private string CreateBundle(ECDsa key, IReadOnlyCollection<InspectionStep> steps, string minimumAgent = "0.4.0")
+    private string CreateBundle(ECDsa key, IReadOnlyCollection<InspectionStep> steps, string minimumAgent = "0.4.0", string bundleId = "bundle-test")
     {
         var payload = Encoding.UTF8.GetBytes("original");
         var manifest = new InspectionBundleManifest
         {
-            BundleId = "bundle-test", Version = "1.0.0", MinAgentVersion = minimumAgent, SigningKeyId = "test",
+            BundleId = bundleId, Version = "1.0.0", MinAgentVersion = minimumAgent, SigningKeyId = "test",
             Files = new SortedDictionary<string, string> { ["payload.txt"] = Convert.ToHexString(SHA256.HashData(payload)).ToLowerInvariant() },
             Plan = new InspectionPlan { Name = "test", Steps = steps.ToList() }
         };
@@ -189,7 +243,7 @@ public sealed class BundleVerifierTests : IDisposable
         return zip;
     }
 
-    private string CreateAgentUpdate(ECDsa key)
+    private string CreateAgentUpdate(ECDsa key, string version = "9.1.0")
     {
         var payloads = new SortedDictionary<string, byte[]>(StringComparer.Ordinal)
         {
@@ -199,7 +253,7 @@ public sealed class BundleVerifierTests : IDisposable
         };
         var manifest = new InspectionAgentUpdateManifest
         {
-            Version = "9.1.0", SigningKeyId = "test",
+            Version = version, SigningKeyId = "test",
             Files = new SortedDictionary<string, string>(payloads.ToDictionary(pair => pair.Key,
                 pair => Convert.ToHexString(SHA256.HashData(pair.Value)).ToLowerInvariant()), StringComparer.Ordinal)
         };

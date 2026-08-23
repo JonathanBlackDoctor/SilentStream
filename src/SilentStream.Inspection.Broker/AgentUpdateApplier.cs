@@ -18,12 +18,12 @@ public static class AgentUpdateApplier
         var install = Path.GetFullPath(installPath).TrimEnd(Path.DirectorySeparatorChar);
         var data = Path.GetFullPath(dataPath).TrimEnd(Path.DirectorySeparatorChar);
         var package = Path.GetFullPath(packagePath);
-        EnsureUnder(stage, Path.Combine(data, "broker-verified-agent-updates"));
         EnsureUnder(package, Path.Combine(data, "incoming-agent-updates"));
         var programFiles = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)).TrimEnd(Path.DirectorySeparatorChar);
         EnsureUnder(install, programFiles);
         _ = Version.Parse(expectedVersion);
         var parent = Directory.GetParent(install)?.FullName ?? throw new InvalidDataException("Install root has no parent.");
+        EnsureUnder(stage, Path.Combine(parent, "InspectionAgentStaging"));
         var next = Path.Combine(parent, Path.GetFileName(install) + ".next");
         var rollback = Path.Combine(parent, Path.GetFileName(install) + ".rollback");
         EnsureUnder(next, parent); EnsureUnder(rollback, parent);

@@ -70,6 +70,19 @@ public class FfmpegArgumentsBuilderTests
         Assert.Contains("+frag_keyframe+empty_moov", args);
     }
 
+    [Fact]
+    public void Diagnostic_arguments_redact_the_full_rtmp_destination()
+    {
+        const string destination = "rtmp://a.rtmp.youtube.com/live2/secret-stream-key";
+        var args = FfmpegArgumentsBuilder.Build(Spec(rtmp: destination), processorCount: 8);
+        var safe = FfmpegArgumentsBuilder.RedactSensitiveArguments(args, destination);
+
+        Assert.DoesNotContain("secret-stream-key", safe);
+        Assert.DoesNotContain(destination, safe);
+        Assert.Contains("[RTMP_URL_REDACTED]", safe);
+        Assert.Contains("MediaCaptureHelper_REC_2026-06-12_0930.mp4", safe);
+    }
+
     [Theory]
     [InlineData("25", 8, "-threads 2", "-preset ultrafast")]
     [InlineData("50", 8, "-threads 4", "-preset superfast")]

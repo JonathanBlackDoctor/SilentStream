@@ -23,11 +23,9 @@ public sealed class PreseedBundleHostedService : IHostedService
             {
                 var verified = verifier.VerifyAndExtract(path, _options.BundlesPath);
                 var existing = _store.GetBundle(verified.Manifest.BundleId);
-                if (existing is null || Version.Parse(verified.Manifest.Version) >= Version.Parse(existing.Manifest.Version))
-                {
-                    _store.SaveBundle(verified);
-                    _store.Audit("system", "bundle.preseed", "ok", $"{verified.Manifest.BundleId}:{verified.Manifest.Version}");
-                }
+                InspectionApiPolicy.EnsureBundleReplacementAllowed(existing, verified);
+                _store.SaveBundle(verified);
+                _store.Audit("system", "bundle.preseed", "ok", $"{verified.Manifest.BundleId}:{verified.Manifest.Version}");
             }
             catch (Exception ex)
             {

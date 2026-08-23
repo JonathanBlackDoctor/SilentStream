@@ -1,0 +1,16 @@
+﻿{
+    "passed":  true,
+    "port":  64056,
+    "checks":  {
+                   "health":  200,
+                   "securityHeaders":  true,
+                   "unauthenticatedRejected":  true,
+                   "wrongPinRejected":  true,
+                   "operatorPaired":  true,
+                   "roleBoundary":  true,
+                   "crossOriginRejected":  true,
+                   "differentPortOriginRejected":  true,
+                   "revocationImmediate":  true,
+                   "completedAtUtc":  "2026-08-23T04:16:09.6169009+00:00"
+               }
+}

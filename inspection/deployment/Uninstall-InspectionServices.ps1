@@ -8,4 +8,5 @@ foreach($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBr
 Start-Sleep -Seconds 2
 $install=Join-Path $env:ProgramFiles 'MediaCaptureHelper\Inspection'
 if(Test-Path -LiteralPath $install){Remove-Item -LiteralPath $install -Recurse -Force}
+foreach($name in @('InspectionPolicy','InspectionAgentStaging','InspectionUpdater')){$path=Join-Path $env:ProgramFiles "MediaCaptureHelper\$name";if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path -Recurse -Force}}
 if($RemoveData){$data=Join-Path $env:ProgramData 'MediaCaptureHelper\Inspection';if(Test-Path -LiteralPath $data){Remove-Item -LiteralPath $data -Recurse -Force}}

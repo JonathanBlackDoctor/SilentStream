@@ -74,5 +74,49 @@ public sealed class CoordinatorSecurityTests : IDisposable
         Assert.False(_store.HasAck(runId, "destructive-another-step"));
     }
 
+    [Fact]
+    public void OperatorAcknowledgementsCannotUseDestructiveApprovalChannels()
+    {
+        Assert.False(InspectionApiPolicy.IsSafeExternalAcknowledgementChannel("destructive-reboot"));
+        Assert.False(InspectionApiPolicy.IsSafeExternalAcknowledgementChannel("DESTRUCTIVE-uninstall"));
+        Assert.True(InspectionApiPolicy.IsSafeExternalAcknowledgementChannel("telegram"));
+    }
+
+    [Fact]
+    public void ExternalAcknowledgementMustMatchARunningCheckpoint()
+    {
+        var input=JsonSerializer.Deserialize<JsonElement>("""{"ack":"telegram"}""");
+        var manifest=new InspectionBundleManifest{BundleId="checkpoint",SigningKeyId="test",Plan=new InspectionPlan{Name="checkpoint",Steps=[new InspectionStep{Id="telegram-ack",Type=InspectionStepType.Checkpoint,Input=input}]}};
+        _store.SaveBundle(new VerifiedInspectionBundle(manifest,_root));
+        var runId=_store.CreateRun(new StoredBundle(manifest,_root),"operator",false);
+        var bundle=_store.GetBundle("checkpoint")!;
+        Assert.False(InspectionApiPolicy.IsMatchingRunningCheckpoint(bundle,_store.GetSteps(runId),"telegram"));
+        _store.UpdateStep(runId,"telegram-ack",InspectionRunStatus.Running,1,"waiting");
+        Assert.True(InspectionApiPolicy.IsMatchingRunningCheckpoint(bundle,_store.GetSteps(runId),"telegram"));
+        Assert.False(InspectionApiPolicy.IsMatchingRunningCheckpoint(bundle,_store.GetSteps(runId),"webpush"));
+    }
+
+    [Fact]
+    public void PairingHasAGlobalFailureBudgetAcrossSpoofedAddresses()
+    {
+        _options.Update(o=>o.PairingPin="123456");
+        var auth=new InspectionAuthenticator(_options);
+        for(var i=0;i<20;i++)Assert.Null(auth.Pair($"198.51.100.{i}",new PairRequest("000000","attacker")));
+        Assert.Null(auth.Pair("203.0.113.10",new PairRequest("123456","legitimate")));
+    }
+
+    [Fact]
+    public void SameBundleVersionCannotReplaceDifferentSignedContent()
+    {
+        var input=JsonSerializer.Deserialize<JsonElement>("{}" );
+        var original=new InspectionBundleManifest{BundleId="immutable",Version="1.2.3",SigningKeyId="test",Plan=new InspectionPlan{Name="original",Steps=[new InspectionStep{Id="wait",Type=InspectionStepType.Wait,Input=input}]}};
+        var existing=new StoredBundle(original,Path.Combine(_root,"original"));
+        InspectionApiPolicy.EnsureBundleReplacementAllowed(existing,new VerifiedInspectionBundle(original,Path.Combine(_root,"same")));
+        var changed=original with{Plan=original.Plan with{Name="changed"}};
+        Assert.Throws<InvalidDataException>(()=>InspectionApiPolicy.EnsureBundleReplacementAllowed(existing,new VerifiedInspectionBundle(changed,Path.Combine(_root,"changed"))));
+        var downgrade=original with{Version="1.2.2"};
+        Assert.Throws<InvalidDataException>(()=>InspectionApiPolicy.EnsureBundleReplacementAllowed(existing,new VerifiedInspectionBundle(downgrade,Path.Combine(_root,"older"))));
+    }
+
     private static long ReadSequence(object value)=>long.Parse(value.GetType().GetProperty("sequence")!.GetValue(value)!.ToString()!);
 }
