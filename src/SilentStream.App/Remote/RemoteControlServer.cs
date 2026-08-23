@@ -238,6 +238,18 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private async Task StartCloudflareTunnelAsync(int port, CancellationToken ct)
     {
         var remote = _configStore.Load().Remote;
+        var coordinatorConfig = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "MediaCaptureHelper", "Inspection", "coordinator.json");
+        if (File.Exists(coordinatorConfig))
+        {
+            if (!string.IsNullOrWhiteSpace(remote.CloudflareHostname))
+            {
+                CurrentPublicUrl = $"https://{remote.CloudflareHostname.Trim().TrimEnd('/')}";
+                PublicUrlChanged?.Invoke(CurrentPublicUrl);
+            }
+            _log.Info("원격 점검 Coordinator가 Cloudflare 터널을 관리합니다. 앱 내부 터널은 시작하지 않습니다.");
+            return;
+        }
         var token = ResolveCloudflareToken(remote);
         var hostname = string.IsNullOrWhiteSpace(remote.CloudflareHostname) ? null : remote.CloudflareHostname;
         _log.Info($"Cloudflare 터널을 시작합니다(전송 프로토콜: {remote.CloudflareProtocol}).");

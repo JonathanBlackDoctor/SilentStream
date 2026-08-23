@@ -19,12 +19,15 @@ jobs:
         run: |
           dotnet restore src/SilentStream.Core/SilentStream.Core.csproj
           dotnet restore tests/SilentStream.Tests/SilentStream.Tests.csproj
+          dotnet restore tests/SilentStream.Inspection.Tests/SilentStream.Inspection.Tests.csproj
       - name: Build Core
         run: dotnet build src/SilentStream.Core/SilentStream.Core.csproj -c Release --no-restore
       - name: Build room provisioning server
         run: dotnet build src/SilentStream.ProvisioningServer/SilentStream.ProvisioningServer.csproj -c Release
       - name: Test
-        run: dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release
+        run: |
+          dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release
+          dotnet test tests/SilentStream.Inspection.Tests/SilentStream.Inspection.Tests.csproj -c Release
       - name: Compile Windows media project (cross-targeting)
         run: dotnet build src/SilentStream.Media.Windows/SilentStream.Media.Windows.csproj -c Release
 
@@ -38,6 +41,8 @@ jobs:
           dotnet-version: "8.0.x"
       - name: Build solution
         run: dotnet build SilentStream.sln -c Release
+      - name: Test Windows inspection services
+        run: dotnet test tests/SilentStream.Inspection.Windows.Tests/SilentStream.Inspection.Windows.Tests.csproj -c Release --no-build
 
   # Builds the Velopack release (Setup.exe + full/delta packages + release feed) and
   # publishes it to GitHub Releases. The app's AppUpdateManager reads this feed every
@@ -160,6 +165,32 @@ jobs:
           New-Item -ItemType Directory -Force -Path publish/cloudflared | Out-Null
           $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
           Invoke-WebRequest -Uri $url -OutFile publish/cloudflared/cloudflared.exe
+
+      - name: Publish remote inspection components
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $projects = @{
+            coordinator = "src/SilentStream.Inspection.Coordinator/SilentStream.Inspection.Coordinator.csproj"
+            broker = "src/SilentStream.Inspection.Broker/SilentStream.Inspection.Broker.csproj"
+            session = "src/SilentStream.Inspection.SessionAgent/SilentStream.Inspection.SessionAgent.csproj"
+            cli = "src/SilentStream.Inspection.OperatorCli/SilentStream.Inspection.OperatorCli.csproj"
+            installer = "src/SilentStream.Inspection.Installer/SilentStream.Inspection.Installer.csproj"
+          }
+          foreach ($name in $projects.Keys) {
+            $singleFile = if ($name -in @("installer", "broker")) { "true" } else { "false" }
+            dotnet publish $projects[$name] -c Release -r win-x64 --self-contained true `
+              -p:Version=${{ steps.ver.outputs.version }} "-p:PublishSingleFile=$singleFile" `
+              -p:IncludeNativeLibrariesForSelfExtract=true -o "publish/inspection/bin/$name"
+            if ($LASTEXITCODE -ne 0) { throw "inspection publish failed: $name" }
+          }
+          Copy-Item inspection/deployment/Install-InspectionServices.ps1 publish/inspection/Install-InspectionServices.ps1
+          Copy-Item inspection/deployment/Uninstall-InspectionServices.ps1 publish/inspection/Uninstall-InspectionServices.ps1
+          Copy-Item inspection/bundles publish/inspection/bundles -Recurse
+          Copy-Item inspection/README.md publish/inspection/README.md
+          New-Item -ItemType Directory -Force publish/inspection/bin/cloudflared | Out-Null
+          Copy-Item publish/cloudflared/cloudflared.exe publish/inspection/bin/cloudflared/cloudflared.exe
+          Copy-Item publish/inspection/bin/installer/SilentStreamInspectionInstaller.exe publish/inspection/원격점검_설치.exe
 
       # 3) OAuth 데스크톱 클라이언트 시크릿을 동봉(앱이 최초 실행 시 %AppData% 로 1회 복사).
       #    데스크톱 OAuth 시크릿은 사양상 기밀이 아니나, 리포 시크릿으로 주입해 git 추적은 피한다.

@@ -16,6 +16,22 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Media.Windows.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.UninstallHelper", "src\SilentStream.UninstallHelper\SilentStream.UninstallHelper.csproj", "{1A1B0C00-0001-4000-9000-000000000007}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Contracts", "src\SilentStream.Inspection.Contracts\SilentStream.Inspection.Contracts.csproj", "{1A1B0C00-0001-4000-9000-000000000008}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Coordinator", "src\SilentStream.Inspection.Coordinator\SilentStream.Inspection.Coordinator.csproj", "{1A1B0C00-0001-4000-9000-000000000009}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.SessionAgent", "src\SilentStream.Inspection.SessionAgent\SilentStream.Inspection.SessionAgent.csproj", "{1A1B0C00-0001-4000-9000-00000000000A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Broker", "src\SilentStream.Inspection.Broker\SilentStream.Inspection.Broker.csproj", "{1A1B0C00-0001-4000-9000-00000000000B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.OperatorCli", "src\SilentStream.Inspection.OperatorCli\SilentStream.Inspection.OperatorCli.csproj", "{1A1B0C00-0001-4000-9000-00000000000C}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Tests", "tests\SilentStream.Inspection.Tests\SilentStream.Inspection.Tests.csproj", "{1A1B0C00-0001-4000-9000-00000000000D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Installer", "src\SilentStream.Inspection.Installer\SilentStream.Inspection.Installer.csproj", "{1A1B0C00-0001-4000-9000-00000000000E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SilentStream.Inspection.Windows.Tests", "tests\SilentStream.Inspection.Windows.Tests\SilentStream.Inspection.Windows.Tests.csproj", "{1A1B0C00-0001-4000-9000-00000000000F}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -50,6 +66,38 @@ Global
 		{1A1B0C00-0001-4000-9000-000000000007}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1A1B0C00-0001-4000-9000-000000000007}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1A1B0C00-0001-4000-9000-000000000007}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000008}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000008}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000008}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000008}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000009}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000009}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000009}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-000000000009}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A1B0C00-0001-4000-9000-00000000000F}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

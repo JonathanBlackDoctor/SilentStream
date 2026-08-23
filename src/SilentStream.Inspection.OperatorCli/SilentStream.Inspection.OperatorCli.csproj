@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>SilentStream.Inspection.OperatorCli</RootNamespace>
+    <AssemblyName>SilentStreamInspectionCli</AssemblyName>
+    <Version>0.4.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+    <ProjectReference Include="..\SilentStream.Inspection.Contracts\SilentStream.Inspection.Contracts.csproj" />
+  </ItemGroup>
+</Project>

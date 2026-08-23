@@ -48,3 +48,12 @@ installer/secrets/
 # Velopack 빌드 산출물 (vpk pack / CI release-windows; ffmpeg·cloudflared·secret 번들 포함, 커밋 금지)
 publish/
 Releases/
+
+# 원격 점검 로컬 배포 산출물
+inspection/deployment/package/
+inspection/deployment/원격우선_실기기점검_v0.4.0.zip
+inspection/deployment/app-publish/
+inspection/deployment/app-release/
+inspection/deployment/app-agent-update/
+inspection/operator-vault/
+inspection/deployment/사전준비_원격우선_실기기점검_v0.4.0.zip
