@@ -101,7 +101,10 @@ public sealed class PeriodScheduler : IPeriodScheduler
             // virtual clock that didn't advance) returns here early → the loop just recomputes.
             if (next is not null && _now() >= target)
             {
-                Fire(next.Value);
+                foreach (var boundaryEvent in EventsAt(today, target))
+                {
+                    Fire(boundaryEvent);
+                }
                 watermark = target;
             }
         }
@@ -116,12 +119,47 @@ public sealed class PeriodScheduler : IPeriodScheduler
             var boundary = new PeriodBoundary(
                 date, period.Number,
                 date.ToDateTime(period.Start),
-                date.ToDateTime(period.End));
+                date.ToDateTime(period.End),
+                period.ResolvedSlotId,
+                period.ResolvedSlotLabel,
+                period.ResolvedSlotKind,
+                period.ResolvedSlotOrder);
 
             Consider(new BoundaryEvent(boundary.StartLocal, IsStart: true, boundary), watermark, ref best);
             Consider(new BoundaryEvent(boundary.EndLocal, IsStart: false, boundary), watermark, ref best);
         }
         return best;
+    }
+
+    /// <summary>
+    /// Returns every event at one wall-clock instant. Fixed slots are contiguous, so an ending
+    /// slot and the next starting slot must both fire instead of the second event being swallowed
+    /// by the scheduler watermark. Ends are emitted first to finish the preceding cut before the
+    /// next slot's start notification.
+    /// </summary>
+    private IReadOnlyList<BoundaryEvent> EventsAt(DateOnly date, DateTime instant)
+    {
+        var events = new List<BoundaryEvent>();
+        foreach (var period in _store.ResolveForDate(date).Periods)
+        {
+            var boundary = new PeriodBoundary(
+                date, period.Number,
+                date.ToDateTime(period.Start),
+                date.ToDateTime(period.End),
+                period.ResolvedSlotId,
+                period.ResolvedSlotLabel,
+                period.ResolvedSlotKind,
+                period.ResolvedSlotOrder);
+            if (boundary.EndLocal == instant)
+            {
+                events.Add(new BoundaryEvent(instant, IsStart: false, boundary));
+            }
+            if (boundary.StartLocal == instant)
+            {
+                events.Add(new BoundaryEvent(instant, IsStart: true, boundary));
+            }
+        }
+        return events;
     }
 
     private static void Consider(BoundaryEvent candidate, DateTime watermark, ref BoundaryEvent? best)
@@ -140,12 +178,12 @@ public sealed class PeriodScheduler : IPeriodScheduler
     {
         if (e.IsStart)
         {
-            _log.Info($"{e.Boundary.PeriodNumber}교시 시작 ({e.Boundary.StartLocal:HH:mm:ss}).");
+            _log.Info($"{e.Boundary.ResolvedSlotLabel} 시작 ({e.Boundary.StartLocal:HH:mm:ss}).");
             PeriodStarted?.Invoke(this, e.Boundary);
         }
         else
         {
-            _log.Info($"{e.Boundary.PeriodNumber}교시 종료 ({e.Boundary.EndLocal:HH:mm:ss}).");
+            _log.Info($"{e.Boundary.ResolvedSlotLabel} 종료 ({e.Boundary.EndLocal:HH:mm:ss}).");
             PeriodEnded?.Invoke(this, e.Boundary);
         }
     }

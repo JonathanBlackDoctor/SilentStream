@@ -16,51 +16,38 @@ public class PeriodScheduleStoreTests : IDisposable
         _configStore.Save(AppConfig.CreateDefault());
     }
 
-    private PeriodScheduleStore CreateStore() => new(_configStore);
-
-    private static DaySchedule Make(params (int no, string start, string end)[] rows) =>
-        new(rows.Select(r => new SchoolPeriod(r.no, TimeOnly.Parse(r.start), TimeOnly.Parse(r.end))).ToList());
+    private static PeriodScheduleStore CreateStore() => new();
 
     [Fact]
-    public void Weekday_default_round_trips_through_config()
+    public void Weekday_uses_nine_fixed_slots_including_lunch()
     {
         var store = CreateStore();
-        var monday = Make((1, "09:00:00", "09:50:00"), (2, "10:00:00", "10:50:00"));
-
-        store.SetWeekdayDefault(DayOfWeek.Monday, monday);
-
-        var loaded = CreateStore().GetWeekdayDefault(DayOfWeek.Monday);
-        Assert.Equal(2, loaded.Periods.Count);
-        Assert.Equal(new TimeOnly(9, 0), loaded.Periods[0].Start);
-        Assert.Equal(new TimeOnly(10, 50), loaded.Periods[1].End);
+        var loaded = store.ResolveForDate(new DateOnly(2026, 6, 15));
+        Assert.Equal(9, loaded.Periods.Count);
+        Assert.Equal(new TimeOnly(8, 25), loaded.Periods[0].Start);
+        Assert.Equal(new TimeOnly(17, 25), loaded.Periods[^1].End);
+        var lunch = loaded.Periods[4];
+        Assert.Equal("lunch", lunch.ResolvedSlotId);
+        Assert.Equal("점심시간", lunch.ResolvedSlotLabel);
+        Assert.Equal(ScheduleSlotKinds.Lunch, lunch.ResolvedSlotKind);
+        Assert.Equal(new TimeOnly(12, 25), lunch.Start);
+        Assert.Equal(new TimeOnly(13, 25), lunch.End);
     }
 
     [Fact]
-    public void Resolve_prefers_override_then_falls_back_to_weekday_default()
+    public void Persisted_rows_are_ignored()
     {
         var store = CreateStore();
-        // 2026-06-15 is a Monday.
         var date = new DateOnly(2026, 6, 15);
-        Assert.Equal(DayOfWeek.Monday, date.DayOfWeek);
-
-        store.SetWeekdayDefault(DayOfWeek.Monday, Make((1, "09:00:00", "09:50:00")));
-        store.SetOverride(date, Make((1, "09:00:00", "09:30:00"))); // short day
-
-        // override wins
-        var resolved = store.ResolveForDate(date);
-        Assert.Single(resolved.Periods);
-        Assert.Equal(new TimeOnly(9, 30), resolved.Periods[0].End);
-
-        // clearing the override falls back to the weekday default
-        store.ClearOverride(date);
-        Assert.Null(store.GetOverride(date));
-        Assert.Equal(new TimeOnly(9, 50), store.ResolveForDate(date).Periods[0].End);
+        Assert.Equal(9, store.ResolveForDate(date).Periods.Count);
     }
 
-    [Fact]
-    public void Unset_weekday_resolves_to_empty()
+    [Theory]
+    [InlineData("2026-06-20")]
+    [InlineData("2026-06-21")]
+    public void Weekend_resolves_to_empty(string value)
     {
-        var resolved = CreateStore().ResolveForDate(new DateOnly(2026, 6, 16)); // Tuesday, nothing set
+        var resolved = CreateStore().ResolveForDate(DateOnly.Parse(value));
         Assert.Empty(resolved.Periods);
     }
 

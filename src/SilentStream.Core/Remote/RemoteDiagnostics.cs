@@ -41,7 +41,8 @@ public static class RemoteDiagnostics
         {
             return new RemoteTimelineDto(
                 "inPeriod", current.Number, current.Start, current.End,
-                DateOnly.FromDateTime(nowLocal).ToDateTime(current.End));
+                DateOnly.FromDateTime(nowLocal).ToDateTime(current.End),
+                current.ResolvedSlotLabel, current.ResolvedSlotKind);
         }
 
         var next = periods.FirstOrDefault(p => now < p.Start);
@@ -49,7 +50,8 @@ public static class RemoteDiagnostics
             ? new RemoteTimelineDto("none", null, null, null, null)
             : new RemoteTimelineDto(
                 "untilStart", next.Number, next.Start, next.End,
-                DateOnly.FromDateTime(nowLocal).ToDateTime(next.Start));
+                DateOnly.FromDateTime(nowLocal).ToDateTime(next.Start),
+                next.ResolvedSlotLabel, next.ResolvedSlotKind);
     }
 
     private static bool IsProblemLog(string line) =>
@@ -68,7 +70,9 @@ public sealed record RemoteTimelineDto(
     int? PeriodNumber,
     TimeOnly? Start,
     TimeOnly? End,
-    DateTime? TargetLocal);
+    DateTime? TargetLocal,
+    string? SlotLabel = null,
+    string? SlotKind = null);
 
 public sealed record RemoteHealthDto(
     string Kind,

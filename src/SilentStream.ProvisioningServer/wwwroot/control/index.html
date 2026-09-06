@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>SilentStream 중앙 관리</title>
+  <style>
+    :root{font-family:Inter,"Noto Sans KR",system-ui,sans-serif;color:#172033;background:#f3f6fb}
+    *{box-sizing:border-box}body{margin:0}.wrap{max-width:1120px;margin:auto;padding:30px 20px 70px}
+    header{display:flex;justify-content:space-between;gap:20px;align-items:end;margin-bottom:24px}h1{margin:0 0 6px;font-size:clamp(25px,4vw,38px)}p{margin:0;color:#647087}
+    .who{font-size:13px;text-align:right}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+    .card{background:#fff;border:1px solid #dfe6f1;border-radius:18px;padding:20px;box-shadow:0 8px 30px #1f335112}
+    .top{display:flex;justify-content:space-between;gap:12px}.room{font-size:22px;font-weight:800;text-transform:uppercase}.pill{padding:6px 10px;border-radius:999px;font-size:12px;font-weight:800;background:#e9edf4;color:#5b6677}.pill.on{background:#d9f8e6;color:#087a3b}.pill.off{background:#fee6e4;color:#ae2b25}
+    .summary{font-size:15px;color:#263348;margin:18px 0 8px;min-height:22px}.meta{font-size:12px;color:#7b8799;min-height:36px}.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
+    button,a.btn{border:0;border-radius:9px;padding:9px 11px;font-weight:700;cursor:pointer;background:#eaf0fa;color:#19375e;text-decoration:none;font-size:13px}button.primary{background:#1769e0;color:white}button.warn{background:#fff0d6;color:#8c5600}button.danger{background:#fee5e3;color:#a72820}button:disabled{opacity:.45;cursor:not-allowed}
+    .empty{padding:34px;border:1px dashed #aebbd0;border-radius:18px;text-align:center;color:#66758c}.notice{margin-bottom:18px;padding:12px 14px;border-radius:10px;background:#fff8d9;color:#6f5700;display:none}.notice.show{display:block}
+    dialog{border:0;border-radius:14px;padding:22px;box-shadow:0 20px 70px #0004;max-width:420px}dialog::backdrop{background:#10203c88}pre{white-space:pre-wrap;word-break:break-word;font-size:12px;background:#f5f7fa;padding:12px;border-radius:8px;max-height:260px;overflow:auto}
+    @media(max-width:620px){header{align-items:start;flex-direction:column}.who{text-align:left}}
+  </style>
+</head>
+<body>
+<main class="wrap">
+  <header><div><h1>SilentStream 중앙 관리</h1><p>Google 계정 권한에 따라 담당 강의실만 표시됩니다.</p></div><div class="who" id="who">로그인 확인 중…</div></header>
+  <div class="notice" id="notice"></div>
+  <section class="grid" id="rooms"><div class="empty">강의실 상태를 불러오는 중입니다.</div></section>
+</main>
+<dialog id="detail"><h2 id="detailTitle">상세 상태</h2><pre id="detailBody"></pre><button onclick="detail.close()">닫기</button></dialog>
+<script>
+const $=id=>document.getElementById(id), roomsEl=$('rooms'), notice=$('notice'), detail=$('detail');
+let session=null, devices=[];
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function show(message,error=false){notice.textContent=message;notice.className='notice show';notice.style.background=error?'#fee6e4':'#e5f0ff';notice.style.color=error?'#9e2822':'#174f96';setTimeout(()=>notice.className='notice',5000)}
+function appSummary(d){const a=d.app||{};const state=a.state||a.streamState||a.status||'상태 수집 대기';const audio=d.audio||{};const warning=audio.micWarning||audio.warning;return `${state}${warning?' · 마이크 확인 필요':''}`}
+function render(){if(!devices.length){roomsEl.innerHTML='<div class="empty">담당 강의실이 없거나 기기가 아직 등록되지 않았습니다.</div>';return}roomsEl.innerHTML=devices.map(d=>{const admin=d.role==='admin';const last=d.lastSeenAtUtc?new Date(d.lastSeenAtUtc).toLocaleString():'접속 기록 없음';return `<article class="card"><div class="top"><div class="room">${esc(d.roomId)}</div><span class="pill ${d.online?'on':'off'}">${d.online?'온라인':'오프라인'}</span></div><div class="summary">${esc(d.registered?appSummary(d):'설치되지 않음')}</div><div class="meta">${esc(d.machineName||'기기 미등록')}<br>마지막 접속: ${esc(last)}</div><div class="actions"><a class="btn" href="/install/${encodeURIComponent(d.roomId)}">설치</a><button onclick="details('${esc(d.roomId)}')">상세</button><button class="primary" ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','live.start')">송출 시작</button><button ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','live.retry')">재연결</button><button ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','inspection.rerun')">자동 점검</button><button ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','app.restart')">앱 재시작</button><button class="warn" ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','live.stopBroadcast',true)">방송만 중지</button>${admin?`<button class="danger" ${d.online?'':'disabled'} onclick="act('${esc(d.roomId)}','live.stopAll',true)">전체 중지</button>`:''}</div></article>`}).join('')}
+async function api(path,options){const r=await fetch(path,options);let data=null;try{data=await r.json()}catch{}if(!r.ok)throw Error(data?.error||data?.error?.message||data?.error||`HTTP ${r.status}`);return data}
+async function load(){try{session=await api('/api/control/session');$('who').textContent=session.email+(session.admin?' · 관리자':' · 호실 담당자');devices=await api('/api/control/rooms');render()}catch(e){roomsEl.innerHTML=`<div class="empty">${esc(e.message)}</div>`}}
+async function act(room,action,confirmFirst=false){if(confirmFirst&&!confirm(`${room}에 ${action} 명령을 실행할까요?`))return;try{const r=await api(`/api/control/rooms/${encodeURIComponent(room)}/actions/${encodeURIComponent(action)}`,{method:'POST'});show(r.ok?'명령이 실행되었습니다.':(r.error||'명령이 완료되지 않았습니다.'),!r.ok);setTimeout(load,700)}catch(e){show(e.message,true)}}
+function details(room){const d=devices.find(x=>x.roomId===room);$('detailTitle').textContent=room.toUpperCase()+' 상세 상태';$('detailBody').textContent=JSON.stringify(d,null,2);detail.showModal()}
+load();setInterval(load,10000);
+</script>
+</body>
+</html>

@@ -21,6 +21,11 @@
     .app-top h1 { margin:0; flex:none; }
     .quick-lock { display:flex; align-items:center; justify-content:flex-end; gap:7px; color:#9eb2c8; font-size:11px; font-weight:750; white-space:nowrap; }
     .quick-lock button { width:auto; margin:0; padding:6px 8px; color:#bad8f5; background:#1d2c3e; border:1px solid #3a5674; border-radius:9px; font-size:11px; }
+    @media (max-width:480px) {
+      .app-top { align-items:flex-start; flex-wrap:wrap; gap:8px; }
+      .app-top h1 { flex:1 1 100%; }
+      .quick-lock { width:100%; justify-content:flex-start; flex-wrap:wrap; white-space:normal; }
+    }
     .lock-switch { position:relative; width:38px; height:22px; flex:none; }
     .lock-switch input { position:absolute; opacity:0; width:1px; height:1px; }
     .lock-switch i { display:block; width:38px; height:22px; border:1px solid #4d6279; border-radius:14px; background:#293846; transition:background .15s,border-color .15s; }
@@ -107,22 +112,6 @@
     .health-dot.critical { background:var(--red); } .health-dot.info { background:var(--accent); }
     .issue-list { margin:10px 0 0; padding:0; list-style:none; max-height:180px; overflow:auto; }
     .issue-list li { padding:7px 0; border-bottom:1px solid #26384b; color:#c8d6e5; font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; }
-    /* ---- 교시 승인 카드 (승인 기반 분할 v8): 경계 도달 시 최상단에 뜨는 1차 상호작용 ---- */
-    .split-card { border-color:#4d7fb4; background:linear-gradient(140deg,#1b3049,#131c29 70%); }
-    .split-card .win { display:flex; align-items:center; justify-content:center; gap:7px; margin:3px 0 10px; }
-    .split-card .win input[type=time] { flex:0 1 128px; width:auto; padding:8px 4px; font-size:16px; font-weight:700; text-align:center; }
-    .split-card .win .arrow { color:#7f95ad; font-size:15px; }
-    .split-card .ptitle { margin:0 0 10px; color:#9db1c8; font-size:12px; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-    .chiprow { display:flex; gap:6px; margin-bottom:10px; }
-    .chiprow button { width:auto; flex:1; margin:0; padding:9px 0; color:#c8d9ec; background:#1d2c3e; border:1px solid #3a5674; font-size:13px; }
-    .split-actions { display:flex; gap:7px; }
-    .split-actions button { margin:0; }
-    .split-actions .ok { flex:2.2; min-height:46px; }
-    .split-actions .ghost { flex:1; }
-    .split-count { margin:9px 0 0; color:var(--yellow); font-size:12px; text-align:center; }
-    .split-count.manual { color:var(--muted); }
-    .split-note { border:1px solid #3a5674; border-radius:11px; background:#16232f; padding:10px 12px; margin-bottom:10px; font-size:13px; color:#c8d9ec; display:flex; justify-content:space-between; align-items:center; gap:8px; }
-    .split-note button { width:auto; margin:0; padding:6px 11px; font-size:12px; }
     .card-lead { display:flex; align-items:center; justify-content:space-between; gap:9px; margin-bottom:12px; }
     .card-lead h2 { margin:0; } .card-lead small { color:#8499af; font-size:11px; }
     .quality-card .row { padding:0; } .quality-card .tabs { margin:12px 0 5px; }
@@ -130,7 +119,7 @@
     .recording-item { padding:11px; border:1px solid #2a3b4e; border-radius:12px; background:#101822; }
     .recording-item .k { display:block; color:#8fa0b4; font-size:10px; } .recording-item b { display:block; overflow:hidden; margin-top:4px; color:#e9f1fa; font-size:13px; text-overflow:ellipsis; white-space:nowrap; }
     .recording-item.file { grid-column:1/-1; }
-    /* ---- 접이식 카드 (시간표 등 자주 안 쓰는 섹션은 기본 접힘) ---- */
+    /* ---- 접이식 카드 ---- */
     details.card { padding:0; }
     details.card > summary { list-style:none; cursor:pointer; padding:14px; font-size:13px;
                              text-transform:uppercase; letter-spacing:.05em; color:var(--muted);
@@ -176,7 +165,6 @@
     <div class="quick-lock" aria-label="설정 잠금">
       <span id="settingsLockLabel">설정 잠금</span>
       <label class="lock-switch"><input id="settingsLockToggle" type="checkbox" role="switch" aria-label="설정 잠금" /><i></i></label>
-      <button id="scheduleOnlyQuick" class="hidden" type="button">시간표만 수정</button>
     </div>
   </div>
 
@@ -201,7 +189,6 @@
     <div id="mixedWarn" class="warn hidden"></div>
     <div class="gridbar">
       <label class="toggle"><input type="checkbox" id="problemOnly" /> ⚠ 문제만 보기</label>
-      <button id="bulkApprove" class="hidden">일괄 승인</button>
       <button id="addRoomBtn" class="ghost">+ 호실 추가</button>
     </div>
     <div id="cards" class="cards"></div>
@@ -271,9 +258,6 @@
       <small class="muted">재실행은 현재 점검이 끝났거나 실패한 뒤에만 허용됩니다. 실행 중에는 기존 점검을 중단하지 않습니다.</small>
     </div>
 
-    <!-- 교시 승인(v8): 교시가 끝나면 여기 카드가 뜬다 — 시각 조정/승인/연강/건너뛰기. 대기 없으면 숨김 -->
-    <div id="splitArea" class="hidden"></div>
-
     <!-- 송출 품질 (적응형 품질): 현재 단계 표시 + 프리셋 수동 고정/자동 복귀 -->
     <div class="card quality-card">
       <div class="card-lead"><h2>송출 품질</h2><small id="qualNow">-</small></div>
@@ -302,32 +286,6 @@
         <div class="recording-item"><span class="k">남은 디스크</span><b id="recFree">-</b></div>
       </div>
     </div>
-
-    <!-- 시간표: 자주 쓰지 않으므로 기본 접힘(운영 요청) — 펼쳐야 편집 가능 -->
-    <details class="card">
-      <summary><span>오늘 시간표 <span id="todayDate" class="muted"></span></span></summary>
-      <div class="fold-body">
-        <div id="todayBadge" class="muted"></div>
-        <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
-          <tbody id="todayRows"></tbody></table>
-        <button class="ghost" id="addTodayRow">+ 교시 추가</button>
-        <div class="btnrow">
-          <button id="saveToday">오늘만 덮어쓰기</button>
-          <button id="clearToday" class="ghost">기본값으로</button>
-        </div>
-      </div>
-    </details>
-
-    <details class="card">
-      <summary><span>요일별 기본 시간표</span></summary>
-      <div class="fold-body">
-        <div class="tabs" id="weekTabs"></div>
-        <table><thead><tr><th>교시</th><th>시작</th><th>종료</th><th></th></tr></thead>
-          <tbody id="weekRows"></tbody></table>
-        <button class="ghost" id="addWeekRow">+ 교시 추가</button>
-        <button id="saveWeek">이 요일 저장</button>
-      </div>
-    </details>
 
     <div class="card">
       <h2>업로드 큐 <span id="qSummary" class="muted"></span></h2>
@@ -385,8 +343,6 @@
   <div id="toast"></div>
 
   <script>
-    const WEEKDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
-    const WEEKDAY_KR = {Mon:"월",Tue:"화",Wed:"수",Thu:"목",Fri:"금",Sat:"토",Sun:"일"};
     const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted",RecordingOnly:"--yellow"};
 
     // ---- 호실 레지스트리 (Phase 2): 폰이 {label, baseUrl, token} 목록을 보관하고 각 호실 API를 직접 호출 ----
@@ -394,7 +350,7 @@
     let cur = null;          // 대시보드에 표시 중인 호실 (rooms의 원소)
     let view = "";           // "pair" | "grid" | "dash"
     let pairTarget = null;   // 재페어링 대상 호실(토큰 만료), 없으면 null
-    let weekData = {}, activeDay = "Mon", ws = null;
+    let ws = null;
     let assetItems = [], assetLoading = false, assetRefreshTimer = null;
     const audioRecoveryPolls = new Set();
     const AUDIO_RECOVERY_ACTIVE = new Set(["queued", "downloading", "encoding"]);
@@ -438,6 +394,39 @@
       if (!st){ st = {online:null, authFailed:false, summary:null, thumbUrl:null}; rstate.set(room.baseUrl, st); }
       return st;
     }
+    const PRIMARY_ROOMS = ["M111", "M112", "M113", "백202"];
+    function canonicalRoom(value){
+      return String(value || "").trim().toUpperCase().replace(/\s*강의실$/, "").replace(/\s*호$/, "");
+    }
+    function roomRank(room){
+      const label = canonicalRoom(room && room.label);
+      const primary = PRIMARY_ROOMS.indexOf(label);
+      return [primary < 0 ? PRIMARY_ROOMS.length : primary, label];
+    }
+    function sortRooms(list){
+      return list.sort((a,b) => {
+        const ar=roomRank(a), br=roomRank(b);
+        return ar[0]-br[0] || ar[1].localeCompare(br[1], "ko");
+      });
+    }
+    function discardRoomState(room){
+      const st = rstate.get(room.baseUrl);
+      if (st && st.thumbUrl) URL.revokeObjectURL(st.thumbUrl);
+      rstate.delete(room.baseUrl);
+    }
+    function dedupePrimaryRooms(list){
+      const seen = new Set(), kept = [];
+      // Different URLs for the same managed room can remain after LAN→tunnel migration. The most
+      // recently stored entry wins so no invisible duplicate receives bulk commands.
+      for (let i=list.length-1;i>=0;i--){
+        const key = canonicalRoom(list[i].label);
+        if (PRIMARY_ROOMS.includes(key) && seen.has(key)){ discardRoomState(list[i]); continue; }
+        if (PRIMARY_ROOMS.includes(key)) seen.add(key);
+        kept.push(list[i]);
+      }
+      kept.reverse();
+      return kept;
+    }
     function saveRooms(){ localStorage.setItem("ss_rooms", JSON.stringify(rooms)); }
     function loadRooms(){
       let list = [];
@@ -454,18 +443,33 @@
         localStorage.removeItem("ss_token");
         localStorage.setItem("ss_rooms", JSON.stringify(list));
       }
-      return list;
+      return sortRooms(dedupePrimaryRooms(list));
     }
     function upsertRoom(room){
-      const existing = rooms.find(r => r.baseUrl === room.baseUrl);
-      if (existing){ existing.token = room.token; if (room.label) existing.label = room.label; }
+      const key = canonicalRoom(room.label);
+      const existing = rooms.find(r => r.baseUrl === room.baseUrl) ||
+        (PRIMARY_ROOMS.includes(key) ? rooms.find(r => canonicalRoom(r.label) === key) : null);
+      if (existing){
+        if (existing.baseUrl !== room.baseUrl) discardRoomState(existing);
+        existing.baseUrl = room.baseUrl;
+        existing.token = room.token;
+        if (room.label) existing.label = room.label;
+      }
       else rooms.push(room);
+      if (PRIMARY_ROOMS.includes(key)){
+        rooms.filter(candidate => candidate !== existing && candidate !== room && canonicalRoom(candidate.label) === key)
+          .forEach(discardRoomState);
+        rooms = rooms.filter(candidate => candidate === existing || candidate === room || canonicalRoom(candidate.label) !== key);
+      }
+      rooms = dedupePrimaryRooms(rooms);
+      sortRooms(rooms);
       const st = rstate.get(room.baseUrl);
       if (st){ st.authFailed = false; st.online = null; st.summary = null; }
       saveRooms();
     }
     function syncLabel(room, apiRoomName){
-      if (apiRoomName && room.label !== apiRoomName){ room.label = apiRoomName; saveRooms(); }
+      if (apiRoomName && room.label !== apiRoomName){ room.label = apiRoomName; return true; }
+      return false;
     }
     // 주소 입력 정규화: 스킴이 없으면 현재 페이지 스킴을 붙여 origin만 취한다. 잘못된 입력은 throw.
     function normalizeBase(input){
@@ -508,9 +512,9 @@
       for (const id of ["pair","grid","dash"]) $(id).classList.toggle("hidden", id !== v);
     }
     function enter(){ // 레지스트리 크기에 따라 시작 화면 결정
-      if (rooms.length === 0) openPair(null);
-      else if (rooms.length === 1) openRoom(rooms[0]);
-      else openGrid();
+      // 이 배포는 M111/M112/M113/백202를 독립 환경으로 고정해, 아직 연결하지 않은 호실도
+      // 사라지지 않고 '연결 정보 필요' 카드로 보이게 한다.
+      openGrid();
     }
 
     // ---- 페어링 (기존 호실 유지: "교체"가 아니라 "추가") ----
@@ -518,7 +522,7 @@
       pairTarget = target || null;
       $("addrInput").value = target ? target.baseUrl : "";
       $("pinInput").value = "";
-      $("pairCancel").classList.toggle("hidden", rooms.length === 0);
+      $("pairCancel").classList.remove("hidden");
       show("pair");
     }
     $("pairBtn").onclick = async () => {
@@ -542,7 +546,7 @@
         const s = await fetch(base + "/api/summary",
           { headers:{"Authorization":"Bearer "+data.token}, signal: timeoutSignal(4000) })
           .then(x => x.ok ? x.json() : null);
-        label = (s && s.room) || "";
+        label = (s && s.room) || (pairTarget && pairTarget.label) || "";
       } catch(e){}
       upsertRoom({ label: label || new URL(base).host, baseUrl: base, token: data.token });
       toast("연결되었습니다.");
@@ -570,14 +574,27 @@
     }
     function rebuildGrid(){
       const c = $("cards");
-      c.innerHTML = rooms.map((r,i)=>`
-        <div class="rcard" data-i="${i}">
-          <div class="thumbwrap"><img class="thumb" data-thumb="${i}" alt="" /><span class="offline-tag hidden" data-off="${i}">오프라인</span></div>
-          <div class="rbody">
-            <div class="rtop"><span class="rname" data-name="${i}">${esc(r.label)}</span><span class="badge" data-badge="${i}">…</span></div>
-            <div class="rmeta muted" data-meta="${i}">-</div>
-          </div>
-        </div>`).join("");
+      const primaryEntries = PRIMARY_ROOMS.map(label => {
+        const index = rooms.findIndex(room => canonicalRoom(room.label) === label);
+        return index >= 0 ? { room: rooms[index], index } : { label };
+      });
+      const extraEntries = rooms.map((room,index) => ({ room,index }))
+        .filter(entry => !PRIMARY_ROOMS.includes(canonicalRoom(entry.room.label)));
+      c.innerHTML = primaryEntries.concat(extraEntries).map(entry => entry.room ? `
+          <div class="rcard" data-i="${entry.index}">
+            <div class="thumbwrap"><img class="thumb" data-thumb="${entry.index}" alt="" /><span class="offline-tag hidden" data-off="${entry.index}">오프라인</span></div>
+            <div class="rbody">
+              <div class="rtop"><span class="rname" data-name="${entry.index}">${esc(entry.room.label)}</span><span class="badge" data-badge="${entry.index}">…</span></div>
+              <div class="rmeta muted" data-meta="${entry.index}">-</div>
+            </div>
+          </div>` : `
+          <div class="rcard problem" data-missing="${entry.label}">
+            <div class="thumbwrap"><span class="offline-tag">연결 정보 필요</span></div>
+            <div class="rbody">
+              <div class="rtop"><span class="rname">${entry.label}</span><span class="badge" style="background:var(--red)">미연결</span></div>
+              <div class="rmeta muted">이 호실의 주소와 연결 번호를 등록하세요.</div>
+            </div>
+          </div>`).join("");
       c.querySelectorAll(".rcard").forEach(el => el.onclick = () => {
         const room = rooms[+el.dataset.i];
         history.pushState({ v: "sub" }, ""); // 하드웨어 뒤로가기 = 그리드 복귀 (상세/재페어링 공통)
@@ -585,6 +602,10 @@
         // (openRoom으로 들어가면 onAuthFailed의 중복 가드가 이미 소진돼 재페어링 유도가 안 나온다)
         if (stateOf(room).authFailed) openPair(room);
         else openRoom(room);
+      });
+      c.querySelectorAll(".rcard[data-missing]").forEach(el => el.onclick = () => {
+        history.pushState({ v: "sub" }, "");
+        openPair({ label: el.dataset.missing, baseUrl: "" });
       });
       rooms.forEach((room,i)=>{ // 유지 중인 마지막 썸네일 복원 (blob URL은 rstate가 소유)
         const st = stateOf(room);
@@ -599,6 +620,7 @@
       const s = st.summary;
       if (!s) return true;
       return !!(s.micWarning || s.state === "Retrying" ||
+        (s.inspection && (s.inspection.severity === "error" || s.inspection.severity === "warning" || s.inspection.phase === "failed")) ||
         (s.issues||[]).some(x => /^(warn|critical)$/i.test(x.severity)));
     }
     function paintBadge(el, state, text, bgVar){
@@ -634,7 +656,7 @@
     }
     function renderGrid(){
       const filter = $("problemOnly").checked;
-      let visible = 0;
+      let visible = document.querySelectorAll(".rcard[data-missing]").length;
       rooms.forEach((room,i)=>{
         const card = document.querySelector(`.rcard[data-i="${i}"]`);
         if (!card) return;
@@ -662,8 +684,13 @@
           paintBadge(badge, s.state, s.badge);
           off.classList.add("hidden");
           const parts = [];
-          if (s.pendingSplits > 0) parts.push("⏱ 승인 대기 " + s.pendingSplits + "건");
-          if (s.micWarning) parts.push("⚠ 무음");
+          if (s.micWarning) parts.push((String(s.room||room.label).toUpperCase()==="M113" ? "⚠ M113 마이크 연결 확인" : "⚠ 마이크 확인"));
+          if (s.inspection){
+            if (s.inspection.phase === "failed") parts.push("점검 실패");
+            else if (s.inspection.phase === "completed-with-warning") parts.push("준비 미확정(확인 필요)");
+            else if (s.inspection.phase === "completed") parts.push("자동 점검 완료(청취 필요)");
+            else if (s.inspection.phase === "running") parts.push("점검 " + Math.round(s.inspection.progressPercent||0) + "%");
+          }
           const issueCount = (s.issues||[]).filter(x => /^(warn|critical)$/i.test(x.severity)).length;
           if (issueCount) parts.push("문제 " + issueCount + "건");
           if (s.qualityLevel > 0) parts.push("절약: " + (s.qualityName || s.qualityLevel + "단계"));
@@ -677,43 +704,12 @@
         if (!hide) visible++;
       });
       $("noProblem").classList.toggle("hidden", !(filter && visible === 0 && rooms.length > 0));
-      // 승인 대기가 있는 호실이 하나라도 있으면 일괄 승인 버튼 노출
-      const waiting = rooms.reduce((n, room) => {
-        const s = stateOf(room).summary;
-        return n + (s && s.pendingSplits ? s.pendingSplits : 0);
-      }, 0);
-      const ba = $("bulkApprove");
-      ba.classList.toggle("hidden", waiting === 0);
-      if (waiting > 0) ba.textContent = `⏱ 대기 ${waiting}건 일괄 승인`;
     }
-    // 그리드 일괄 승인: 모든 호실의 승인 대기 컷을 기본(제안) 시각 그대로 승인한다.
-    // 시각을 고쳐야 하면 호실 카드로 들어가 개별 승인 — 여기서는 손대지 않은 값만 일괄 처리.
-    $("bulkApprove").onclick = async () => {
-      if (!await confirmAsk("대기 중인 교시를 모두 승인할까요?",
-        "모든 호실의 승인 대기 컷을 제안된 시각 그대로 잘라 업로드합니다.\n시각을 고치려면 호실 카드에 들어가 개별 승인하세요.",
-        "일괄 승인")) return;
-      let ok = 0, fail = 0;
-      await Promise.allSettled(rooms.map(async room => {
-        const st = stateOf(room);
-        if (!st.summary || !st.summary.pendingSplits) return;
-        try {
-          const d = await (await api(room, "/api/splits")).json();
-          for (const p of (d.pending || []).filter(x => x.status === "pending")){
-            try {
-              const r = await api(room, `/api/splits/${encodeURIComponent(p.id)}/approve`,
-                { method:"POST", body:"{}" });
-              if ((await r.json()).ok) ok++; else fail++;
-            } catch(e){ fail++; }
-          }
-        } catch(e){ fail++; }
-      }));
-      toast(fail ? `승인 ${ok}건 · 실패 ${fail}건 — 실패 호실은 개별 확인하세요` : `승인 ${ok}건 완료`);
-      pollGrid();
-    };
     let gridBusy = false;
     async function pollGrid(){
       if (gridBusy) return; // 죽은 호실 타임아웃 대기가 겹쳐도 갱신 주기가 밀리지 않게
       gridBusy = true;
+      let labelsChanged = false;
       try {
         await Promise.allSettled(rooms.map(async room => {
           const st = stateOf(room);
@@ -724,11 +720,17 @@
             if (!r.ok) throw new Error("HTTP " + r.status);
             st.summary = await r.json();
             st.online = true; st.authFailed = false;
-            syncLabel(room, st.summary.room);
+            if (syncLabel(room, st.summary.room)) labelsChanged = true;
           } catch(e){ st.online = false; st.summary = null; }
         }));
+        if (labelsChanged){ rooms = dedupePrimaryRooms(rooms); sortRooms(rooms); saveRooms(); }
       } finally { gridBusy = false; }
-      if (view === "grid") renderGrid();
+      if (view === "grid"){
+        // A server-provided managed-room label can remove a provisional placeholder and change
+        // ordering, so rebuild only when the labels changed.
+        if (labelsChanged) rebuildGrid();
+        else renderGrid();
+      }
     }
     async function refreshGridPreviews(){
       await Promise.allSettled(rooms.map(async room => {
@@ -764,7 +766,7 @@
       show("dash");
       const bb = $("backBtn");
       bb.disabled = false;
-      bb.classList.toggle("hidden", rooms.length < 2);
+      bb.classList.remove("hidden");
       $("roomName").textContent = room.label || "연결된 강의실";
       $("offlineNotice").classList.add("hidden");
       paintBadge($("badge"), null, "확인 중", "--muted");
@@ -773,8 +775,6 @@
       for (const id of ["startBtn", "stopBroadcastBtn", "stopBtn", "retryBtn", "snapshotBtn"]){
         $(id).disabled = true;
       }
-      renderedSplitKey = ""; // 다른 호실의 승인 카드가 남지 않게 강제 재렌더
-      $("splitArea").classList.add("hidden");
       if (stateOf(room).online === false) setRoomOnline(room, false);
       startDash();
       refreshPushButton();
@@ -790,14 +790,8 @@
         automation:{ enabled:true },
         audio:{ micWarning:false, silent:[] },
         quality:{ levelName:"표준", mode:"auto", level:0, current:{ width:1920, height:1080, fps:30, videoBitrateKbps:6200 } },
-        today:{ date:"2026-07-13", hasOverride:false },
         queue:{ pending:0, uploading:1, completed:14, failed:0,
           items:[{ title:"201호 · 1교시", status:"uploading" },{ title:"201호 · 전일 6교시", status:"completed", videoId:"" }] },
-        splits:{ requireApproval:true, autoApproveMinutes:15, chain:null, recent:[],
-          pending:[{ id:"demo-split", date:"2026-07-13", periods:[2], label:"2교시",
-            start:"2026-07-13T09:25:00", end:"2026-07-13T10:25:00",
-            proposedTitle:"[201호] 2교시 - 2026-07-13", autoApproveInSec:754, executeAt:null,
-            canMerge:true, status:"pending", title:null, failReason:null }] }
       });
       renderAudio({
         micWarning:false, silent:[],
@@ -811,7 +805,7 @@
     }
     async function startDash(){
       const room = cur;
-      const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadToday(), loadWeek(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery(), loadInspection()]);
+      const results = await Promise.allSettled([pollOnce(), loadSettingsLock(), loadAutomation(), loadAudio(), loadQuality(), loadAssets(), loadDiagnostics(), loadRecovery(), loadInspection()]);
       if (view !== "dash" || cur !== room) return;
       if (results.every(x => x.status === "rejected")) setRoomOnline(room, false);
       connectWs();
@@ -966,7 +960,7 @@
 
     function inspectionPhaseLabel(phase){
       return ({running:"진행 중", awaiting_reboot:"재부팅 대기", post_reboot:"재부팅 후 확인 중",
-        completed:"완료", "post-reboot-complete":"재부팅 검증 완료", failed:"실패"})[phase] || "대기";
+        completed:"자동 점검 완료", "completed-with-warning":"주의 필요", "post-reboot-complete":"재부팅 검증 완료", failed:"실패"})[phase] || "대기";
     }
     function renderInspection(payload){
       const state = payload && payload.state;
@@ -1010,7 +1004,7 @@
     makeHoldable("inspectionRerun", 2000, async () => {
       const room = cur;
       if (!await confirmAsk("실기기 점검을 다시 실행할까요?",
-        "현재 점검이 완료 또는 실패한 상태일 때만 새 점검을 시작합니다. 새 실행도 마지막에 재부팅 검증까지 진행됩니다.",
+        "현재 점검이 완료 또는 실패한 상태일 때만 새 점검을 시작합니다. 방송·설정을 바꾸거나 PC를 재부팅하지 않는 안전 점검을 현재 부팅에서 다시 실행합니다.",
         "점검 재실행")) return;
       if (cur !== room) return;
       try { await requestInspectionCommand("rerun-check"); }
@@ -1074,16 +1068,13 @@
       $("recFile").textContent = s.recording.file || "대기 중";
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
-      if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent);
+      if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent, s.audio.unavailable);
       if (s.quality) renderQualityStatus(s.quality); // 적용 품질(진실)은 상태 푸시로 갱신된다
       if (s.diagnostics) renderDiagnostics(s.diagnostics);
-      renderSplits(s.splits || null); // 구서버(필드 없음)는 카드 영역을 통째로 숨긴다
       $("startBtn").disabled = s.state!=="Idle";
       $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
       $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
       $("retryBtn").disabled = !(s.state==="Live" || s.state==="Retrying");
-      $("todayDate").textContent = s.today.date;
-      $("todayBadge").textContent = s.today.hasOverride ? "오늘 덮어쓰기 적용 중" : "요일 기본값 사용 중";
       const q=s.queue;
       $("qSummary").textContent = `대기 ${q.pending} · 업로드중 ${q.uploading} · 완료 ${q.completed} · 실패 ${q.failed}`;
       $("qList").innerHTML = q.items.length ? q.items.slice().reverse().map(i=>{
@@ -1107,7 +1098,8 @@
       const left=Math.max(0, Math.ceil((timelineRemainingMs-(Date.now()-timelineReceivedAt))/1000));
       const h=Math.floor(left/3600), m=Math.floor((left%3600)/60), s=left%60;
       const clock=(h?String(h).padStart(2,"0")+":" : "")+String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
-      const label=t.state==="inPeriod" ? `${t.periodNumber}교시 종료까지` : `${t.periodNumber}교시 시작까지`;
+      const slot=t.slotLabel || `${t.periodNumber}교시`;
+      const label=t.state==="inPeriod" ? `${slot} 종료까지` : `${slot} 시작까지`;
       box.innerHTML=`<span class="label">${esc(label)}</span><b>${clock}</b>`;
     }
     function renderDiagnostics(d){
@@ -1131,138 +1123,6 @@
       const room=cur; const r=await api(room,"/api/diagnostics"); const d=await r.json();
       if(cur===room) renderDiagnostics(d);
     }
-
-    // ---- 교시 승인 (승인 기반 분할 v8) ----
-    // 상태 푸시(1~2초)마다 다시 그리면 조작 중인 시각 입력이 초기화되므로, 구성(항목/상태)이
-    // 바뀔 때만 재렌더링하고 카운트다운은 data-deadline을 1초 틱으로만 갱신한다.
-    let renderedSplitKey = "";
-    const hhmm = iso => (iso || "").slice(11, 16);
-    function renderSplits(sp){
-      const area = $("splitArea");
-      const active = sp ? (sp.pending || []) : [];
-      const failed = sp ? (sp.recent || []).filter(r => r.status === "failed").slice(0, 2) : [];
-      const chain = sp ? sp.chain : null;
-      const key = JSON.stringify([active.map(p => p.id + p.status + p.end + p.canMerge),
-                                  chain && chain.periods, failed.map(f => f.id)]);
-      if (key === renderedSplitKey){
-        // 구성이 같으면 서버가 다시 계산한 자동승인 잔여초만 이어받는다(재렌더 없이 — 입력 보존).
-        active.forEach(p => {
-          const el = area.querySelector(`.split-count[data-sid="${p.id}"]`);
-          if (el && p.autoApproveInSec != null) el.dataset.deadline = Date.now() + p.autoApproveInSec * 1000;
-        });
-        return;
-      }
-      renderedSplitKey = key;
-      const parts = [];
-      if (chain){
-        const nextTxt = chain.nextPeriod ? `${chain.nextPeriod}교시가 끝나면` : "다음 교시가 끝나면";
-        parts.push(`<div class="split-note"><span>🔗 <b>${esc(chain.label)}</b> 연강 대기 — ${nextTxt} 합쳐진 승인 카드가 뜹니다.</span><button class="ghost" data-act="cancel-merge">연강 취소</button></div>`);
-      }
-      failed.forEach(f =>
-        parts.push(`<div class="warn">${esc(f.label)} 컷 실패 — ${esc(f.failReason || "로그를 확인하세요.")}</div>`));
-      active.forEach(p => {
-        if (p.status === "approved"){
-          const when = p.executeAt ? hhmm(p.executeAt) + "에 잘라 올립니다" : "잘라 올리는 중";
-          parts.push(`<div class="split-note"><span>✅ <b>${esc(p.label)}</b> 승인됨 — ${esc(when)}</span></div>`);
-          return;
-        }
-        const count = p.autoApproveInSec != null
-          ? `<p class="split-count" data-sid="${esc(p.id)}" data-deadline="${Date.now() + p.autoApproveInSec * 1000}"></p>`
-          : `<p class="split-count manual">수동 승인 대기 — 승인 전에는 업로드하지 않습니다</p>`;
-        parts.push(`<div class="card split-card">
-          <div class="card-lead"><h2>교시 승인 대기</h2><small>${esc(p.label)} · PC 시각 기준</small></div>
-          <div class="win">
-            <input type="time" step="60" value="${hhmm(p.start)}" data-orig="${hhmm(p.start)}" data-tstart="${esc(p.id)}">
-            <span class="arrow">→</span>
-            <input type="time" step="60" value="${hhmm(p.end)}" data-orig="${hhmm(p.end)}" data-tend="${esc(p.id)}">
-          </div>
-          <p class="ptitle">${esc(p.proposedTitle)}</p>
-          <div class="chiprow">
-            <button data-chip="-10" data-for="${esc(p.id)}">-10분</button>
-            <button data-chip="-5" data-for="${esc(p.id)}">-5분</button>
-            <button data-chip="5" data-for="${esc(p.id)}">+5분</button>
-            <button data-chip="10" data-for="${esc(p.id)}">+10분</button>
-          </div>
-          <div class="split-actions">
-            <button class="ok" data-act="approve" data-sid="${esc(p.id)}">✓ 승인 · 업로드</button>
-            <button class="ghost" data-act="merge" data-sid="${esc(p.id)}" ${p.canMerge ? "" : "disabled"}>연강</button>
-            <button class="ghost" data-act="skip" data-sid="${esc(p.id)}">건너뛰기</button>
-          </div>
-          ${count}
-        </div>`);
-      });
-      area.innerHTML = parts.join("");
-      area.classList.toggle("hidden", parts.length === 0);
-      tickSplitCountdowns();
-    }
-    function tickSplitCountdowns(){
-      document.querySelectorAll(".split-count[data-deadline]").forEach(el => {
-        const left = Math.max(0, Math.round((+el.dataset.deadline - Date.now()) / 1000));
-        el.textContent = left > 0
-          ? `조작이 없으면 ${Math.floor(left/60)}:${String(left%60).padStart(2,"0")} 후 이 시각대로 자동 승인됩니다`
-          : "자동 승인 처리 중…";
-      });
-    }
-    // 칩(-10/-5/+5/+10분)은 종료 시각만 굴린다 — 수업이 당겨지거나 길어진 경계 이동의 주 사용례.
-    function rollTime(input, deltaMin){
-      const [h, m] = (input.value || input.dataset.orig || "00:00").split(":").map(Number);
-      const total = Math.min(23*60+59, Math.max(0, h*60 + m + deltaMin));
-      input.value = `${String(Math.floor(total/60)).padStart(2,"0")}:${String(total%60).padStart(2,"0")}`;
-    }
-    async function splitAction(act, id, body){
-      if (demoMode){ toast("데모 모드 — 실제 동작은 하지 않습니다."); return; }
-      const room = cur;
-      try {
-        const path = act === "cancel-merge" ? "/api/splits/cancel-merge"
-                                            : `/api/splits/${encodeURIComponent(id)}/${act}`;
-        const r = await api(room, path, { method:"POST", body: body ? JSON.stringify(body) : null });
-        const d = await r.json();
-        if (cur !== room) return;
-        if (!d.ok) toast(d.error || "처리하지 못했습니다.");
-        else if (act === "approve") toast(d.applied === "scheduled" ? "승인 — 그 시각이 되면 잘라 올립니다"
-                                                                    : "승인 — 잘라서 업로드 큐에 넣습니다");
-        else if (act === "merge") toast("연강으로 표시 — 다음 교시가 끝나면 합쳐집니다");
-        else if (act === "skip") toast("이 교시 VOD를 건너뜁니다");
-        else toast("연강을 취소했습니다");
-        if (d.splits) renderSplits(d.splits); // WS 푸시를 기다리지 않고 즉시 반영
-      } catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
-    }
-    $("splitArea").onclick = async e => {
-      const btn = e.target.closest("button");
-      if (!btn || btn.disabled) return;
-      if (btn.dataset.chip){
-        const end = $("splitArea").querySelector(`input[data-tend="${btn.dataset.for}"]`);
-        if (end) rollTime(end, +btn.dataset.chip);
-        return;
-      }
-      const act = btn.dataset.act, id = btn.dataset.sid;
-      if (!act) return;
-      if (act === "approve"){
-        // 조작한 시각만 보낸다 — 손대지 않은 필드는 서버의 제안값 그대로.
-        const start = $("splitArea").querySelector(`input[data-tstart="${id}"]`);
-        const end = $("splitArea").querySelector(`input[data-tend="${id}"]`);
-        const body = {};
-        if (start && start.value && start.value !== start.dataset.orig) body.start = start.value;
-        if (end && end.value && end.value !== end.dataset.orig) body.end = end.value;
-        await splitAction("approve", id, body);
-      } else if (act === "merge"){
-        const room = cur;
-        if (!await confirmAsk("다음 교시와 연강으로 합칠까요?",
-          "이 교시는 아직 자르지 않고, 다음 교시가 끝날 때 하나의 영상으로 승인 요청이 옵니다.\n(두 교시 사이에 쉬는 시간·점심이 있으면 그 구간도 영상에 포함됩니다.)",
-          "연강")) return;
-        if (cur !== room) return;
-        await splitAction("merge", id);
-      } else if (act === "skip"){
-        const room = cur;
-        if (!await confirmAsk("이 교시 VOD를 건너뛸까요?",
-          "이 구간은 잘라 올리지 않습니다. 로컬 녹화 원본은 그대로 남습니다.",
-          "건너뛰기")) return;
-        if (cur !== room) return;
-        await splitAction("skip", id);
-      } else if (act === "cancel-merge"){
-        await splitAction("cancel-merge", null);
-      }
-    };
 
     function captionLabel(asset){
       switch(asset.captionStatus){
@@ -1437,8 +1297,7 @@
 
     // ---- 설정 잠금: 화면 비활성화는 실수 방지용이고, 실제 권한 검사는 PC 서버가 수행한다. ----
     const LOCK_MODE_COPY = {
-      unlocked: ["모든 설정 수정 가능", "음량·품질·알림과 시간표를 모두 변경할 수 있습니다."],
-      scheduleOnly: ["시간표만 수정 가능", "시간표만 변경할 수 있습니다. 음량·품질·알림 설정은 잠겨 있습니다."],
+      unlocked: ["설정 수정 가능", "음량·품질·알림 설정을 변경할 수 있습니다."],
       locked: ["모든 설정 잠금", "원격 설정 변경이 모두 잠겨 있습니다. 라이브 제어는 계속 사용할 수 있습니다."]
     };
 
@@ -1446,28 +1305,20 @@
       document.querySelectorAll(selector).forEach(el => { el.disabled = disabled; });
     }
     function applySettingsLockUi(){
-      const scheduleLocked = !settingsLock.scheduleEditable;
       const otherLocked = !settingsLock.otherSettingsEditable;
-      setSettingsDisabled("#todayRows input, #todayRows button, #addTodayRow, #saveToday, #clearToday", scheduleLocked);
-      setSettingsDisabled("#weekRows input, #weekRows button, #addWeekRow, #saveWeek", scheduleLocked);
       setSettingsDisabled("#qualPills button, #srcList button, #srcList input, #pushToggle, #automationToggleBtn", otherLocked);
     }
     function renderSettingsLock(payload){
-      const mode = ["unlocked", "scheduleOnly", "locked"].includes(payload && payload.mode)
+      const mode = ["unlocked", "locked"].includes(payload && payload.mode)
         ? payload.mode : "locked";
       settingsLock = {
         mode,
-        scheduleEditable: mode !== "locked",
+        scheduleEditable: false,
         otherSettingsEditable: mode === "unlocked"
       };
       const copy = LOCK_MODE_COPY[mode];
       $("settingsLockToggle").checked = mode !== "unlocked";
       $("settingsLockLabel").textContent = mode === "unlocked" ? "설정 열림" : "설정 잠금";
-      const scheduleQuick = $("scheduleOnlyQuick");
-      scheduleQuick.classList.toggle("hidden", mode === "unlocked");
-      scheduleQuick.textContent = mode === "scheduleOnly" ? "시간표 수정 중" : "시간표만 수정";
-      scheduleQuick.setAttribute("aria-pressed", mode === "scheduleOnly" ? "true" : "false");
-      scheduleQuick.title = copy[0] + " — " + copy[1];
       applySettingsLockUi();
     }
     async function loadSettingsLock(){
@@ -1504,8 +1355,6 @@
     };
     $("settingsLockToggle").onchange = () =>
       changeSettingsLockMode($("settingsLockToggle").checked ? "locked" : "unlocked");
-    $("scheduleOnlyQuick").onclick = () =>
-      changeSettingsLockMode(settingsLock.mode === "scheduleOnly" ? "locked" : "scheduleOnly");
 
     function renderAutomation(payload){
       automation = {enabled: !payload || payload.enabled !== false};
@@ -1542,40 +1391,6 @@
         toast(enabled ? "자동 운행을 켰습니다." : "자동 녹화와 방송을 중지했습니다.");
       } catch(e){ toast("자동 운행 설정을 바꾸지 못했습니다. 연결을 확인하세요."); }
     }
-
-    function rowsHtml(periods){
-      return periods.map((p,idx)=>`<tr data-i="${idx}">
-        <td><input class="time" value="${esc(p.no)}" inputmode="numeric" style="width:46px" data-f="no"></td>
-        <td><input type="time" class="time" value="${esc(String(p.start||"").slice(0,5))}" data-f="start"></td>
-        <td><input type="time" class="time" value="${esc(String(p.end||"").slice(0,5))}" data-f="end"></td>
-        <td><button class="x" data-del="${idx}">✕</button></td></tr>`).join("");
-    }
-    function readRows(tbody){
-      return [...tbody.querySelectorAll("tr")].map(tr=>({
-        no: parseInt(tr.querySelector('[data-f=no]').value)||0,
-        start: tr.querySelector('[data-f=start]').value.trim()+":00",
-        end: tr.querySelector('[data-f=end]').value.trim()+":00"
-      })).filter(p=>p.no>0);
-    }
-    function wireDelete(tbody){ tbody.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{ b.closest("tr").remove(); }); }
-
-    // ---- 오늘 시간표 ----
-    let todayPeriods=[];
-    function renderToday(){ $("todayRows").innerHTML=rowsHtml(todayPeriods); wireDelete($("todayRows")); applySettingsLockUi(); }
-    $("addTodayRow").onclick=()=>{ todayPeriods=readRows($("todayRows")); todayPeriods.push({no:todayPeriods.length+1,start:"09:00",end:"09:50"}); renderToday(); };
-    $("saveToday").onclick=async()=>{ const r=await api(cur,"/api/schedule/today",{method:"PUT",body:JSON.stringify(readRows($("todayRows")))}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("save-today"); toast("오늘 시간표를 저장했습니다."); };
-    $("clearToday").onclick=async()=>{ const r=await api(cur,"/api/schedule/today",{method:"DELETE"}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("clear-today"); toast("기본값으로 되돌렸습니다."); loadToday().catch(()=>{}); };
-    async function loadToday(){ const room=cur; const r=await api(room,"/api/schedule/today"); const d=await r.json(); if(cur!==room) return; todayPeriods=d.periods; renderToday(); }
-
-    // ---- 요일별 기본 ----
-    function renderTabs(){
-      $("weekTabs").innerHTML=WEEKDAYS.map(d=>`<button data-d="${d}" class="${d===activeDay?'active':''}">${WEEKDAY_KR[d]}</button>`).join("");
-      $("weekTabs").querySelectorAll("button").forEach(b=>b.onclick=()=>{ weekData[activeDay]=readRows($("weekRows")); activeDay=b.dataset.d; renderTabs(); renderWeek(); });
-    }
-    function renderWeek(){ $("weekRows").innerHTML=rowsHtml(weekData[activeDay]||[]); wireDelete($("weekRows")); applySettingsLockUi(); }
-    $("addWeekRow").onclick=()=>{ const cur2=readRows($("weekRows")); cur2.push({no:cur2.length+1,start:"09:00",end:"09:50"}); weekData[activeDay]=cur2; renderWeek(); };
-    $("saveWeek").onclick=async()=>{ weekData[activeDay]=readRows($("weekRows")); const r=await api(cur,"/api/schedule",{method:"PUT",body:JSON.stringify({[activeDay]:weekData[activeDay]})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("save-week"); toast(WEEKDAY_KR[activeDay]+"요일 시간표를 저장했습니다."); };
-    async function loadWeek(){ const room=cur; const r=await api(room,"/api/schedule"); const d=await r.json(); if(cur!==room) return; weekData=d; renderTabs(); renderWeek(); }
 
     // ---- 송출 품질 (적응형 품질: 프리셋 수동 고정 + 자동 복귀) ----
     const QUAL_NAMES = ["원본","절약 1단계","절약 2단계","안전 모드"];
@@ -1621,18 +1436,25 @@
       el.style.width = Math.round((frac||0)*100)+"%";
       el.style.background = peak>=0.95 ? "var(--red)" : peak>=0.8 ? "var(--yellow)" : "var(--green)";
     }
-    function updateMicWarn(warn, silent){
+    function updateMicWarn(warn, silent, unavailable){
       const el=$("micWarn");
-      if(warn){ el.textContent="⚠ 마이크 신호 없음: "+((silent||[]).join(", "))+" — 연결/음소거를 확인하세요."; el.classList.remove("hidden"); }
+      if(warn){
+        const missing=(unavailable||[]), room=String(cur && cur.label || "").toUpperCase();
+        el.textContent = missing.length
+          ? `⚠ ${room==="M113"?"M113 · ":""}마이크 연결 실패: ${missing.join(", ")} — 수신기 전원·USB/오디오 케이블·Windows 입력 장치를 확인하세요.`
+          : "⚠ 마이크 신호 없음: "+((silent||[]).join(", "))+" — 연결/음소거를 확인하세요.";
+        el.classList.remove("hidden");
+      }
       else el.classList.add("hidden");
     }
     function renderAudio(d){
       $("srcList").innerHTML = d.sources.map(s=>`
         <div class="src" data-id="${esc(s.id)}">
           <div class="top">
-            <span class="name">${esc(s.name)}</span>
+            <span class="name">${esc(s.name)} ${s.available===false&&s.captureError?'<span class="pill failed">연결 안 됨</span>':''}</span>
             <button class="mutebtn ${s.muted?'on':''}" data-mute="${esc(s.id)}">${s.muted?'음소거됨':'음소거'}</button>
           </div>
+          ${s.captureError?`<div class="asset-meta">${esc(s.captureError)}</div>`:""}
           <div class="meter"><i data-meter="${esc(s.id)}"></i></div>
           <input type="range" min="0" max="4" step="0.05" value="${esc(s.gain)}" data-gain="${esc(s.id)}">
         </div>`).join("");
@@ -1644,7 +1466,7 @@
       $("srcList").querySelectorAll("[data-gain]").forEach(sl=>sl.onchange=async()=>{
         try{ const r=await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("gain"); }catch(e){}
       });
-      updateMicWarn(d.micWarning, d.silent);
+      updateMicWarn(d.micWarning, d.silent, d.unavailable);
       renderedSrcKey = d.sources.map(s=>s.id).join("|");
       applySettingsLockUi();
     }
@@ -1721,7 +1543,6 @@
     setInterval(()=>{ if(view==="dash" && (!ws || ws.readyState!==1)) refreshPreview(); }, 2000);
     setInterval(()=>{ if(view==="grid") pollGrid(); }, 6000);
     setInterval(()=>{ if(view==="grid") refreshGridPreviews(); }, 10000);
-    setInterval(tickSplitCountdowns, 1000); // 승인 카드 자동승인 카운트다운
     setInterval(renderTimeline, 1000);
 
     // 하드웨어/제스처 뒤로가기: 그리드에서 들어간 하위 화면(상세·페어링)을 그리드 복귀로 되돌린다.
@@ -1875,7 +1696,7 @@
 
     (function(){ const b = $("pushToggle"); if (b) b.onclick = () => b.dataset.on ? disablePush() : enablePush(); })();
 
-    window.onpopstate = () => { if (rooms.length > 1 && view !== "grid") openGrid(); };
+    window.onpopstate = () => { if (view !== "grid") openGrid(); };
 
     renderSettingsLock(settingsLock);
     renderAutomation(automation);

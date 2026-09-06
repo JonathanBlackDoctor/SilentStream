@@ -20,23 +20,34 @@ public static class StartupSequence
     private static CancellationTokenSource? _lifetimeCts;
     private static IRemoteControlServer? _remoteServer;
 
-    public static async Task RunAsync(IServiceProvider services, Application app)
+    /// <summary>
+    /// Acquires the process-wide instance guard before any updater work. A secondary launch must
+    /// never schedule or apply an update while the classroom's primary process is still running.
+    /// </summary>
+    public static bool TryAcquireSingleInstance(Application app, ILogService log)
     {
-        var log = services.GetRequiredService<ILogService>();
-        var orchestrator = services.GetRequiredService<IStreamOrchestrator>();
-        var configStore = services.GetRequiredService<IConfigStore>();
+        if (_guard is not null) return _guard.IsPrimaryInstance;
 
-        // 단일 인스턴스 (plan §3.1): 중복 실행은 기존 인스턴스에 신호만 보내고 종료.
         _guard = new SingleInstanceGuard();
         if (!_guard.IsPrimaryInstance)
         {
             log.Info("이미 실행 중인 인스턴스가 있어 제어판 표시 신호만 보내고 종료합니다.");
             SingleInstanceGuard.SignalPrimaryInstance();
             app.Dispatcher.Invoke(app.Shutdown);
-            return;
+            return false;
         }
-        _signalListener = _guard.ListenForSignals(() =>
-            (app as App)?.ShowControlWindow());
+
+        _signalListener = _guard.ListenForSignals(() => (app as App)?.ShowControlWindow());
+        return true;
+    }
+
+    public static async Task RunAsync(IServiceProvider services, Application app)
+    {
+        var log = services.GetRequiredService<ILogService>();
+        var orchestrator = services.GetRequiredService<IStreamOrchestrator>();
+        var configStore = services.GetRequiredService<IConfigStore>();
+
+        if (!TryAcquireSingleInstance(app, log)) return;
 
         // 자동 시작 등록을 현재 설정과 동기화.
         new AutoStartManager(log).Apply(configStore.Load().Autostart);
@@ -49,7 +60,21 @@ public static class StartupSequence
 
         // 확장(교시 VOD + 폰 원격): 라이브와 독립적으로 스케줄러/업로드 워커/원격 서버를 먼저 기동한다.
         // (orchestrator.StartAsync 는 YouTube 미연결 시 재시도 루프로 반환하지 않을 수 있으므로 앞에 둔다.)
+        try
+        {
+            await services.GetRequiredService<LegacyPendingSplitMigrator>()
+                .RunAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            log.Error("기존 분할 승인 데이터의 고정 시간표 재처리에 실패했습니다.", ex);
+        }
         services.GetRequiredService<VodCoordinator>().Start(_lifetimeCts.Token);
+        services.GetRequiredService<DailyPlaylistCoordinator>().Start(_lifetimeCts.Token);
         // 헬스 모니터 + 폰 푸시: 상태 감시를 시작하고, 헬스 이벤트를 텔레그램 등 알림 채널로 전달한다.
         // 알림 서비스를 먼저 구독시켜 첫 이벤트부터 놓치지 않는다. 손으로 붙여넣은 평문 봇 토큰은
         // 알림 사용 여부와 무관하게 지금 즉시 DPAPI 암호화한다(평문이 디스크에 남지 않도록).
@@ -89,6 +114,7 @@ public static class StartupSequence
             "lan" => RemoteBindMode.Lan,
             "tailscale" => RemoteBindMode.Tailscale,
             "cloudflare" => RemoteBindMode.Cloudflare,
+            "central" => RemoteBindMode.Central,
             _ => RemoteBindMode.Off
         };
 

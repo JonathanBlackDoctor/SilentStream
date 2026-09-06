@@ -24,12 +24,18 @@ builder.Services.AddSingleton<InspectionStore>();
 builder.Services.AddSingleton<InspectionAuthenticator>();
 builder.Services.AddSingleton<ControlLeaseManager>();
 builder.Services.AddSingleton<ConfirmationManager>();
+builder.Services.AddSingleton<StartupUpdateGate>();
 builder.Services.AddSingleton<SessionAgentClient>();
+builder.Services.AddSingleton<ISessionAgentClient>(services => services.GetRequiredService<SessionAgentClient>());
 builder.Services.AddSingleton<BrokerClient>();
+builder.Services.AddSingleton<IBrokerClient>(services => services.GetRequiredService<BrokerClient>());
 builder.Services.AddHttpClient();
 builder.Services.AddHostedService<PreseedBundleHostedService>();
 builder.Services.AddHostedService<AgentUpdateHostedService>();
+builder.Services.AddHostedService<StartupInspectionHostedService>();
 builder.Services.AddHostedService<InspectionEngine>();
+builder.Services.AddHostedService<InspectionStatusReporter>();
+builder.Services.AddHostedService<CentralControlAgentHostedService>();
 builder.Services.AddHostedService<CloudflaredHostedService>();
 
 var app = builder.Build();
@@ -60,7 +66,8 @@ app.Use(async (context, next) =>
     }
     var path = context.Request.Path;
     var protectedPath = path.StartsWithSegments("/inspect/api") || path.StartsWithSegments("/inspect/ws");
-    var publicPath = path == "/inspect/api/v1/pair" || path == "/inspect/api/v1/health";
+    var publicPath = path == "/inspect/api/v1/pair" || path == "/inspect/api/v1/health"
+        || path == "/inspect/internal/v1/startup/rerun";
     if (!protectedPath || publicPath) { await next(); return; }
     var auth = context.RequestServices.GetRequiredService<InspectionAuthenticator>();
     var principal = auth.Authenticate(context);
@@ -71,9 +78,42 @@ app.Use(async (context, next) =>
 
 app.MapGet("/inspect/api/v1/health", (CoordinatorOptionsStore options) => Results.Json(new
 {
-    ok = true, version = InspectionProtocol.AgentVersion, room = options.Current.Room,
+    ok = true, version = InspectionProtocol.AgentVersion, room = options.Current.Room, roomId = options.Current.RoomId,
     session = Environment.UserInteractive, timestampUtc = DateTimeOffset.UtcNow
 }, InspectionProtocol.Json));
+
+app.MapPost("/inspect/internal/v1/startup/rerun", (HttpContext context, InspectionStore store,
+    StartupUpdateGate startup, CoordinatorOptionsStore options) =>
+{
+    var remoteAddress = context.Connection.RemoteIpAddress;
+    if (remoteAddress is null || !System.Net.IPAddress.IsLoopback(remoteAddress)) return Results.Unauthorized();
+    var supplied = context.Request.Headers["X-SilentStream-Inspection-Bridge"].ToString();
+    var expected = options.UnprotectMachine(options.Current.AppApiTokenMachineEnc);
+    if (string.IsNullOrWhiteSpace(supplied) || string.IsNullOrWhiteSpace(expected)
+        || !InspectionToken.Matches(supplied, InspectionToken.Hash(expected))) return Results.Unauthorized();
+    return QueueStartupRerun(store, startup, options, "app:inspection-bridge");
+});
+
+app.MapGet("/inspect/api/v1/startup", (CoordinatorOptionsStore options, StartupUpdateGate startup, InspectionStore store) =>
+{
+    var snapshot = startup.Snapshot;
+    return Results.Json(new
+    {
+        room = options.Current.Room,
+        roomId = options.Current.RoomId,
+        managed = options.Current.ManagedRooms,
+        enabled = options.Current.StartupInspectionEnabled,
+        state = snapshot,
+        run = snapshot.RunId is null ? null : store.GetRunSnapshot(snapshot.RunId)
+    }, InspectionProtocol.Json);
+});
+app.MapPost("/inspect/api/v1/startup/rerun", (HttpContext context, InspectionStore store,
+    StartupUpdateGate startup, CoordinatorOptionsStore options) =>
+{
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    return QueueStartupRerun(store, startup, options, Owner(context));
+});
 
 app.MapPost("/inspect/api/v1/pair", (HttpContext context, PairRequest request, InspectionAuthenticator auth, InspectionStore store) =>
 {
@@ -93,6 +133,44 @@ app.MapGet("/inspect/api/v1/me", (HttpContext context, CoordinatorOptionsStore o
     role = context.User.FindFirstValue(ClaimTypes.Role)?.ToLowerInvariant(), room = options.Current.Room,
     hostname = options.Current.CloudflareHostname
 }, InspectionProtocol.Json));
+
+app.MapGet("/inspect/api/v1/playlists", async (HttpContext context, CoordinatorOptionsStore options,
+    IHttpClientFactory httpFactory) =>
+{
+    if (!InspectionAuthenticator.HasRole(context, InspectionRole.Operator))
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+    var appToken = options.UnprotectMachine(options.Current.AppApiTokenMachineEnc);
+    if (string.IsNullOrWhiteSpace(appToken))
+        return Results.Json(new { error = "앱 점검 연결 권한을 다시 등록해야 합니다." },
+            InspectionProtocol.Json, statusCode: StatusCodes.Status503ServiceUnavailable);
+
+    var query = new List<string>();
+    foreach (var name in new[] { "from", "to" })
+    {
+        var value = context.Request.Query[name].ToString();
+        if (!string.IsNullOrWhiteSpace(value))
+            query.Add($"{name}={Uri.EscapeDataString(value)}");
+    }
+    var uri = "http://127.0.0.1:8787/api/inspection/playlists"
+        + (query.Count == 0 ? string.Empty : "?" + string.Join('&', query));
+
+    try
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", appToken);
+        request.Headers.TryAddWithoutValidation("X-SilentStream-Inspection-Bridge", appToken);
+        using var response = await httpFactory.CreateClient().SendAsync(request, context.RequestAborted);
+        var payload = await response.Content.ReadAsStringAsync(context.RequestAborted);
+        return Results.Text(payload, "application/json; charset=utf-8", statusCode: (int)response.StatusCode);
+    }
+    catch (Exception ex) when ((ex is HttpRequestException or OperationCanceledException)
+        && !context.RequestAborted.IsCancellationRequested)
+    {
+        return Results.Json(new { error = "강의실 앱이 아직 실행되지 않았습니다." },
+            InspectionProtocol.Json, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 
 app.MapGet("/inspect/api/v1/tokens", (HttpContext context, CoordinatorOptionsStore options) =>
 {
@@ -188,11 +266,19 @@ app.MapPost("/inspect/api/v1/runs", (HttpContext context, RunRequest request, In
             || !confirmations.Consume(request.ConfirmationId, Owner(context), "run", request.BundleId)) return Results.StatusCode(428);
         approved = true;
     }
-    var runId = store.CreateRun(bundle, Owner(context), approved);
+    if (!store.TryCreateRunWhenIdle(bundle, Owner(context), approved, out var runId))
+        return Results.Conflict(new { error = "이미 실행 중인 점검이 있습니다.", runId });
     store.Audit(Owner(context), "run.create", "ok", runId);
     return Results.Json(new { runId }, InspectionProtocol.Json, statusCode: 201);
 });
 
+app.MapGet("/inspect/api/v1/runs", (int? limit, InspectionStore store) =>
+    Results.Json(store.ListRuns(limit ?? 50), InspectionProtocol.Json));
+app.MapGet("/inspect/api/v1/runs/latest", (InspectionStore store) =>
+{
+    var runId = store.GetLatestRunId();
+    return runId is null ? Results.NotFound() : Results.Json(store.GetRunSnapshot(runId), InspectionProtocol.Json);
+});
 app.MapGet("/inspect/api/v1/runs/{runId}", (string runId, InspectionStore store) =>
     store.GetRunSnapshot(runId) is { } snapshot ? Results.Json(snapshot, InspectionProtocol.Json) : Results.NotFound());
 app.MapGet("/inspect/api/v1/runs/{runId}/events", (string runId, long? after, InspectionStore store) =>
@@ -284,3 +370,21 @@ app.MapGet("/inspect/", async context =>
 app.Run();
 
 static string Owner(HttpContext context) => context.User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "unknown";
+
+static IResult QueueStartupRerun(InspectionStore store, StartupUpdateGate startup,
+    CoordinatorOptionsStore options, string owner)
+{
+    var bundle = store.ListStoredBundles()
+        .Where(candidate => candidate.Manifest.Plan.RunAtStartup)
+        .OrderByDescending(candidate => Version.TryParse(candidate.Manifest.Version, out var version) ? version : new Version(0, 0))
+        .FirstOrDefault();
+    if (bundle is null) return Results.NotFound(new { error = "부팅 안전 점검 패키지가 없습니다." });
+    if (!InspectionApiPolicy.IsSafeStartupBundle(bundle, out var reason))
+        return Results.BadRequest(new { error = reason });
+    if (!store.TryCreateRunWhenIdle(bundle, owner, destructiveApproved: false, out var runId))
+        return Results.Conflict(new { error = "이미 실행 중인 점검이 있습니다.", runId });
+    startup.MarkInspection("inspection-queued", $"{options.Current.Room} 안전 점검을 다시 시작했습니다.", runId);
+    store.Audit(owner, "startup.rerun", "queued", runId);
+    return Results.Json(new { ok = true, runId, message = $"{options.Current.Room} 안전 점검을 다시 시작했습니다." },
+        InspectionProtocol.Json, statusCode: StatusCodes.Status201Created);
+}

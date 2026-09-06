@@ -43,11 +43,6 @@ public sealed class ConfigStore : IConfigStore
                 // machine whose config merely failed to parse.
                 var fresh = AppConfig.CreateDefault();
                 fresh.DeviceName = Environment.MachineName;
-                // Same rationale for the timetable: a brand-new install gets the built-in Mon–Fri
-                // schedule (CreateDefault is already v8, so the migration block won't seed it), while
-                // the corrupt-file fallback stays bare — a machine whose config merely failed to
-                // parse must never conjure a schedule and start cutting VODs.
-                fresh.Periods.SeedDefaultTimetable();
                 return WithRuntimeDefaults(fresh);
             }
 
@@ -256,6 +251,17 @@ public sealed class ConfigStore : IConfigStore
         if (config.Version < 12)
         {
             config.Version = 12;
+        }
+
+        // v13: timetable rows and split approval are legacy input only. Capture boundaries now
+        // come exclusively from FixedSchoolSchedule, including the 12:25-13:25 lunch slot.
+        if (config.Version < 13)
+        {
+            config.Periods.WeekdayDefaults.Clear();
+            config.Periods.Overrides.Clear();
+            config.Periods.RequireApproval = false;
+            config.Periods.AutoApproveMinutes = null;
+            config.Version = 13;
         }
         return config;
     }

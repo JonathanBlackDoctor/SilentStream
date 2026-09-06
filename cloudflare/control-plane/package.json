@@ -1,0 +1,16 @@
+{
+  "name": "silentstream-cloudflare-control-plane",
+  "version": "0.4.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/index.js && node --check public/control/app.js && node --check public/room/app.js && node --check public/room/service-worker.js && node --test test/*.test.mjs",
+    "smoke": "node test/local-smoke.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0",
+    "ws": "^8.21.3"
+  }
+}

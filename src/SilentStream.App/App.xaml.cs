@@ -145,14 +145,40 @@ public partial class App : Application
             viewModel.SetRemoteUrl(remoteServer.CurrentPublicUrl);
         }
 
+        if (!StartupSequence.TryAcquireSingleInstance(this, log))
+        {
+            return;
+        }
+
         _updateManager = new AppUpdateManager(log);
         // 새 버전을 내려받아 적용 예약하면 제어창 상태바에 "재시작 시 적용"을 띄운다.
         _updateManager.UpdateStaged += staged => viewModel.SetStagedUpdate(staged);
-        _updateManager.Start();
 
         log.Info($"Media Capture Helper v{version} 시작 완료 (백그라운드 대기)");
 
-        _ = StartupSequence.RunAsync(_services, this);
+        _ = StartAfterUpdateAsync(log);
+    }
+
+    private async Task StartAfterUpdateAsync(ILogService log)
+    {
+        try
+        {
+            if (_updateManager is not null && await _updateManager.PrepareStartupUpdateAsync().ConfigureAwait(false))
+            {
+                Dispatcher.Invoke(Shutdown); // the silent updater is waiting for this process to exit
+                return;
+            }
+
+            _updateManager?.Start();
+            if (_services is not null)
+            {
+                await StartupSequence.RunAsync(_services, this).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Error("부팅 준비 중 오류", ex);
+        }
     }
 
     /// <summary>

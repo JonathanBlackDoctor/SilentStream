@@ -8,7 +8,7 @@ namespace SilentStream.Core.Remote;
 public static class RemoteSettingsLock
 {
     public const string Unlocked = "unlocked";
-    public const string ScheduleOnly = "scheduleOnly";
+    public const string ScheduleOnly = "scheduleOnly"; // legacy persisted value; normalized closed
     public const string Locked = "locked";
 
     /// <summary>Normalizes persisted data. A missing legacy field is unlocked; an unknown value is locked.</summary>
@@ -19,6 +19,10 @@ public static class RemoteSettingsLock
             return Unlocked;
         }
 
+        if (string.Equals(mode, ScheduleOnly, StringComparison.OrdinalIgnoreCase))
+        {
+            return Locked;
+        }
         return TryParse(mode, out var normalized) ? normalized : Locked;
     }
 
@@ -28,11 +32,6 @@ public static class RemoteSettingsLock
         if (string.Equals(mode, Unlocked, StringComparison.OrdinalIgnoreCase))
         {
             normalized = Unlocked;
-            return true;
-        }
-        if (string.Equals(mode, ScheduleOnly, StringComparison.OrdinalIgnoreCase))
-        {
-            normalized = ScheduleOnly;
             return true;
         }
         if (string.Equals(mode, Locked, StringComparison.OrdinalIgnoreCase))
@@ -46,9 +45,7 @@ public static class RemoteSettingsLock
     }
 
     public static bool Allows(string? mode, RemoteSettingsSection section) =>
-        section == RemoteSettingsSection.Schedule
-            ? Normalize(mode) != Locked
-            : Normalize(mode) == Unlocked;
+        section != RemoteSettingsSection.Schedule && Normalize(mode) == Unlocked;
 
     public static string DenialMessage(RemoteSettingsSection section) =>
         section == RemoteSettingsSection.Schedule

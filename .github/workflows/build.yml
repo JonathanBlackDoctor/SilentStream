@@ -188,12 +188,47 @@ jobs:
           }
           Copy-Item inspection/deployment/Install-InspectionServices.ps1 "$inspection/Install-InspectionServices.ps1"
           Copy-Item inspection/deployment/Uninstall-InspectionServices.ps1 "$inspection/Uninstall-InspectionServices.ps1"
-          Copy-Item inspection/bundles "$inspection/bundles" -Recurse
+          $startupBundle = "inspection/bundles/startup-v${{ steps.ver.outputs.version }}"
+          if (-not (Test-Path -LiteralPath "$startupBundle/plan.json")) {
+            throw "Matching startup-safe bundle was not found: $startupBundle"
+          }
+          New-Item -ItemType Directory -Force "$inspection/bundles" | Out-Null
+          Copy-Item -LiteralPath $startupBundle -Destination "$inspection/bundles/$(Split-Path $startupBundle -Leaf)" -Recurse
           Copy-Item inspection/README.md "$inspection/README.md"
           New-Item -ItemType Directory -Force "$inspection/bin/cloudflared" | Out-Null
           Copy-Item publish/cloudflared/cloudflared.exe "$inspection/bin/cloudflared/cloudflared.exe"
+          Copy-Item "$inspection/bin/installer/SilentStreamInspectionInstaller.exe" `
+            "SilentStream-Central-Installer-v${{ steps.ver.outputs.version }}.exe"
           Copy-Item "$inspection/bin/installer/SilentStreamInspectionInstaller.exe" "$inspection/원격점검_설치.exe"
           Remove-Item "$inspection/bin/installer" -Recurse -Force
+
+      - name: Publish always-on central control plane
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet publish src/SilentStream.ProvisioningServer/SilentStream.ProvisioningServer.csproj `
+            -c Release --no-self-contained -p:Version=${{ steps.ver.outputs.version }} -o control-plane-dist
+          if ($LASTEXITCODE -ne 0) { throw "control-plane publish failed" }
+          Copy-Item src/SilentStream.ProvisioningServer/README.md control-plane-dist/DEPLOYMENT.md
+          Compress-Archive -Path "control-plane-dist/*" `
+            -DestinationPath "SilentStream-ControlPlane-v${{ steps.ver.outputs.version }}.zip" `
+            -CompressionLevel Optimal
+
+      # A separately signed inspection-agent ZIP may be staged by release engineering. When
+      # present, ship it inside the ordinary app update so each classroom Coordinator can verify
+      # and apply it before the boot inspection. The signing key itself never enters CI.
+      - name: Bundle pre-signed inspection service update
+        shell: pwsh
+        run: |
+          $source = "inspection/deployment/app-agent-update"
+          if (-not (Test-Path -LiteralPath $source)) {
+            Write-Host "No pre-signed inspection service update was staged."
+            exit 0
+          }
+          $updates = @(Get-ChildItem -LiteralPath $source -Filter '*.zip' -File)
+          if ($updates.Count -eq 0) { throw "app-agent-update exists but contains no signed ZIP." }
+          New-Item -ItemType Directory -Force -Path publish/inspection-update | Out-Null
+          $updates | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination publish/inspection-update -Force }
 
       # 3) OAuth 데스크톱 클라이언트 시크릿을 동봉(앱이 최초 실행 시 %AppData% 로 1회 복사).
       #    데스크톱 OAuth 시크릿은 사양상 기밀이 아니나, 리포 시크릿으로 주입해 git 추적은 피한다.
@@ -248,14 +283,16 @@ jobs:
           --packTitle "Media Capture Helper"
           --packAuthors "Media Capture Helper"
 
-      - name: Build separate remote inspection package
+      # This artifact intentionally has no signing key or deployment-preseed.json. Release
+      # engineering must run `deployment prepare` before it can be installed on a classroom PC.
+      - name: Build unsigned remote inspection base package
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $setup = Get-ChildItem Releases -Filter "*Setup*.exe" | Select-Object -First 1
           if (-not $setup) { throw "Velopack Setup executable was not created." }
           Copy-Item $setup.FullName inspection-dist -Force
-          $archive = "inspection-package-v${{ steps.ver.outputs.version }}.zip"
+          $archive = "inspection-package-unsigned-base-v${{ steps.ver.outputs.version }}.zip"
           Compress-Archive -Path "inspection-dist/*" -DestinationPath $archive -CompressionLevel Optimal
 
       # 7) GitHub Releases 에 게시(자산 업로드 + 릴리스 발행). 앱은 이 피드를 읽어 자동 업데이트한다.
@@ -272,8 +309,12 @@ jobs:
           --releaseName "Media Capture Helper ${{ steps.ver.outputs.version }}"
           --tag ${{ github.ref_name }}
 
-      - name: Upload remote inspection package
+      - name: Upload unsigned remote inspection base package
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.ref_name }}" "inspection-package-v${{ steps.ver.outputs.version }}.zip" --clobber
+        run: |
+          gh release upload "${{ github.ref_name }}" `
+            "inspection-package-unsigned-base-v${{ steps.ver.outputs.version }}.zip" `
+            "SilentStream-Central-Installer-v${{ steps.ver.outputs.version }}.exe" `
+            "SilentStream-ControlPlane-v${{ steps.ver.outputs.version }}.zip" --clobber

@@ -99,7 +99,7 @@ public class ContractsScaffoldingTests
     {
         var config = AppConfig.CreateDefault();
 
-        Assert.Equal(12, config.Version); // schema v12 (automatic operation switch)
+        Assert.Equal(13, config.Version); // schema v13 (fixed automatic schedule)
         Assert.Equal("unlisted", config.YouTube.Privacy);
         Assert.Equal("auto", config.Encoding.PreferredGpu);
         Assert.True(config.Recording.Enabled);

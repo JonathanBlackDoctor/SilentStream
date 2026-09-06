@@ -12,7 +12,6 @@ public class VodCoordinatorTests : IDisposable
     private readonly FakeScheduler _scheduler = new();
     private readonly FakeVod _vod = new();
     private readonly FakeQueue _queue = new();
-    private readonly FakeSplits _splits = new();
     private readonly FakeAudioExport _audio = new();
     private readonly FakeAssetCatalog _assets = new();
 
@@ -25,46 +24,37 @@ public class VodCoordinatorTests : IDisposable
     }
 
     private VodCoordinator Create() =>
-        new(_scheduler, _vod, _queue, _configStore, _splits, new LogService(), _audio, _assets,
+        new(_scheduler, _vod, _queue, _configStore, new LogService(), _audio, _assets,
             () => "id-1");
-
-    /// <summary>The legacy immediate-cut tests below opt out of v8 approval mode.</summary>
-    private void UseLegacyImmediateCut() =>
-        _configStore.Update(c => c.Periods.RequireApproval = false);
 
     private static PeriodBoundary Boundary(int n) =>
         new(new DateOnly(2026, 6, 14), n,
-            new DateTime(2026, 6, 14, 9, 0, 0), new DateTime(2026, 6, 14, 9, 50, 0));
+            new DateTime(2026, 6, 14, 9, 0, 0), new DateTime(2026, 6, 14, 9, 50, 0),
+            $"period-{n}", $"{n}교시", ScheduleSlotKinds.Period, n);
 
     [Fact]
-    public async Task Start_starts_the_queue_scheduler_and_split_service()
+    public void Start_starts_queue_and_scheduler_without_legacy_approval_service()
     {
         Create().Start(CancellationToken.None);
         Assert.True(_queue.Started);
         Assert.True(_scheduler.Started);
-        Assert.True(_splits.Started);
-        await Task.CompletedTask;
     }
 
     [Fact]
-    public async Task Approval_mode_routes_period_end_to_the_split_service()
+    public async Task Period_end_is_always_processed_automatically()
     {
-        // v8 default (RequireApproval=true): no immediate cut/upload — the boundary becomes a
-        // pending split the operator handles from the phone.
         Create().Start(CancellationToken.None);
 
         _scheduler.RaiseEnded(Boundary(1));
-        await WaitUntilAsync(() => _splits.Count >= 1, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => _queue.Jobs.Count >= 1, TimeSpan.FromSeconds(5));
 
-        Assert.Equal(1, Assert.Single(_splits.Boundaries).PeriodNumber);
-        Assert.Empty(_queue.Jobs);
-        Assert.False(_vod.PeriodCutCalled);
+        Assert.Single(_queue.Jobs);
+        Assert.True(_vod.PeriodCutCalled);
     }
 
     [Fact]
     public async Task Period_ended_cuts_then_enqueues_with_the_formatted_title()
     {
-        UseLegacyImmediateCut();
         _vod.ResultPath = Path.Combine(_dir, "1교시.mp4");
         Create().Start(CancellationToken.None);
 
@@ -76,6 +66,8 @@ public class VodCoordinatorTests : IDisposable
         Assert.Equal(1, job.PeriodNumber);
         Assert.Equal(_vod.ResultPath, job.FilePath);
         Assert.Equal(UploadJobStatus.Pending, job.Status);
+        Assert.Equal("period-1", job.ResolvedSlotId);
+        Assert.Equal("1교시", job.ResolvedSlotLabel);
         var asset = Assert.Single(_assets.Assets);
         Assert.Equal("id-1", asset.Id);
         Assert.Equal(_audio.ResultPath, asset.AudioPath);
@@ -84,14 +76,32 @@ public class VodCoordinatorTests : IDisposable
     [Fact]
     public async Task Empty_cut_does_not_enqueue()
     {
-        UseLegacyImmediateCut();
-        _vod.ResultPath = null; // no extractable segment
+        _vod.ResultPath = null;
         Create().Start(CancellationToken.None);
-
         _scheduler.RaiseEnded(Boundary(1));
         await Task.Delay(150);
-
         Assert.Empty(_queue.Jobs);
+    }
+
+    [Fact]
+    public async Task Lunch_is_cut_and_enqueued_as_an_independent_slot()
+    {
+        _vod.ResultPath = Path.Combine(_dir, "점심시간.mp4");
+        Create().Start(CancellationToken.None);
+        var date = new DateOnly(2026, 6, 15);
+        _scheduler.RaiseEnded(new PeriodBoundary(
+            date, 0, date.ToDateTime(new TimeOnly(12, 25)), date.ToDateTime(new TimeOnly(13, 25)),
+            "lunch", "점심시간", ScheduleSlotKinds.Lunch, 5));
+
+        await WaitUntilAsync(() => _queue.Jobs.Count >= 1, TimeSpan.FromSeconds(5));
+
+        var job = Assert.Single(_queue.Jobs);
+        Assert.Equal("lunch", job.ResolvedSlotId);
+        Assert.Equal("점심시간", job.ResolvedSlotLabel);
+        Assert.Equal(ScheduleSlotKinds.Lunch, job.ResolvedSlotKind);
+        Assert.Equal(5, job.ResolvedSlotOrder);
+        Assert.Contains("점심시간", job.Title);
+        Assert.Equal("lunch", Assert.Single(_assets.Assets).ResolvedSlotId);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
@@ -126,28 +136,7 @@ public class VodCoordinatorTests : IDisposable
         }
         public Task<string?> ExtractRangeAsync(
             RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
-            CancellationToken ct) =>
-            Task.FromResult(ResultPath);
-    }
-
-    private sealed class FakeSplits : ISplitApprovalService
-    {
-        public bool Started;
-        public List<PeriodBoundary> Boundaries { get; } = [];
-        public int Count { get { lock (Boundaries) { return Boundaries.Count; } } }
-        public event EventHandler? Changed { add { } remove { } }
-        public IReadOnlyList<PendingSplit> Snapshot() => [];
-        public MergeChain? OpenChain() => null;
-        public void Start(CancellationToken ct) => Started = true;
-        public void OnPeriodEnded(PeriodBoundary boundary)
-        {
-            lock (Boundaries) { Boundaries.Add(boundary); }
-        }
-        public SplitActionOutcome Approve(string id, DateTime? startLocal, DateTime? endLocal) =>
-            new(true, null);
-        public SplitActionOutcome Merge(string id) => new(true, null);
-        public SplitActionOutcome CancelMerge() => new(true, null);
-        public SplitActionOutcome Skip(string id) => new(true, null);
+            CancellationToken ct) => Task.FromResult(ResultPath);
     }
 
     private sealed class FakeQueue : IUploadQueue

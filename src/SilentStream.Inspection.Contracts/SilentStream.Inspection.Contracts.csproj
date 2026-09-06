@@ -3,6 +3,6 @@
     <TargetFramework>net8.0</TargetFramework>
     <RootNamespace>SilentStream.Inspection</RootNamespace>
     <AssemblyName>SilentStream.Inspection.Contracts</AssemblyName>
-    <Version>0.4.0</Version>
+    <Version>0.4.1</Version>
   </PropertyGroup>
 </Project>

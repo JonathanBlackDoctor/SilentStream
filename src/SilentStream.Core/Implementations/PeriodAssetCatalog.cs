@@ -72,7 +72,7 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
             return LoadLocked().Assets
                 .OrderByDescending(asset => asset.UpdatedAtUtc)
                 .ThenByDescending(asset => asset.Date)
-                .ThenByDescending(asset => asset.PeriodNumber)
+                .ThenByDescending(asset => asset.ResolvedSlotOrder)
                 .ThenBy(asset => asset.Id, StringComparer.Ordinal)
                 .ToArray();
         }
@@ -223,15 +223,28 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
         return asset with
         {
             Id = RequireValue(asset.Id, nameof(asset.Id)),
-            PeriodNumber = RequirePositive(asset.PeriodNumber, nameof(asset.PeriodNumber)),
+            PeriodNumber = NormalizePeriodNumber(asset),
             Title = RequireValue(asset.Title, nameof(asset.Title)),
             AudioPath = NormalizeOptional(asset.AudioPath),
             VideoId = NormalizeOptional(asset.VideoId),
             CaptionStatus = status,
             CaptionLanguage = NormalizeOptional(asset.CaptionLanguage),
             CaptionMessage = NormalizeOptional(asset.CaptionMessage),
+            SlotId = asset.ResolvedSlotId,
+            SlotLabel = asset.ResolvedSlotLabel,
+            SlotKind = asset.ResolvedSlotKind,
+            SlotOrder = asset.ResolvedSlotOrder,
             UpdatedAtUtc = UtcNow()
         };
+    }
+
+    private static int NormalizePeriodNumber(PeriodAsset asset)
+    {
+        if (asset.ResolvedSlotKind == ScheduleSlotKinds.Lunch)
+        {
+            return 0;
+        }
+        return RequirePositive(asset.PeriodNumber, nameof(asset.PeriodNumber));
     }
 
     private DateTime UtcNow()

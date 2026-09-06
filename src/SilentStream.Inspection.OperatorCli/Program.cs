@@ -27,6 +27,11 @@ try
         VerifyBundle(args[2], args[3], args[4]);
         return 0;
     }
+    if (args.Length == 5 && args[0] == "bundle" && args[1] == "verify-startup")
+    {
+        VerifyStartupBundle(args[2], args[3], args[4]);
+        return 0;
+    }
     if (args.Length == 6 && args[0] == "agent-update" && args[1] == "sign")
     {
         SignAgentUpdate(args[2], args[3], args[4], args[5]);
@@ -43,7 +48,7 @@ try
         PrepareDeployment(args[2], args[3], args[4], args[5], args[6], args[7], args[8], args[9]);
         return 0;
     }
-    Console.Error.WriteLine("Usage:\n  key init <keyId> [public-key.json]\n  bundle sign <sourceDir> <bundleId> <version> <minAgentVersion> <keyId> <output.zip>\n  bundle verify <bundle.zip> <public-key.json> <outputDir>\n  agent-update sign <payloadDir> <version> <keyId> <output.zip>\n  agent-update verify <update.zip> <public-key.json> <outputDir>\n  deployment prepare <packageDir> <bundleSourceDir> <bundleId> <version> <minAgentVersion> <keyId> <preparedPackage.zip> <operatorVault.json>");
+    Console.Error.WriteLine("Usage:\n  key init <keyId> [public-key.json]\n  bundle sign <sourceDir> <bundleId> <version> <minAgentVersion> <keyId> <output.zip>\n  bundle verify <bundle.zip> <public-key.json> <outputDir>\n  bundle verify-startup <bundle.zip> <public-key.json> <outputDir>\n  agent-update sign <payloadDir> <version> <keyId> <output.zip>\n  agent-update verify <update.zip> <public-key.json> <outputDir>\n  deployment prepare <packageDir> <bundleSourceDir> <bundleId> <version> <minAgentVersion> <keyId> <preparedPackage.zip> <operatorVault.json>");
     return 2;
 }
 catch (Exception ex) { Console.Error.WriteLine(ex.Message); return 1; }
@@ -78,13 +83,14 @@ static void CreateKey(string keyId, string output)
     }
 }
 
-static void SignBundle(string sourceDirectory, string bundleId, string version, string minimumAgent, string keyId, string output)
+static void SignBundle(string sourceDirectory, string bundleId, string version, string minimumAgent, string keyId, string output,
+    InspectionPlan? validatedPlan = null)
 {
     var source = Path.GetFullPath(sourceDirectory);
     if (!Directory.Exists(source)) throw new DirectoryNotFoundException(source);
     var planPath = Path.Combine(source, "plan.json");
     if (!File.Exists(planPath)) throw new FileNotFoundException("sourceDir must contain plan.json.", planPath);
-    var plan = JsonSerializer.Deserialize<InspectionPlan>(File.ReadAllText(planPath), InspectionProtocol.Json)
+    var plan = validatedPlan ?? JsonSerializer.Deserialize<InspectionPlan>(File.ReadAllText(planPath), InspectionProtocol.Json)
         ?? throw new InvalidDataException("plan.json is empty.");
     var files = new SortedDictionary<string, string>(StringComparer.Ordinal);
     foreach (var path in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
@@ -154,6 +160,17 @@ static void VerifyBundle(string bundle, string publicKeyPath, string outputDirec
     Console.WriteLine($"Verified bundle: {verified.Manifest.BundleId} {verified.Manifest.Version}, steps={verified.Manifest.Plan.Steps.Count}");
 }
 
+static void VerifyStartupBundle(string bundle, string publicKeyPath, string outputDirectory)
+{
+    using var document = JsonDocument.Parse(File.ReadAllText(publicKeyPath));
+    var keyId = document.RootElement.GetProperty("keyId").GetString() ?? throw new InvalidDataException("Public key id is missing.");
+    var key = document.RootElement.GetProperty("subjectPublicKeyInfo").GetString() ?? throw new InvalidDataException("Public key data is missing.");
+    var verified = new InspectionBundleVerifier(new Dictionary<string, string> { [keyId] = key })
+        .VerifyAndExtract(bundle, outputDirectory);
+    OperatorCliStartupValidation.ValidateVerifiedBundle(verified.Manifest);
+    Console.WriteLine($"Verified safe startup bundle: {verified.Manifest.BundleId} {verified.Manifest.Version}, steps={verified.Manifest.Plan.Steps.Count}");
+}
+
 static void VerifyAgentUpdate(string update, string publicKeyPath, string outputDirectory)
 {
     using var document = JsonDocument.Parse(File.ReadAllText(publicKeyPath));
@@ -167,6 +184,7 @@ static void VerifyAgentUpdate(string update, string publicKeyPath, string output
 static void PrepareDeployment(string packageDirectory, string bundleSourceDirectory, string bundleId, string version,
     string minimumAgent, string keyId, string outputPackage, string operatorVault)
 {
+    var validatedPlan = OperatorCliStartupValidation.ValidateDeploymentSource(bundleSourceDirectory, version);
     var package = Path.GetFullPath(packageDirectory);
     if (!Directory.Exists(package) || !File.Exists(Path.Combine(package, "원격점검_설치.exe")))
         throw new InvalidDataException("packageDir is not a built SilentStream inspection package.");
@@ -182,7 +200,7 @@ static void PrepareDeployment(string packageDirectory, string bundleSourceDirect
     Directory.CreateDirectory(bundleDirectory);
     var bundleName = $"{SafeName(bundleId)}-{Version.Parse(version)}.zip";
     var bundlePath = Path.Combine(bundleDirectory, bundleName);
-    SignBundle(bundleSourceDirectory, bundleId, version, minimumAgent, keyId, bundlePath);
+    SignBundle(bundleSourceDirectory, bundleId, version, minimumAgent, keyId, bundlePath, validatedPlan);
 
     var adminToken = InspectionToken.Create();
     var preseed = new
@@ -277,4 +295,35 @@ static string SafeName(string value)
 {
     var safe = new string(value.Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' or '.' ? c : '-').ToArray()).Trim('-');
     return safe.Length > 0 ? safe : throw new InvalidDataException("Identifier cannot be converted to a safe file name.");
+}
+
+public static class OperatorCliStartupValidation
+{
+    public static InspectionPlan ValidateDeploymentSource(string sourceDirectory, string requestedVersion)
+    {
+        EnsureCurrentVersion(requestedVersion, "Requested bundle version");
+        var source = Path.GetFullPath(sourceDirectory);
+        if (!Directory.Exists(source)) throw new DirectoryNotFoundException(source);
+        var planPath = Path.Combine(source, "plan.json");
+        if (!File.Exists(planPath)) throw new FileNotFoundException("bundleSourceDir must contain plan.json.", planPath);
+        var plan = JsonSerializer.Deserialize<InspectionPlan>(File.ReadAllText(planPath), InspectionProtocol.Json)
+            ?? throw new InvalidDataException("plan.json is empty.");
+        StartupBundleSafetyPolicy.EnsureSafe(plan);
+        return plan;
+    }
+
+    public static void ValidateVerifiedBundle(InspectionBundleManifest manifest)
+    {
+        ArgumentNullException.ThrowIfNull(manifest);
+        EnsureCurrentVersion(manifest.Version, "Startup bundle manifest version");
+        StartupBundleSafetyPolicy.EnsureSafe(manifest.Plan);
+    }
+
+    private static void EnsureCurrentVersion(string version, string label)
+    {
+        if (!string.Equals(version, InspectionProtocol.AgentVersion, StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"{label} must exactly match inspection agent version {InspectionProtocol.AgentVersion}.");
+        }
+    }
 }

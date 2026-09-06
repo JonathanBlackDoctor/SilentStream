@@ -25,6 +25,17 @@ public sealed class InspectionRemoteStore
 
     private readonly object _gate = new();
 
+    public InspectionState? CurrentState
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return Read<InspectionState>(AppPaths.InspectionStatusFile);
+            }
+        }
+    }
+
     public object GetSnapshot()
     {
         lock (_gate)
@@ -109,7 +120,7 @@ public sealed class InspectionRemoteStore
 
     private static string? NotificationKey(InspectionState state)
     {
-        var terminal = state.Phase is "completed" or "failed" or "post-reboot-complete";
+        var terminal = state.Phase is "completed" or "completed-with-warning" or "failed" or "post-reboot-complete";
         if (state.Severity != "error" && !terminal)
         {
             return null;

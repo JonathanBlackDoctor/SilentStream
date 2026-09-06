@@ -6,7 +6,12 @@ using SilentStream.Inspection;
 
 namespace SilentStream.Inspection.Coordinator;
 
-public sealed class SessionAgentClient
+public interface ISessionAgentClient
+{
+    Task<SessionResponse> SendAsync(string action, object? payload, CancellationToken cancellationToken);
+}
+
+public sealed class SessionAgentClient : ISessionAgentClient
 {
     public async Task<SessionResponse> SendAsync(string action, object? payload, CancellationToken cancellationToken)
     {
@@ -40,7 +45,13 @@ public sealed class SessionAgentClient
     }
 }
 
-public sealed class BrokerClient
+public interface IBrokerClient
+{
+    Task<BrokerResponse> SendAsync(string action, object? payload, string confirmationId,
+        CancellationToken cancellationToken);
+}
+
+public sealed class BrokerClient : IBrokerClient
 {
     private readonly CoordinatorOptionsStore _options;
     public BrokerClient(CoordinatorOptionsStore options) => _options = options;

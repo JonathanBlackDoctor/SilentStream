@@ -58,14 +58,14 @@ public sealed class SessionAgentHost
             try
             {
                 var request = await ReadAsync<SessionRequest>(pipe, token).ConfigureAwait(false);
-                var response = await ExecuteAsync(request).ConfigureAwait(false);
+                var response = await ExecuteAsync(request, token).ConfigureAwait(false);
                 await WriteAsync(pipe, response, token).ConfigureAwait(false);
             }
             catch { }
         }
     }
 
-    private async Task<SessionResponse> ExecuteAsync(SessionRequest request)
+    private async Task<SessionResponse> ExecuteAsync(SessionRequest request, CancellationToken token)
     {
         try
         {
@@ -75,7 +75,8 @@ public sealed class SessionAgentHost
                 "monitors" => new { monitors = _capture.GetMonitors() },
                 "capture" => Capture(request.Payload),
                 "self-test" => SelfTest(),
-                "audio-self-test" => await AudioPhysicalProbe.RunAsync().ConfigureAwait(false),
+                "audio-self-test" => await AudioPhysicalProbe.RunAsync(
+                    AudioPhysicalProbe.ParseOptions(request.Payload), token).ConfigureAwait(false),
                 "input" => Inject(request.Payload),
                 "release-input" => ReleaseInput(),
                 "reset-control" => ResetControl(),

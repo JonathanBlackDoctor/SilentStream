@@ -8,13 +8,15 @@ namespace SilentStream.Inspection.Coordinator;
 public sealed class AgentUpdateHostedService : BackgroundService
 {
     private readonly CoordinatorOptionsStore _options;
-    private readonly BrokerClient _broker;
+    private readonly IBrokerClient _broker;
     private readonly InspectionStore _store;
+    private readonly StartupUpdateGate _startup;
     private readonly ILogger<AgentUpdateHostedService> _logger;
 
-    public AgentUpdateHostedService(CoordinatorOptionsStore options, BrokerClient broker, InspectionStore store, ILogger<AgentUpdateHostedService> logger)
+    public AgentUpdateHostedService(CoordinatorOptionsStore options, IBrokerClient broker, InspectionStore store,
+        StartupUpdateGate startup, ILogger<AgentUpdateHostedService> logger)
     {
-        _options = options; _broker = broker; _store = store; _logger = logger;
+        _options = options; _broker = broker; _store = store; _startup = startup; _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -25,42 +27,170 @@ public sealed class AgentUpdateHostedService : BackgroundService
             {
                 ImportUpdatesFromCurrentApp();
                 ImportUpdateResults();
-                var candidate = Directory.EnumerateFiles(_options.IncomingAgentUpdatesPath, "*.zip", SearchOption.TopDirectoryOnly)
-                    .Order(StringComparer.Ordinal).FirstOrDefault();
-                if (candidate is not null) await ApplyCandidateAsync(candidate, stoppingToken).ConfigureAwait(false);
+                var candidates = Directory.EnumerateFiles(_options.IncomingAgentUpdatesPath, "*.zip", SearchOption.TopDirectoryOnly)
+                    .Order(StringComparer.Ordinal).ToArray();
+                var result = candidates.Length == 0
+                    ? AgentUpdateScanResult.None
+                    : await ProcessCandidatesAsync(candidates, stoppingToken).ConfigureAwait(false);
+                if (result == AgentUpdateScanResult.Scheduled)
+                {
+                    _startup.MarkApplying("서명된 점검 서비스 업데이트를 적용하고 있습니다.");
+                    await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken).ConfigureAwait(false);
+                    continue; // the updater normally replaces/restarts this service
+                }
+                if (result == AgentUpdateScanResult.Deferred)
+                {
+                    _startup.MarkApplying("점검 서비스 업데이트를 안전하게 적용하기 위해 다시 연결하고 있습니다.");
+                }
+                else if (result == AgentUpdateScanResult.Rejected)
+                {
+                    _startup.MarkReady(false, "일부 점검 서비스 업데이트가 검증을 통과하지 못해 현재 버전으로 계속합니다.");
+                }
+                else
+                {
+                    _startup.MarkReady(true, candidates.Length == 0
+                        ? "점검 서비스 업데이트 확인을 마쳤습니다."
+                        : "점검 서비스가 최신 버전입니다.");
+                }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
-            catch (Exception ex) { _logger.LogError(ex, "Inspection-agent update scan failed."); }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Inspection-agent update scan failed.");
+                _startup.MarkReady(false, $"점검 서비스 업데이트 확인 실패: {ex.Message}");
+            }
             await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken).ConfigureAwait(false);
         }
     }
 
-    private async Task ApplyCandidateAsync(string candidate, CancellationToken token)
+    internal async Task<AgentUpdateScanResult> ProcessCandidatesAsync(IReadOnlyList<string> candidates, CancellationToken token)
     {
-        var applying = candidate + ".applying";
-        File.Move(candidate, applying, true);
+        var verifier = new InspectionAgentUpdateVerifier(_options.Current.PublicKeys);
+        var acquired = new List<AcquiredAgentUpdate>();
+        var rejected = false;
+        var deferred = false;
+
+        foreach (var candidate in candidates)
+        {
+            token.ThrowIfCancellationRequested();
+            var applying = candidate + ".applying";
+            try
+            {
+                File.Move(candidate, applying, true);
+            }
+            catch (IOException ex)
+            {
+                deferred = true;
+                _logger.LogDebug(ex, "Agent update {Path} is still being copied; retrying later.", candidate);
+                continue;
+            }
+
+            try
+            {
+                var verified = verifier.VerifyAndExtract(applying, _options.StagedAgentUpdatesPath);
+                var version = Version.Parse(verified.Manifest.Version);
+                if (version <= Version.Parse(InspectionProtocol.AgentVersion))
+                {
+                    MoveAside(applying, ".ignored");
+                    _store.Audit("system", "agent-update", "ignored", verified.Manifest.Version);
+                    continue;
+                }
+                acquired.Add(new AcquiredAgentUpdate(candidate, applying, version, verified));
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                RestoreCandidate(applying, candidate);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                rejected = true;
+                MoveAside(applying, ".failed");
+                _store.Audit("system", "agent-update", "denied", $"{Path.GetFileName(candidate)}:{ex.Message}");
+                _logger.LogWarning(ex, "Agent update {Path} failed signature/content verification.", candidate);
+            }
+        }
+
+        if (acquired.Count == 0)
+            return deferred ? AgentUpdateScanResult.Deferred
+                : rejected ? AgentUpdateScanResult.Rejected : AgentUpdateScanResult.None;
+
+        var selected = acquired.OrderByDescending(item => item.Version).First();
+        foreach (var superseded in acquired.Where(item => !ReferenceEquals(item, selected)))
+        {
+            MoveAside(superseded.ApplyingPath, ".superseded");
+            _store.Audit("system", "agent-update", "superseded",
+                $"{superseded.Verified.Manifest.Version}:selected-{selected.Verified.Manifest.Version}");
+        }
+
+        if (!_store.TryBeginMaintenance(out var blockingRunId))
+        {
+            RestoreCandidate(selected.ApplyingPath, selected.OriginalPath);
+            _store.Audit("system", "agent-update", "deferred", blockingRunId is null
+                ? "maintenance-already-reserved" : $"inspection-run-active:{blockingRunId}");
+            return AgentUpdateScanResult.Deferred;
+        }
+
+        var scheduled = false;
         try
         {
-            var verifier = new InspectionAgentUpdateVerifier(_options.Current.PublicKeys);
-            var verified = verifier.VerifyAndExtract(applying, _options.StagedAgentUpdatesPath);
-            if (Version.Parse(verified.Manifest.Version) <= Version.Parse(InspectionProtocol.AgentVersion))
+            _store.Audit("system", "agent-update", "verified",
+                $"{selected.Verified.Manifest.Version}:{selected.Verified.PackageSha256}");
+            var response = await _broker.SendAsync("apply-inspection-update",
+                new { packagePath = selected.ApplyingPath },
+                $"signed-update:{selected.Verified.PackageSha256}", token).ConfigureAwait(false);
+            if (!response.Ok)
             {
-                File.Move(applying, applying + ".ignored", true);
-                _store.Audit("system", "agent-update", "ignored", verified.Manifest.Version);
-                return;
+                MoveAside(selected.ApplyingPath, ".failed");
+                _store.Audit("system", "agent-update", "denied",
+                    $"{Path.GetFileName(selected.OriginalPath)}:{response.Message}");
+                return AgentUpdateScanResult.Rejected;
             }
-            _store.Audit("system", "agent-update", "verified", $"{verified.Manifest.Version}:{verified.PackageSha256}");
-            var response = await _broker.SendAsync("apply-inspection-update", new { packagePath = applying },
-                $"signed-update:{verified.PackageSha256}", token).ConfigureAwait(false);
-            if (!response.Ok) throw new InvalidOperationException(response.Message);
-            _store.AppendEvent(null, "agent-update.scheduled", new { verified.Manifest.Version, verified.PackageSha256 });
+
+            scheduled = true;
+            _store.AppendEvent(null, "agent-update.scheduled", new
+            {
+                selected.Verified.Manifest.Version,
+                selected.Verified.PackageSha256
+            });
+            return AgentUpdateScanResult.Scheduled;
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException)
+        {
+            RestoreCandidate(selected.ApplyingPath, selected.OriginalPath);
+            _store.Audit("system", "agent-update", "deferred",
+                $"broker-not-ready:{Path.GetFileName(selected.OriginalPath)}:{ex.Message}");
+            _logger.LogWarning(ex, "Inspection update broker is not ready; the signed update will be retried.");
+            return AgentUpdateScanResult.Deferred;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            RestoreCandidate(selected.ApplyingPath, selected.OriginalPath);
+            throw;
         }
         catch (Exception ex)
         {
-            try { if (File.Exists(applying)) File.Move(applying, applying + ".failed", true); } catch { }
-            _store.Audit("system", "agent-update", "denied", $"{Path.GetFileName(candidate)}:{ex.Message}");
-            throw;
+            MoveAside(selected.ApplyingPath, ".failed");
+            _store.Audit("system", "agent-update", "denied",
+                $"{Path.GetFileName(selected.OriginalPath)}:{ex.Message}");
+            _logger.LogError(ex, "Inspection update was rejected after verification.");
+            return AgentUpdateScanResult.Rejected;
         }
+        finally
+        {
+            if (!scheduled) _store.EndMaintenance();
+        }
+    }
+
+    private static void MoveAside(string path, string suffix)
+    {
+        if (File.Exists(path)) File.Move(path, path + suffix, true);
+    }
+
+    private static void RestoreCandidate(string applyingPath, string originalPath)
+    {
+        try { if (File.Exists(applyingPath)) File.Move(applyingPath, originalPath, true); }
+        catch { /* the next scan also discovers a surviving .zip; preserve service availability */ }
     }
 
     private void ImportUpdatesFromCurrentApp()
@@ -96,4 +226,8 @@ public sealed class AgentUpdateHostedService : BackgroundService
             catch (Exception ex) { _logger.LogWarning(ex, "Agent update result {Path} could not be imported.", path); }
         }
     }
+
+    internal enum AgentUpdateScanResult { None, Scheduled, Deferred, Rejected }
+    private sealed record AcquiredAgentUpdate(string OriginalPath, string ApplyingPath, Version Version,
+        VerifiedInspectionAgentUpdate Verified);
 }

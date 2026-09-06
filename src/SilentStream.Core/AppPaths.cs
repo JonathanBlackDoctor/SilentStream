@@ -29,6 +29,12 @@ public static class AppPaths
     /// <summary>Persistent, quota-aware upload queue (확장계획서 §4.2). Not sensitive.</summary>
     public static string UploadQueueFile => Path.Combine(AppDataDir, "upload_queue.json");
 
+    /// <summary>Room/date playlist ids and creation status. Contains no OAuth secrets.</summary>
+    public static string DailyPlaylistsFile => Path.Combine(AppDataDir, "daily_playlists.json");
+
+    /// <summary>Recent YouTube live watch/replay links. Contains no ingest keys or OAuth secrets.</summary>
+    public static string LiveReplaysFile => Path.Combine(AppDataDir, "live_replays.json");
+
     /// <summary>Approval-based split state (승인 기반 교시 분할): pending cuts + open 연강 chain.</summary>
     public static string PendingSplitsFile => Path.Combine(AppDataDir, "pending_splits.json");
 

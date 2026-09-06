@@ -6,6 +6,8 @@ using SilentStream.Core.Recovery;
 using SilentStream.Core.Remote.WebPush;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 
 // Operational helper: generates the PBKDF2 value stored in data/rooms.json without ever writing
 // the plaintext enrollment code to disk. Example:
@@ -27,12 +29,82 @@ if (args is ["generate-vapid"])
 }
 
 builder.Services.Configure<ProvisioningOptions>(builder.Configuration.GetSection("Provisioning"));
+builder.Services.Configure<ControlPlaneOptions>(builder.Configuration.GetSection("ControlPlane"));
+builder.Services.PostConfigure<ControlPlaneOptions>(options =>
+{
+    options.StateFile = ContentPath(options.StateFile);
+    options.PreparedPackagePath = ContentPath(options.PreparedPackagePath);
+    options.InstallerPath = ContentPath(options.InstallerPath);
+});
 builder.Services.AddSingleton<RoomRegistry>();
 builder.Services.AddSingleton<RecoveryVaultStore>();
+builder.Services.AddSingleton<ControlPlaneStore>();
+builder.Services.AddSingleton<ControlPlaneAuthorizer>();
+builder.Services.AddSingleton<CloudflareAccessJwtValidator>();
+builder.Services.AddSingleton<DeviceConnectionHub>();
+builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(15) });
+app.Use(async (context, next) =>
+{
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=(), usb=()";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; connect-src 'self' wss:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'";
+    if (context.Request.Path.StartsWithSegments("/control") || context.Request.Path.StartsWithSegments("/install")
+        || context.Request.Path.StartsWithSegments("/api/control") || context.Request.Path.StartsWithSegments("/api/install"))
+        context.Response.Headers.CacheControl = "no-store";
+    await next();
+});
+app.Use(async (context, next) =>
+{
+    var options = context.RequestServices.GetRequiredService<IOptions<ControlPlaneOptions>>().Value;
+    var deviceHost = Uri.TryCreate(options.DeviceBaseUri, UriKind.Absolute, out var deviceUri) ? deviceUri.Host : string.Empty;
+    var deviceRequest = context.Request.Path.StartsWithSegments("/api/device");
+    var onDeviceHost = string.Equals(context.Request.Host.Host, deviceHost, StringComparison.OrdinalIgnoreCase);
+    var localDevelopment = app.Environment.IsDevelopment()
+        && System.Net.IPAddress.IsLoopback(context.Connection.RemoteIpAddress ?? System.Net.IPAddress.None);
+    var deviceHealth = context.Request.Path == "/health" || context.Request.Path == "/ready";
+    if (!localDevelopment && (deviceRequest != onDeviceHost)
+        && (deviceRequest || onDeviceHost && !deviceHealth))
+    {
+        context.Response.StatusCode = StatusCodes.Status404NotFound;
+        return;
+    }
+    await next();
+});
+app.UseMiddleware<CloudflareAccessAuthentication>();
+
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/ready", (IOptions<ControlPlaneOptions> configured) =>
+{
+    var options = configured.Value;
+    if (!options.Enabled) return Results.Ok(new { status = "ready", controlPlane = "disabled" });
+    var missing = new List<string>();
+    if (!Uri.TryCreate(options.PublicBaseUri, UriKind.Absolute, out var publicUri)
+        || publicUri.Scheme != Uri.UriSchemeHttps) missing.Add("ControlPlane:PublicBaseUri");
+    if (!Uri.TryCreate(options.DeviceBaseUri, UriKind.Absolute, out var deviceUri)
+        || deviceUri.Scheme != Uri.UriSchemeHttps) missing.Add("ControlPlane:DeviceBaseUri");
+    if (string.IsNullOrWhiteSpace(options.AccessTeamDomain)) missing.Add("ControlPlane:AccessTeamDomain");
+    if (string.IsNullOrWhiteSpace(options.AccessAudience) && options.AccessAudiences.Count == 0)
+        missing.Add("ControlPlane:AccessAudience(s)");
+    if (options.AdminEmails.Count == 0 && options.RoomManagers.Count == 0) missing.Add("ControlPlane RBAC users");
+    if (!File.Exists(options.PreparedPackagePath)
+        || !string.Equals(Path.GetExtension(options.PreparedPackagePath), ".zip", StringComparison.OrdinalIgnoreCase))
+        missing.Add("prepared package");
+    if (!File.Exists(options.InstallerPath)
+        || !string.Equals(Path.GetExtension(options.InstallerPath), ".exe", StringComparison.OrdinalIgnoreCase))
+        missing.Add("bootstrap installer");
+    return missing.Count == 0
+        ? Results.Ok(new { status = "ready", controlPlane = "ready" })
+        : Results.Json(new { status = "not-ready", missing }, statusCode: StatusCodes.Status503ServiceUnavailable);
+});
+
+if (app.Services.GetRequiredService<IOptions<ControlPlaneOptions>>().Value.Enabled)
+    app.MapControlPlane();
 
 // Lists only opaque id + display label. Tunnel hostnames and tokens are never returned here.
 app.MapGet("/api/rooms", (RoomRegistry rooms, IOptions<ProvisioningOptions> options, ILogger<Program> log) =>
@@ -233,6 +305,10 @@ app.MapPost("/api/admin/rooms/{roomId}/release", (string roomId, HttpRequest req
 });
 
 app.Run();
+
+string ContentPath(string value) => string.IsNullOrWhiteSpace(value) || Path.IsPathRooted(value)
+    ? value
+    : Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, value));
 
 static IResult Error(string message, int statusCode) => Results.Json(new { error = message }, statusCode: statusCode);
 

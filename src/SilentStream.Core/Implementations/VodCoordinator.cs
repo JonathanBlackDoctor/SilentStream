@@ -16,7 +16,6 @@ public sealed class VodCoordinator
     private readonly IVodSegmentService _vod;
     private readonly IUploadQueue _queue;
     private readonly IConfigStore _configStore;
-    private readonly ISplitApprovalService _splits;
     private readonly ILogService _log;
     private readonly ILocalAudioExportService _audioExport;
     private readonly IPeriodAssetCatalog _assets;
@@ -29,11 +28,10 @@ public sealed class VodCoordinator
         IVodSegmentService vod,
         IUploadQueue queue,
         IConfigStore configStore,
-        ISplitApprovalService splits,
         ILogService log,
         ILocalAudioExportService audioExport,
         IPeriodAssetCatalog assets)
-        : this(scheduler, vod, queue, configStore, splits, log, audioExport, assets,
+        : this(scheduler, vod, queue, configStore, log, audioExport, assets,
             () => Guid.NewGuid().ToString("N"))
     {
     }
@@ -44,7 +42,6 @@ public sealed class VodCoordinator
         IVodSegmentService vod,
         IUploadQueue queue,
         IConfigStore configStore,
-        ISplitApprovalService splits,
         ILogService log,
         ILocalAudioExportService audioExport,
         IPeriodAssetCatalog assets,
@@ -54,7 +51,6 @@ public sealed class VodCoordinator
         _vod = vod;
         _queue = queue;
         _configStore = configStore;
-        _splits = splits;
         _log = log;
         _audioExport = audioExport;
         _assets = assets;
@@ -69,38 +65,26 @@ public sealed class VodCoordinator
         }
 
         _queue.Start(ct);
-        _splits.Start(ct);
         _scheduler.PeriodEnded += (_, boundary) => _ = OnPeriodEndedAsync(boundary, ct);
         _scheduler.Start(ct);
-        _log.Info("교시 VOD 코디네이터를 시작했습니다(스케줄러 + 승인 + 업로드 워커).");
+        _log.Info("고정 시간표 VOD 코디네이터를 시작했습니다(자동 분할 + 업로드 워커).");
     }
 
     private async Task OnPeriodEndedAsync(Models.PeriodBoundary boundary, CancellationToken ct)
     {
         try
         {
-            if (_configStore.Load().Periods.RequireApproval)
-            {
-                // Approval mode (v8 default): record a pending split for the phone instead of
-                // cutting now — the approval service runs the cut → audio export → upload chain
-                // once the operator (or the auto-approve deadline) confirms the window. The
-                // immediate path below remains for RequireApproval=false.
-                _splits.OnPeriodEnded(boundary);
-                return;
-            }
-
             var path = await _vod.ExtractPeriodAsync(boundary, ct).ConfigureAwait(false);
             if (path is null)
             {
-                _log.Warn($"{boundary.PeriodNumber}교시 VOD 컷이 비어 업로드를 건너뜁니다.");
+                _log.Warn($"{boundary.ResolvedSlotLabel} VOD 컷이 비어 업로드를 건너뜁니다.");
                 return;
             }
 
             var config = _configStore.Load();
-            var periods = config.Periods;
-            var title = TitleTemplater.Expand(
-                periods.TitleTemplate, boundary.StartLocal, boundary.PeriodNumber,
-                TitleTemplater.ResolveRoomName(config));
+            var room = TitleTemplater.ResolveRoomName(config);
+            var roomPart = string.IsNullOrWhiteSpace(room) ? string.Empty : $" {room}";
+            var title = $"[영상]{roomPart} | {boundary.Date:yyyy-MM-dd} | {boundary.ResolvedSlotLabel}";
             var id = _idFactory();
 
             // Export from the app's local cut before the upload worker removes its temporary MP4.
@@ -110,25 +94,33 @@ public sealed class VodCoordinator
             try
             {
                 _assets.Upsert(new PeriodAsset(
-                    id, boundary.Date, boundary.PeriodNumber, title, AudioPath: audioPath));
+                    id, boundary.Date, boundary.PeriodNumber, title, AudioPath: audioPath,
+                    SlotId: boundary.ResolvedSlotId,
+                    SlotLabel: boundary.ResolvedSlotLabel,
+                    SlotKind: boundary.ResolvedSlotKind,
+                    SlotOrder: boundary.ResolvedSlotOrder));
             }
             catch (Exception ex)
             {
                 // The durable-download catalogue is additive. Losing it must never sacrifice the
                 // already-cut VOD or block its YouTube upload.
-                _log.Error($"{boundary.PeriodNumber}교시 다운로드 자산 목록 저장 실패", ex);
+                _log.Error($"{boundary.ResolvedSlotLabel} 다운로드 자산 목록 저장 실패", ex);
             }
 
             _queue.Enqueue(new UploadJob(
                 id, path, title, boundary.Date, boundary.PeriodNumber,
-                UploadJobStatus.Pending, 0, null));
+                UploadJobStatus.Pending, 0, null,
+                boundary.ResolvedSlotId,
+                boundary.ResolvedSlotLabel,
+                boundary.ResolvedSlotKind,
+                boundary.ResolvedSlotOrder));
         }
         catch (OperationCanceledException)
         {
         }
         catch (Exception ex)
         {
-            _log.Error($"{boundary.PeriodNumber}교시 VOD 처리 중 오류", ex);
+            _log.Error($"{boundary.ResolvedSlotLabel} VOD 처리 중 오류", ex);
         }
     }
 }

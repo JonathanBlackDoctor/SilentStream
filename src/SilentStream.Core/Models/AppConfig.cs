@@ -20,12 +20,13 @@ public sealed class AppConfig
     /// period splitting (<see cref="PeriodsConfig.RequireApproval"/>) and seeds the built-in
     /// Mon–Fri timetable when no schedule exists; v9 adds first-install room provisioning
     /// (<see cref="ProvisioningConfig"/>); v10 adds the phone-remote settings lock; v11
-    /// standardizes live and per-period YouTube titles; v12 adds the automatic-operation switch.
+    /// standardizes live and per-period YouTube titles; v12 adds the automatic-operation switch;
+    /// v13 replaces editable/approval-based periods with the fixed nine-slot weekday schedule.
     /// Missing keys
     /// deserialize to their defaults,
     /// so an older file loads cleanly and is migrated on the next save.
     /// </summary>
-    public int Version { get; set; } = 12;
+    public int Version { get; set; } = 13;
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]
@@ -268,9 +269,11 @@ public sealed class RecordingConfig
 public sealed class PeriodsConfig
 {
     /// <summary>Per-weekday default schedules, keyed "Mon".."Sun".</summary>
+    [JsonIgnore]
     public Dictionary<string, List<PeriodEntry>> WeekdayDefaults { get; set; } = new();
 
     /// <summary>Per-date overrides, keyed "yyyy-MM-dd" (D5: 그날 통째 덮어쓰기).</summary>
+    [JsonIgnore]
     public Dictionary<string, List<PeriodEntry>> Overrides { get; set; } = new();
 
     /// <summary>
@@ -293,14 +296,16 @@ public sealed class PeriodsConfig
     /// merges from the phone before anything is cut or uploaded. false = legacy behaviour, cut +
     /// upload immediately at the boundary.
     /// </summary>
-    public bool RequireApproval { get; set; } = true;
+    [JsonIgnore]
+    public bool RequireApproval { get; set; }
 
     /// <summary>
     /// Minutes after a period boundary before an untouched pending split is auto-approved at its
     /// default times (so an unattended room still converges on the legacy result). null = wait
     /// forever, manual approval only. Added in schema v8.
     /// </summary>
-    public int? AutoApproveMinutes { get; set; } = DefaultAutoApproveMinutes;
+    [JsonIgnore]
+    public int? AutoApproveMinutes { get; set; }
 
     /// <summary>
     /// The built-in school timetable (v8): eight 60-minute periods from 08:25, lunch 12:25~13:25
@@ -359,7 +364,7 @@ public sealed class PeriodEntry
 /// <summary>Smartphone remote-control server settings (확장계획서 §6, D8/D11).</summary>
 public sealed class RemoteConfig
 {
-    /// <summary>"off" (default), "lan", "tailscale", or "cloudflare" — see RemoteBindMode.</summary>
+    /// <summary>"off", "lan", "tailscale", "cloudflare", or "central" — see RemoteBindMode.</summary>
     public string Mode { get; set; } = "off";
 
     /// <summary>TCP port the embedded Kestrel server binds to.</summary>
@@ -389,6 +394,14 @@ public sealed class RemoteConfig
     /// used. Empty until a token is configured. Mirrors <see cref="YouTubeConfig.RefreshTokenEnc"/>.
     /// </summary>
     public string CloudflareTunnelTokenEnc { get; set; } = string.Empty;
+
+    /// <summary>
+    /// CurrentUser-DPAPI copy of the localhost-only inspection bridge credential. It authorizes
+    /// only the safe startup recheck bridge and Coordinator result delivery; it is never accepted
+    /// as a general operator token.
+    /// Provisioned by the inspection installer; empty when that service is not installed.
+    /// </summary>
+    public string InspectionBridgeTokenEnc { get; set; } = string.Empty;
 
     /// <summary>
     /// Public hostname mapped to this tunnel in the Cloudflare dashboard (e.g.

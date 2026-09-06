@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0e2942">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="SilentStream">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon.png?v=1">
+  <title>SilentStream 호실 제어</title>
+  <style>
+    :root{font-family:Inter,"Noto Sans KR",system-ui,sans-serif;color:#eff7ff;background:#09121d;--panel:#101e2d;--line:#25405a;--muted:#9db0c2;--blue:#73b5ff;--good:#74d69b;--bad:#ff8e86}*{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% -10%,#1c4e78 0,transparent 42%),#09121d}body.auth-pending .shell{visibility:hidden}.shell{max-width:720px;margin:auto;padding:max(22px,env(safe-area-inset-top)) 18px max(38px,env(safe-area-inset-bottom))}.head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}.brand{display:flex;align-items:center;gap:13px}.brand img{width:64px;height:64px;border-radius:16px;box-shadow:0 10px 32px #0007}.eyebrow{margin:0 0 3px;color:var(--blue);font-size:12px;font-weight:800;letter-spacing:.08em}.head h1{font-size:clamp(25px,8vw,38px);line-height:1;margin:0}.who{text-align:right;color:var(--muted);font-size:12px;line-height:1.5}.who a,.footer a{color:#c9e4ff}.panel{background:#101e2de8;border:1px solid var(--line);border-radius:20px;padding:19px;box-shadow:0 18px 48px #0004;margin-bottom:14px}.install{display:none}.install.show{display:block}.install-row{display:flex;align-items:center;justify-content:space-between;gap:14px}.install h2{font-size:17px;margin:0 0 5px}.install p{margin:0;color:var(--muted);font-size:13px;line-height:1.55}.install button{flex:none}.notice{display:none;margin-bottom:14px;padding:12px 14px;border-radius:12px;background:#173956;color:#d9edff;font-size:13px}.notice.show{display:block}.notice.error{background:#4b2427;color:#ffd9d6}.top{display:flex;align-items:center;justify-content:space-between;gap:12px}.room-title{font-size:24px;font-weight:900}.pill{padding:6px 10px;border-radius:999px;background:#273748;color:#c1d0dd;font-size:12px;font-weight:800}.pill.on{background:#153f2a;color:#9de8b9}.pill.off{background:#482629;color:#ffb2ad}.summary{font-size:17px;font-weight:750;margin:20px 0 8px}.meta{color:var(--muted);font-size:12px;line-height:1.6}.actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:18px}button,a.btn{border:1px solid #34516d;border-radius:11px;padding:11px 10px;background:#192d40;color:#e8f4ff;font:inherit;font-size:13px;font-weight:800;text-decoration:none;text-align:center;cursor:pointer}button.primary{border-color:#2f83d2;background:#1769aa;color:#fff}button.warn{border-color:#755928;background:#3f321c;color:#ffda96}button.danger{border-color:#7d3a3a;background:#472426;color:#ffc0bc}button:disabled{opacity:.4;cursor:not-allowed}.playlists{border-top:1px solid var(--line);margin-top:18px;padding-top:14px}.playlist-heading{display:flex;justify-content:space-between;align-items:end;gap:12px}.playlist-heading h2{font-size:17px;margin:0 0 4px}.playlist-heading p{font-size:12px;color:var(--muted);margin:0}.playlist-heading>span{font-size:11px;color:var(--good);white-space:nowrap}.playlist-list{display:grid;gap:8px;margin-top:12px}.playlist-item{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border-radius:11px;background:#0b1723}.playlist-date{font-weight:800;font-size:13px}.playlist-state,.playlist-error{color:var(--muted);font-size:11px;margin-top:3px}.playlist-state.ready{color:var(--good)}.playlist-state.bad,.playlist-error{color:#ffaaa4}.playlist-actions{display:flex;gap:6px}.playlist-actions button,.playlist-actions a{padding:8px}.playlist-history-toggle{width:100%;margin-top:10px;background:#12283a}.playlist-history{margin-top:12px;padding-top:12px;border-top:1px dashed #34516d}.playlist-search{display:grid;gap:7px}.playlist-search label{font-size:12px;font-weight:800}.playlist-search>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px}.playlist-search input{min-width:0;border:1px solid #34516d;border-radius:10px;padding:10px;background:#0b1723;color:#eff7ff;color-scheme:dark;font:inherit}.playlist-search small{color:var(--muted);font-size:11px}.playlist-nav{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:10px}.history-results{padding-top:2px}.empty{padding:32px 18px;text-align:center;color:var(--muted);border:1px dashed #40566d;border-radius:16px}.footer{text-align:center;color:#71879b;font-size:11px;margin-top:20px}dialog{border:1px solid var(--line);border-radius:16px;padding:20px;background:#101e2d;color:#eff7ff;box-shadow:0 20px 70px #0008;max-width:min(560px,calc(100vw - 30px))}dialog::backdrop{background:#02070dbb}pre{white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:55vh;overflow:auto;background:#09141f;padding:12px;border-radius:9px}@media(max-width:480px){.head{align-items:flex-start}.brand img{width:56px;height:56px}.who span{display:none}.install-row{align-items:flex-start;flex-direction:column}.install button{width:100%}.playlist-item{align-items:stretch;flex-direction:column}.playlist-actions>*{flex:1}}
+  </style>
+</head>
+<body class="auth-pending">
+  <main class="shell">
+    <header class="head">
+      <div class="brand"><img src="/icons/icon-192.png?v=1" alt="" width="64" height="64"><div><p class="eyebrow">SILENTSTREAM</p><h1 id="roomHeading">호실</h1></div></div>
+      <div class="who"><span id="who">로그인 확인 중…</span><br><a href="/auth/logout">로그아웃</a></div>
+    </header>
+    <section class="panel install" id="installCard" aria-live="polite">
+      <div class="install-row"><div><h2 id="installTitle">담당자 앱 설치</h2><p id="installGuide">이 호실을 홈 화면에서 바로 열 수 있습니다.</p></div><button class="primary" id="installButton">앱 설치</button></div>
+    </section>
+    <div class="notice" id="notice" role="status" aria-live="polite"></div>
+    <section id="room"><div class="empty">강의실 상태를 불러오는 중입니다.</div></section>
+    <footer class="footer"><a id="centralLink" href="https://admin.silentstream.win/control/">전체 중앙 관리</a> · 상태와 명령은 오프라인에 저장하지 않습니다.</footer>
+  </main>
+  <dialog id="installHelp"><h2 id="installHelpTitle">담당자 앱 설치</h2><div id="installHelpBody"></div><div class="actions"><button class="primary" id="copyInstallAddress">설치 주소 복사</button><button id="closeInstallHelp">닫기</button></div></dialog>
+  <dialog id="detail"><h2 id="detailTitle">상세 상태</h2><pre id="detailBody"></pre><button id="closeDetail">닫기</button></dialog>
+  <script src="/app.js?v=4" defer></script>
+</body>
+</html>

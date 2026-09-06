@@ -43,10 +43,10 @@ public sealed class VodSegmentService : IVodSegmentService
         var session = _sessionInfo.Current;
         if (session is null)
         {
-            _log.Warn($"{period.PeriodNumber}교시 컷 건너뜀: 진행 중인 세션 녹화가 없습니다.");
+            _log.Warn($"{period.ResolvedSlotLabel} 컷 건너뜀: 진행 중인 세션 녹화가 없습니다.");
             return Task.FromResult<string?>(null);
         }
-        return ExtractRangeAsync(session, period.StartLocal, period.EndLocal, $"{period.PeriodNumber}교시", ct);
+        return ExtractRangeAsync(session, period.StartLocal, period.EndLocal, period.ResolvedSlotLabel, ct);
     }
 
     public async Task<string?> ExtractRangeAsync(

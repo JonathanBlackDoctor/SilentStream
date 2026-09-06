@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]param(
-  [string]$Version = '0.4.0',
+  [string]$Version = '0.4.1',
   [string]$Runtime = 'win-x64',
   [string]$Output = ''
 )

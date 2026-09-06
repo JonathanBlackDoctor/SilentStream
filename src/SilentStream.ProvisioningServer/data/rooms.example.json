@@ -7,8 +7,35 @@
     {
       "id": "m111",
       "displayName": "M111",
-      "cloudflareHostname": "m111.silentstream.win",
+      "cloudflareHostname": "m111.example.invalid",
       "cloudflareTunnelToken": "PUT_THE_M111_TUNNEL_TOKEN_HERE",
+      "port": 8787,
+      "cloudflareProtocol": "http2",
+      "activationCodeHash": "GENERATE_WITH: dotnet run --project src/SilentStream.ProvisioningServer -- hash-code YOUR_LONG_RANDOM_CODE"
+    },
+    {
+      "id": "m112",
+      "displayName": "M112",
+      "cloudflareHostname": "m112.example.invalid",
+      "cloudflareTunnelToken": "PUT_THE_M112_TUNNEL_TOKEN_HERE",
+      "port": 8787,
+      "cloudflareProtocol": "http2",
+      "activationCodeHash": "GENERATE_WITH: dotnet run --project src/SilentStream.ProvisioningServer -- hash-code YOUR_LONG_RANDOM_CODE"
+    },
+    {
+      "id": "m113",
+      "displayName": "M113",
+      "cloudflareHostname": "m113.example.invalid",
+      "cloudflareTunnelToken": "PUT_THE_M113_TUNNEL_TOKEN_HERE",
+      "port": 8787,
+      "cloudflareProtocol": "http2",
+      "activationCodeHash": "GENERATE_WITH: dotnet run --project src/SilentStream.ProvisioningServer -- hash-code YOUR_LONG_RANDOM_CODE"
+    },
+    {
+      "id": "baek202",
+      "displayName": "백202",
+      "cloudflareHostname": "baek202.example.invalid",
+      "cloudflareTunnelToken": "PUT_THE_BAEK202_TUNNEL_TOKEN_HERE",
       "port": 8787,
       "cloudflareProtocol": "http2",
       "activationCodeHash": "GENERATE_WITH: dotnet run --project src/SilentStream.ProvisioningServer -- hash-code YOUR_LONG_RANDOM_CODE"

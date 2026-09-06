@@ -21,12 +21,12 @@ public sealed class InspectionEngine : BackgroundService
     };
     private readonly InspectionStore _store;
     private readonly CoordinatorOptionsStore _options;
-    private readonly SessionAgentClient _session;
+    private readonly ISessionAgentClient _session;
     private readonly BrokerClient _broker;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ILogger<InspectionEngine> _logger;
 
-    public InspectionEngine(InspectionStore store, CoordinatorOptionsStore options, SessionAgentClient session,
+    public InspectionEngine(InspectionStore store, CoordinatorOptionsStore options, ISessionAgentClient session,
         BrokerClient broker, IHttpClientFactory httpFactory, ILogger<InspectionEngine> logger)
     {
         _store = store; _options = options; _session = session; _broker = broker; _httpFactory = httpFactory; _logger = logger;
@@ -102,7 +102,7 @@ public sealed class InspectionEngine : BackgroundService
                 }
                 var dependencies = step.DependsOn.Select(id => states[id]).ToArray();
                 if (dependencies.Any(d => !InspectionStore.IsTerminal(d.Status))) continue;
-                if (step.Type != InspectionStepType.Cleanup && dependencies.Any(d => d.Status != InspectionRunStatus.Pass))
+                if (step.Type != InspectionStepType.Cleanup && dependencies.Any(d => !IsDependencySuccess(d.Status)))
                 {
                     _store.UpdateStep(runId, step.Id, InspectionRunStatus.Skipped, state.Attempt, "A dependency did not pass.");
                     progressed = true;
@@ -130,9 +130,16 @@ public sealed class InspectionEngine : BackgroundService
                 : "Cancelled after signed cleanup completed.");
             return;
         }
-        var requiredFailure = bundle.Manifest.Plan.Steps.Any(step => step.Required && finalStates[step.Id].Status != InspectionRunStatus.Pass);
-        _store.UpdateRun(runId, requiredFailure ? InspectionRunStatus.Fail : InspectionRunStatus.Pass,
-            requiredFailure ? "One or more required steps did not pass." : "All required steps passed.");
+        var requiredFailure = bundle.Manifest.Plan.Steps.Any(step => step.Required && !IsDependencySuccess(finalStates[step.Id].Status));
+        var hasWarning = bundle.Manifest.Plan.Steps.Any(step => finalStates[step.Id].Status != InspectionRunStatus.Pass);
+        var finalStatus = requiredFailure ? InspectionRunStatus.Fail
+            : hasWarning ? InspectionRunStatus.Warning : InspectionRunStatus.Pass;
+        _store.UpdateRun(runId, finalStatus, finalStatus switch
+        {
+            InspectionRunStatus.Fail => "필수 자동 점검 중 통과하지 못한 항목이 있습니다. 조치 후 다시 점검하세요.",
+            InspectionRunStatus.Warning => "자동 점검만으로 준비 완료를 확정하지 못했습니다. 표시 항목을 확인하고 재점검하세요.",
+            _ => "자동 장치 경로 점검을 통과했습니다. 실제 음질은 최종 청취로 확인하세요."
+        });
     }
 
     private async Task ExecuteStepWithRetryAsync(StoredRun run, StoredBundle bundle, InspectionStep step, int previousAttempt, CancellationToken serviceToken)
@@ -147,7 +154,13 @@ public sealed class InspectionEngine : BackgroundService
             {
                 _store.Audit(run.Owner, "step.execute", "started", $"{run.RunId}:{step.Id}:{step.Type}");
                 var output = await ExecuteStepAsync(run, bundle, step, timeout.Token).ConfigureAwait(false);
-                _store.UpdateStep(run.RunId, step.Id, InspectionRunStatus.Pass, attempt, "Passed.", output);
+                if (output is InspectionStepWarning warning)
+                {
+                    _store.UpdateStep(run.RunId, step.Id, InspectionRunStatus.Warning, attempt, warning.Message, warning.Output);
+                    _store.Audit(run.Owner, "step.execute", "warning", $"{run.RunId}:{step.Id}:{warning.Message}");
+                    return;
+                }
+                _store.UpdateStep(run.RunId, step.Id, InspectionRunStatus.Pass, attempt, StepPassMessage(step), output);
                 _store.Audit(run.Owner, "step.execute", "pass", $"{run.RunId}:{step.Id}:{step.Type}");
                 return;
             }
@@ -195,12 +208,297 @@ public sealed class InspectionEngine : BackgroundService
         InspectionStepType.Collect => await ExecuteCollectAsync(run.RunId, step.Id, step.Input, token).ConfigureAwait(false),
         InspectionStepType.AppApi => await ExecuteAppApiAsync(run.RunId, step.Input, token).ConfigureAwait(false),
         InspectionStepType.DesktopProbe => await ExecuteDesktopProbeAsync(run.RunId, step.Id, step.Input, token).ConfigureAwait(false),
+        InspectionStepType.AudioProbe => await ExecuteAudioProbeAsync(run.RunId, step.Input, token).ConfigureAwait(false),
         InspectionStepType.Script => await ExecuteScriptAsync(run.RunId, step.Id, bundle.Path, step.Input, step.TimeoutSeconds, token).ConfigureAwait(false),
         InspectionStepType.Privileged or InspectionStepType.Fault => await ExecuteBrokerAsync(run, step.Id, step.Input, token).ConfigureAwait(false),
         InspectionStepType.Checkpoint => await ExecuteCheckpointAsync(run.RunId, step.Input, token).ConfigureAwait(false),
         InspectionStepType.Cleanup => await ExecuteCleanupAsync(run, bundle, step, token).ConfigureAwait(false),
         _ => throw new InvalidOperationException($"Unsupported step type: {step.Type}")
     };
+
+    private async Task<object> ExecuteAudioProbeAsync(string runId, JsonElement input, CancellationToken token)
+    {
+        var settleSeconds = GetInt(input, "settleSeconds", 0, 0, 60);
+        if (settleSeconds > 0) await Task.Delay(TimeSpan.FromSeconds(settleSeconds), token).ConfigureAwait(false);
+
+        var captureReadyTimeoutSeconds = GetInt(input, "captureReadyTimeoutSeconds", 45, 0, 180);
+        var signalSettleSeconds = GetInt(input, "signalSettleSeconds", 12, 0, 30);
+        var captureDeadline = DateTimeOffset.UtcNow.AddSeconds(captureReadyTimeoutSeconds);
+        DateTimeOffset? captureReadySince = null;
+
+        while (true)
+        {
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "http://127.0.0.1:8787/api/audio");
+        var appToken = _options.UnprotectMachine(_options.Current.AppApiTokenMachineEnc);
+        if (!string.IsNullOrWhiteSpace(appToken))
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", appToken);
+        using var response = await _httpFactory.CreateClient().SendAsync(request, token).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"오디오 진단 API 응답 실패: HTTP {(int)response.StatusCode}");
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (!root.TryGetProperty("sources", out var sources) || sources.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("오디오 진단 응답에 소스 목록이 없습니다.");
+        var microphones = sources.EnumerateArray()
+            .Where(source => source.TryGetProperty("kind", out var kind) && kind.GetString() == "mic")
+            .Select(source => new
+            {
+                Id = ReadString(source, "id"),
+                Name = ReadString(source, "name"),
+                DeviceId = ReadString(source, "deviceId"),
+                ResolvedDeviceId = ReadString(source, "resolvedDeviceId"),
+                ResolvedDeviceName = ReadString(source, "resolvedDeviceName"),
+                Available = source.TryGetProperty("available", out var available) && available.ValueKind == JsonValueKind.True,
+                Error = ReadString(source, "captureError"),
+                Muted = source.TryGetProperty("muted", out var muted) && muted.ValueKind == JsonValueKind.True,
+                Gain = source.TryGetProperty("gain", out var gain) && gain.TryGetDouble(out var value) ? value : 0,
+                BytesReceived = source.TryGetProperty("bytesReceived", out var bytes) && bytes.TryGetInt64(out var count) ? count : 0,
+                SignalWarning = source.TryGetProperty("signalWarning", out var signalWarning) && signalWarning.ValueKind == JsonValueKind.True,
+                Loopback = source.TryGetProperty("loopback", out var loopback) && loopback.ValueKind == JsonValueKind.True
+                    || IsLoopbackName(ReadString(source, "name"))
+            }).ToArray();
+        if (microphones.Length == 0)
+        {
+            if (DateTimeOffset.UtcNow < captureDeadline)
+            {
+                captureReadySince = null;
+                await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+                continue;
+            }
+            throw new InvalidOperationException($"{_options.Current.Room} · 설정된 마이크 입력이 없습니다.");
+        }
+
+        var real = microphones.Where(microphone => !microphone.Loopback).ToArray();
+        var loopbacks = microphones.Where(microphone => microphone.Loopback).ToArray();
+        if (real.Length == 0)
+        {
+            if (DateTimeOffset.UtcNow < captureDeadline)
+            {
+                captureReadySince = null;
+                await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+                continue;
+            }
+            return new InspectionStepWarning(
+                $"{_options.Current.Room} · 실제 마이크 대신 스테레오 믹스 계열 입력만 설정되어 물리 마이크 경로를 판정할 수 없습니다.",
+                new { room = _options.Current.Room, microphones, verdict = "loopback-only" });
+        }
+
+        var roomId = StartupInspectionHostedService.NormalizeRoomId(
+            string.IsNullOrWhiteSpace(_options.Current.RoomId) ? _options.Current.Room : _options.Current.RoomId);
+        var requiredIds = _options.Current.RequiredMicrophoneDeviceIds
+            .FirstOrDefault(entry => string.Equals(entry.Key, roomId, StringComparison.OrdinalIgnoreCase)).Value
+            ?.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() ?? [];
+        var targets = requiredIds.Length == 0
+            ? real
+            : real.Where(microphone => requiredIds.Contains(microphone.DeviceId, StringComparer.OrdinalIgnoreCase)
+                || requiredIds.Contains(microphone.ResolvedDeviceId, StringComparer.OrdinalIgnoreCase)).ToArray();
+        if (requiredIds.Length > 0)
+        {
+            var matched = targets.SelectMany(microphone => new[] { microphone.DeviceId, microphone.ResolvedDeviceId })
+                .Where(value => !string.IsNullOrWhiteSpace(value)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var missing = requiredIds.Where(id => !matched.Contains(id)).ToArray();
+            if (missing.Length > 0)
+            {
+                if (DateTimeOffset.UtcNow < captureDeadline)
+                {
+                    captureReadySince = null;
+                    await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+                    continue;
+                }
+                throw new InvalidOperationException($"{_options.Current.Room} · 필수 마이크 설정을 찾을 수 없습니다: {string.Join(", ", missing)}");
+            }
+        }
+
+        var disabled = targets.Where(microphone => microphone.Muted || microphone.Gain <= 0).ToArray();
+        if (requiredIds.Length > 0 && disabled.Length > 0)
+        {
+            throw new InvalidOperationException($"{_options.Current.Room} · 필수 마이크가 음소거되어 있거나 입력 음량이 0입니다: {string.Join(", ", disabled.Select(microphone => microphone.Name))}");
+        }
+        var enabledTargets = targets.Where(microphone => !microphone.Muted && microphone.Gain > 0).ToArray();
+        if (enabledTargets.Length == 0)
+        {
+            throw new InvalidOperationException($"{_options.Current.Room} · 마이크가 음소거되어 있거나 입력 음량이 0입니다: {string.Join(", ", disabled.Select(microphone => microphone.Name))}");
+        }
+
+        var readyTargets = enabledTargets.Where(microphone => microphone.Available).ToArray();
+        var allRequiredReady = requiredIds.Length == 0
+            ? readyTargets.Length > 0
+            : targets.All(microphone => microphone.Available);
+        if (!allRequiredReady && DateTimeOffset.UtcNow < captureDeadline)
+        {
+            captureReadySince = null;
+            await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+            continue;
+        }
+        if (!allRequiredReady)
+        {
+            var unavailable = (requiredIds.Length == 0 ? enabledTargets : targets)
+                .Where(microphone => !microphone.Available && !string.IsNullOrWhiteSpace(microphone.Error)).ToArray();
+            if (unavailable.Length > 0)
+            {
+                var names = string.Join(", ", unavailable.Select(microphone => microphone.Name));
+                throw new InvalidOperationException($"{_options.Current.Room} · 마이크 연결 실패 — {names} 입력을 열거나 데이터를 받을 수 없습니다. 수신기 전원, USB/오디오 케이블, Windows 입력 장치를 확인하세요.");
+            }
+            return new InspectionStepWarning(
+                $"{_options.Current.Room} · 앱 오디오 믹서가 아직 실제 마이크 캡처를 시작하지 않아 연결 판정을 보류합니다.",
+                new { room = _options.Current.Room, microphones, requiredIds, verdict = "not-running" });
+        }
+
+        captureReadySince ??= DateTimeOffset.UtcNow;
+        var signalReadyAt = captureReadySince.Value.AddSeconds(signalSettleSeconds);
+        if (DateTimeOffset.UtcNow < signalReadyAt)
+        {
+            var remaining = signalReadyAt - DateTimeOffset.UtcNow;
+            await Task.Delay(remaining > TimeSpan.FromSeconds(2) ? TimeSpan.FromSeconds(2) : remaining, token).ConfigureAwait(false);
+            continue;
+        }
+
+        var readinessOnly = GetBool(input, "readinessOnly");
+        var ambientSignalWarning = requiredIds.Length == 0
+            ? readyTargets.All(microphone => microphone.SignalWarning)
+            : readyTargets.Any(microphone => microphone.SignalWarning);
+        var ambiguousPrimary = requiredIds.Length == 0 && real.Length > 1;
+        if (ambiguousPrimary)
+        {
+            var ambiguousResult = new
+            {
+                room = _options.Current.Room,
+                microphones,
+                requiredIds,
+                micWarning = ambientSignalWarning,
+                readinessOnly,
+                physicalRequested = GetBool(input, "physical"),
+                physicalPassed = (bool?)null,
+                physicalTests = Array.Empty<object>(),
+                verdict = "primary-mic-not-selected"
+            };
+            return new InspectionStepWarning($"{_options.Current.Room} · 실제 마이크가 여러 개이지만 필수 강의실 마이크가 지정되지 않아 자동 합격을 보류합니다. 사용할 장치 ID를 호실 설정에 지정하세요.", ambiguousResult);
+        }
+
+        var runPhysicalProbe = GetBool(input, "physical");
+        var physicalTests = new List<object>();
+        var physicalIssues = new List<string>();
+        bool? physicalPassed = null;
+        if (runPhysicalProbe)
+        {
+            var physicalTimeoutSeconds = GetInt(input, "physicalTimeoutSeconds", 8, 4, 30);
+            var physicalTargets = requiredIds.Length > 0 ? readyTargets : readyTargets.Take(1).ToArray();
+            foreach (var microphone in physicalTargets)
+            {
+                var endpointId = !string.IsNullOrWhiteSpace(microphone.ResolvedDeviceId)
+                    ? microphone.ResolvedDeviceId
+                    : microphone.DeviceId;
+                if (string.IsNullOrWhiteSpace(endpointId))
+                {
+                    physicalIssues.Add($"{microphone.Name}:endpoint-not-resolved");
+                    physicalTests.Add(new
+                    {
+                        microphone.Id,
+                        microphone.Name,
+                        requestedCaptureEndpointId = endpointId,
+                        ok = false,
+                        passed = false,
+                        reason = "endpoint-not-resolved",
+                        error = "The concrete WASAPI capture endpoint ID is unavailable."
+                    });
+                    continue;
+                }
+
+                var audio = await _session.SendAsync("audio-self-test", new
+                {
+                    captureEndpointId = endpointId,
+                    timeoutSeconds = physicalTimeoutSeconds
+                }, token).ConfigureAwait(false);
+                var payload = audio.Payload?.Clone();
+                var passed = audio.Ok && payload is { ValueKind: JsonValueKind.Object }
+                    && payload.Value.TryGetProperty("passed", out var passedValue)
+                    && passedValue.ValueKind == JsonValueKind.True;
+                var isLoopback = payload is { ValueKind: JsonValueKind.Object }
+                    && payload.Value.TryGetProperty("isLoopback", out var loopbackValue)
+                    && loopbackValue.ValueKind == JsonValueKind.True;
+                var loopbackReported = payload is { ValueKind: JsonValueKind.Object }
+                    && payload.Value.TryGetProperty("isLoopback", out var reportedLoopback)
+                    && reportedLoopback.ValueKind is JsonValueKind.True or JsonValueKind.False;
+                var resolvedEndpointId = payload is { ValueKind: JsonValueKind.Object }
+                    ? ReadString(payload.Value, "resolvedCaptureEndpointId") : string.Empty;
+                var endpointMatches = !string.IsNullOrWhiteSpace(resolvedEndpointId)
+                    && string.Equals(endpointId, resolvedEndpointId, StringComparison.OrdinalIgnoreCase);
+                var reason = payload is { ValueKind: JsonValueKind.Object }
+                    ? ReadString(payload.Value, "reason") : string.Empty;
+                var error = payload is { ValueKind: JsonValueKind.Object }
+                    ? ReadString(payload.Value, "error") : string.Empty;
+                var accepted = passed && loopbackReported && !isLoopback && endpointMatches;
+                physicalTests.Add(new
+                {
+                    microphone.Id,
+                    microphone.Name,
+                    requestedCaptureEndpointId = endpointId,
+                    ok = audio.Ok,
+                    passed,
+                    accepted,
+                    endpointMatches,
+                    isLoopback,
+                    reason = string.IsNullOrWhiteSpace(reason) ? audio.Error : reason,
+                    error = string.IsNullOrWhiteSpace(error) ? audio.Error : error,
+                    metrics = payload
+                });
+                if (!accepted)
+                {
+                    var issue = !audio.Ok ? "session-agent-error"
+                        : !loopbackReported ? "invalid-probe-response"
+                        : isLoopback ? "loopback-endpoint"
+                        : !endpointMatches ? "endpoint-mismatch"
+                        : string.IsNullOrWhiteSpace(reason) ? "physical-path-not-verified" : reason;
+                    physicalIssues.Add($"{microphone.Name}:{issue}");
+                }
+            }
+            physicalPassed = physicalTargets.Length > 0 && physicalIssues.Count == 0;
+        }
+
+        var primaryPinned = requiredIds.Length > 0;
+        var micWarning = readinessOnly || runPhysicalProbe && physicalPassed == true ? false : ambientSignalWarning;
+        var verdict = runPhysicalProbe && physicalPassed != true ? "physical-path-not-verified"
+            : runPhysicalProbe && !primaryPinned ? "primary-mic-not-pinned"
+            : runPhysicalProbe ? "physical-path-verified"
+            : readinessOnly ? "capture-ready"
+            : micWarning ? "signal-not-detected"
+            : loopbacks.Length > 0 ? "loopback-configured" : "healthy";
+        if (loopbacks.Length > 0 && runPhysicalProbe && physicalPassed == true)
+            verdict = "loopback-configured";
+        var result = new
+        {
+            room = _options.Current.Room,
+            microphones,
+            requiredIds,
+            primaryPinned,
+            readinessOnly,
+            ambientSignalWarning,
+            micWarning,
+            physicalRequested = runPhysicalProbe,
+            physicalPassed,
+            physicalTests,
+            verdict
+        };
+        if (runPhysicalProbe && physicalPassed != true)
+        {
+            var issueSummary = string.Join(", ", physicalIssues.Distinct(StringComparer.OrdinalIgnoreCase));
+            return new InspectionStepWarning(
+                $"{_options.Current.Room} · 마이크 조치 필요 — 지정된 실제 마이크에서 자동 시험음을 확인하지 못했습니다. 수신기 전원·배터리·페어링, USB/오디오 케이블, 스피커 출력을 확인하세요.{(string.IsNullOrWhiteSpace(issueSummary) ? string.Empty : $" ({issueSummary})")}",
+                result);
+        }
+        if (runPhysicalProbe && !primaryPinned)
+            return new InspectionStepWarning(
+                $"{_options.Current.Room} · 자동 시험음은 감지했지만 필수 강의실 마이크 endpoint ID가 호실 설정에 고정되지 않았습니다. 현재 장치 ID를 지정한 뒤 다시 점검하세요.",
+                result);
+        if (micWarning)
+            return new InspectionStepWarning($"{_options.Current.Room} · 실제 마이크 장치는 연결됐지만 현재 입력 신호가 감지되지 않았습니다. 실제 음질은 짧은 녹음 청취로 확인하세요.", result);
+        if (loopbacks.Length > 0)
+            return new InspectionStepWarning($"{_options.Current.Room} · 실제 마이크는 연결됐지만 스테레오 믹스 계열 입력도 마이크 목록에 남아 있습니다. 자동 판정에서는 제외했습니다.", result);
+        return result;
+        }
+    }
 
     private async Task<object> ExecuteWaitAsync(string runId, string stepId, JsonElement input, CancellationToken token)
     {
@@ -259,19 +557,46 @@ public sealed class InspectionEngine : BackgroundService
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "http" || !IPAddressIsLoopback(uri.Host) || uri.Port is not (8787 or 8790))
             throw new InvalidDataException("appApi is restricted to the local application ports.");
         var method = input.TryGetProperty("method", out var methodValue) ? methodValue.GetString() ?? "GET" : "GET";
-        using var request = new HttpRequestMessage(new HttpMethod(method), uri);
         var appToken = _options.UnprotectMachine(_options.Current.AppApiTokenMachineEnc);
-        if (!string.IsNullOrWhiteSpace(appToken)) request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", appToken);
-        if (input.TryGetProperty("body", out var body))
-        {
-            var raw = ExpandTemplate(body.GetRawText(), runId);
-            request.Content = new StringContent(raw, System.Text.Encoding.UTF8, "application/json");
-        }
-        using var response = await _httpFactory.CreateClient().SendAsync(request, token).ConfigureAwait(false);
-        var text = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+        var requestBody = input.TryGetProperty("body", out var body) ? ExpandTemplate(body.GetRawText(), runId) : null;
         var expected = GetInt(input, "expectedStatus", 200, 100, 599);
-        if ((int)response.StatusCode != expected) throw new InvalidOperationException($"Expected HTTP {expected}, received {(int)response.StatusCode}.");
-        return new { status = (int)response.StatusCode, body = text[..Math.Min(text.Length, 65536)] };
+        var waitForReadySeconds = GetInt(input, "waitForReadySeconds", 0, 0, 300);
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(waitForReadySeconds);
+        Exception? lastConnectionError = null;
+
+        while (true)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(new HttpMethod(method), uri);
+                if (!string.IsNullOrWhiteSpace(appToken))
+                {
+                    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", appToken);
+                    if (uri.Port == 8787 && uri.AbsolutePath.Equals("/api/inspection/report", StringComparison.OrdinalIgnoreCase))
+                        request.Headers.TryAddWithoutValidation("X-SilentStream-Inspection-Bridge", appToken);
+                }
+                if (requestBody is not null)
+                    request.Content = new StringContent(requestBody, System.Text.Encoding.UTF8, "application/json");
+
+                using var response = await _httpFactory.CreateClient().SendAsync(request, token).ConfigureAwait(false);
+                var text = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                if ((int)response.StatusCode == expected)
+                    return new { status = (int)response.StatusCode, body = text[..Math.Min(text.Length, 65536)] };
+
+                var transient = (int)response.StatusCode is 408 or 425 or 429 or >= 500;
+                if (!transient || DateTimeOffset.UtcNow >= deadline)
+                    throw new InvalidOperationException($"Expected HTTP {expected}, received {(int)response.StatusCode}.");
+                lastConnectionError = new HttpRequestException($"Application returned HTTP {(int)response.StatusCode} while starting.");
+            }
+            catch (HttpRequestException ex) when (DateTimeOffset.UtcNow < deadline)
+            {
+                lastConnectionError = ex;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new InvalidOperationException($"Application did not become ready within {waitForReadySeconds} seconds.", lastConnectionError);
+            await Task.Delay(TimeSpan.FromSeconds(2), token).ConfigureAwait(false);
+        }
     }
 
     private async Task<object> ExecuteCheckpointAsync(string runId, JsonElement input, CancellationToken token)
@@ -301,7 +626,12 @@ public sealed class InspectionEngine : BackgroundService
         JsonElement? audioProbe = null;
         if (input.ValueKind == JsonValueKind.Object && input.TryGetProperty("audioPhysical", out var physical) && physical.ValueKind == JsonValueKind.True)
         {
-            var audio = await _session.SendAsync("audio-self-test", null, token).ConfigureAwait(false);
+            var captureEndpointId = RequiredString(input, "captureEndpointId");
+            var audio = await _session.SendAsync("audio-self-test", new
+            {
+                captureEndpointId,
+                timeoutSeconds = GetInt(input, "physicalTimeoutSeconds", 8, 4, 30)
+            }, token).ConfigureAwait(false);
             if (!audio.Ok || audio.Payload is null) throw new InvalidOperationException(audio.Error ?? "Physical audio probe failed.");
             audioProbe = audio.Payload;
             if (!audio.Payload.Value.TryGetProperty("passed", out var passed) || !passed.GetBoolean()) throw new InvalidOperationException("Speaker-to-microphone correlation was below the physical-path threshold.");
@@ -417,8 +747,33 @@ public sealed class InspectionEngine : BackgroundService
         input.ValueKind == JsonValueKind.Object && input.TryGetProperty(name, out var value) && value.TryGetInt32(out var number)
             ? Math.Clamp(number, min, max) : fallback;
 
+    private static bool GetBool(JsonElement input, string name, bool fallback = false) =>
+        input.ValueKind == JsonValueKind.Object && input.TryGetProperty(name, out var value)
+            ? value.ValueKind == JsonValueKind.True ? true
+                : value.ValueKind == JsonValueKind.False ? false : fallback
+            : fallback;
+
+    private static string StepPassMessage(InspectionStep step) => step.Type switch
+    {
+        InspectionStepType.AudioProbe when GetBool(step.Input, "physical") =>
+            "지정된 실제 마이크에서 자동 시험음을 감지했습니다. 실제 음질은 최종 청취로 확인하세요.",
+        InspectionStepType.AudioProbe when GetBool(step.Input, "readinessOnly") =>
+            "지정된 마이크 장치가 연결되어 입력 준비가 된 것을 확인했습니다.",
+        _ => "통과했습니다."
+    };
+
     private static bool IPAddressIsLoopback(string host) => host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
         || System.Net.IPAddress.TryParse(host, out var address) && System.Net.IPAddress.IsLoopback(address);
+
+    private static bool IsDependencySuccess(InspectionRunStatus status) =>
+        status is InspectionRunStatus.Pass or InspectionRunStatus.Warning;
+
+    private static string ReadString(JsonElement value, string property) =>
+        value.TryGetProperty(property, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() ?? string.Empty : string.Empty;
+
+    private static bool IsLoopbackName(string value) => Regex.IsMatch(value,
+        "stereo\\s*mix|스테레오\\s*믹스|what\\s*u\\s*hear|wave\\s*out|loopback|monitor\\s+of",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private string ExpandTemplate(string value, string runId)
     {
@@ -479,3 +834,4 @@ public sealed class InspectionEngine : BackgroundService
 
 public sealed class InspectionUnknownException(string message) : Exception(message);
 public sealed class InspectionRunCancelledException(string message) : Exception(message);
+public sealed record InspectionStepWarning(string Message, object Output);

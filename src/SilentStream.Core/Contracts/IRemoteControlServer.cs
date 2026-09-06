@@ -16,7 +16,10 @@ public enum RemoteBindMode
     /// Bind 127.0.0.1 only; a bundled cloudflared tunnel dials out to Cloudflare and exposes the
     /// loopback server over HTTPS from anywhere — no router port-forwarding, no LAN/firewall exposure.
     /// </summary>
-    Cloudflare
+    Cloudflare,
+
+    /// <summary>Bind loopback only; the Coordinator relays control over its outbound central connection.</summary>
+    Central
 }
 
 /// <summary>

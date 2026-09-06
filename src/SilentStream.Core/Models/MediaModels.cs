@@ -73,6 +73,31 @@ public sealed record AudioSourceSettings(
     bool GateEnabled = false,
     double GateThresholdDb = -45);
 
+/// <summary>
+/// Runtime availability of one configured audio source. A source can remain configured while its
+/// physical endpoint is unplugged or Windows refuses to open it; surfacing that distinction keeps
+/// a missing classroom microphone from being mistaken for ordinary room silence.
+/// </summary>
+/// <param name="Id">Matches <see cref="AudioSourceSettings.Id"/>.</param>
+/// <param name="CaptureActive">True only while the configured endpoint is open and delivering capture buffers.</param>
+/// <param name="Error">Safe operator-facing reason when capture could not start; null while active.</param>
+/// <param name="UpdatedAtUtc">When this availability state was last refreshed.</param>
+/// <param name="LastPacketAtUtc">Most recent capture-buffer timestamp, or null before the first buffer.</param>
+/// <param name="BytesReceived">Capture bytes observed since this source was opened.</param>
+/// <param name="ResolvedDeviceId">WASAPI endpoint actually opened after resolving defaults.</param>
+/// <param name="ResolvedDeviceName">Friendly name of the endpoint actually opened.</param>
+/// <param name="IsLoopback">True when the resolved capture is system-output monitoring, not a physical microphone.</param>
+public sealed record AudioSourceRuntimeStatus(
+    string Id,
+    bool CaptureActive,
+    string? Error,
+    DateTime UpdatedAtUtc,
+    DateTime? LastPacketAtUtc = null,
+    long BytesReceived = 0,
+    string? ResolvedDeviceId = null,
+    string? ResolvedDeviceName = null,
+    bool IsLoopback = false);
+
 /// <summary>Latest peak/RMS level for one mixer source (dBFS; -100 ≈ silence).</summary>
 /// <param name="Id">Matches <see cref="AudioSourceSettings.Id"/>.</param>
 /// <param name="PeakDb">Peak level since the previous tick, in dBFS (0 = full scale).</param>

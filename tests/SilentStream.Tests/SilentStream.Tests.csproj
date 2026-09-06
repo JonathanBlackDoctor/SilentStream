@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SilentStream.Core\SilentStream.Core.csproj" />
     <ProjectReference Include="..\..\src\SilentStream.ProvisioningServer\SilentStream.ProvisioningServer.csproj" />
+    <ProjectReference Include="..\..\src\SilentStream.Inspection.Contracts\SilentStream.Inspection.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

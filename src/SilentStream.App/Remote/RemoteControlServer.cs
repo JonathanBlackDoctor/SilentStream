@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -17,6 +18,7 @@ using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
+using SilentStream.Core.Media;
 using SilentStream.Core.Models;
 using SilentStream.Core.Remote;
 using SilentStream.Core.Remote.WebPush;
@@ -39,18 +41,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
         PropertyNameCaseInsensitive = true
     };
 
-    private static readonly IReadOnlyDictionary<string, DayOfWeek> WeekdayMap = new Dictionary<string, DayOfWeek>
-    {
-        ["Sun"] = DayOfWeek.Sunday, ["Mon"] = DayOfWeek.Monday, ["Tue"] = DayOfWeek.Tuesday,
-        ["Wed"] = DayOfWeek.Wednesday, ["Thu"] = DayOfWeek.Thursday, ["Fri"] = DayOfWeek.Friday,
-        ["Sat"] = DayOfWeek.Saturday
-    };
-
     private readonly IStreamOrchestrator _orchestrator;
     private readonly IPeriodScheduleStore _scheduleStore;
-    private readonly PeriodScheduler _scheduler;
-    private readonly ISplitApprovalService _splits;
     private readonly IUploadQueue _uploadQueue;
+    private readonly IYouTubePlaylistService _playlists;
+    private readonly ILiveReplayCatalog _liveReplays;
     private readonly IPeriodAssetCatalog _periodAssets;
     private readonly IYouTubeAudioRecoveryService _audioRecovery;
     private readonly IYouTubeCaptionService _captions;
@@ -99,9 +94,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
     public RemoteControlServer(
         IStreamOrchestrator orchestrator,
         IPeriodScheduleStore scheduleStore,
-        PeriodScheduler scheduler,
-        ISplitApprovalService splits,
         IUploadQueue uploadQueue,
+        IYouTubePlaylistService playlists,
+        ILiveReplayCatalog liveReplays,
         IPeriodAssetCatalog periodAssets,
         IYouTubeAudioRecoveryService audioRecovery,
         IYouTubeCaptionService captions,
@@ -124,9 +119,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
     {
         _orchestrator = orchestrator;
         _scheduleStore = scheduleStore;
-        _scheduler = scheduler;
-        _splits = splits;
         _uploadQueue = uploadQueue;
+        _playlists = playlists;
+        _liveReplays = liveReplays;
         _periodAssets = periodAssets;
         _audioRecovery = audioRecovery;
         _captions = captions;
@@ -197,7 +192,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         var url = $"http://{bindIp}:{port}";
         var displayHost = mode == RemoteBindMode.Lan ? FirstLanIpv4() ?? bindIp : bindIp;
-        _log.Info($"원격 제어 서버 시작: {url}  —  폰 브라우저로 http://{displayHost}:{port} 접속 후 제어창에 표시된 PIN을 입력하세요.");
+        _log.Info(mode == RemoteBindMode.Central
+            ? $"중앙 원격 제어용 로컬 서버 시작: {url}"
+            : $"원격 제어 서버 시작: {url}  —  폰 브라우저로 http://{displayHost}:{port} 접속 후 제어창에 표시된 PIN을 입력하세요.");
 
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
@@ -219,7 +216,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _audioMixer.MicSignalChanged += OnMicSignal;
         _health.HealthChanged += OnHealthChanged;
         _preview.FrameUpdated += OnPreviewFrame;
-        _splits.Changed += OnSplitsChanged; // 승인 카드 실시간 갱신 (생성/승인/연강/자동승인/컷 완료)
 
         await app.StartAsync(ct).ConfigureAwait(false);
         _app = app;
@@ -247,8 +243,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 CurrentPublicUrl = $"https://{remote.CloudflareHostname.Trim().TrimEnd('/')}";
                 PublicUrlChanged?.Invoke(CurrentPublicUrl);
             }
-            _log.Info("원격 점검 Coordinator가 Cloudflare 터널을 관리합니다. 앱 내부 터널은 시작하지 않습니다.");
-            return;
+            // The Coordinator owns the always-on connector, but its config file can outlive a
+            // stopped/broken Windows service. Keep an app-owned replica as a recovery path so a
+            // Coordinator failure cannot also remove the phone controller used to repair it.
+            // Cloudflare named tunnels support multiple connectors for the same tunnel.
+            _log.Info("원격 점검 Coordinator와 별도로 앱 복구용 Cloudflare 커넥터를 시작합니다.");
         }
         var token = ResolveCloudflareToken(remote);
         var hostname = string.IsNullOrWhiteSpace(remote.CloudflareHostname) ? null : remote.CloudflareHostname;
@@ -329,7 +328,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
             return;
         }
         _app = null;
-        _splits.Changed -= OnSplitsChanged;
         _orchestrator.StateChanged -= OnStateOrMetricsChanged;
         _orchestrator.MetricsUpdated -= OnMetrics;
         _orchestrator.QualityChanged -= OnQualityChanged;
@@ -517,8 +515,78 @@ public sealed class RemoteControlServer : IRemoteControlServer
         // 인증된 폰의 허용된 작업만 파일 큐로 넘긴다. 명령의 실제 실행은 키트의 에이전트가
         // 담당하므로 원격 요청으로 임의 PowerShell을 실행할 수 없다.
         app.MapGet("/api/inspection", () => Results.Json(_inspection.GetSnapshot(), Json));
+        app.MapGet("/api/inspection/playlists", (HttpContext ctx) =>
+        {
+            if (!HasInspectionBridgeSecret(ctx))
+            {
+                return Results.Json(new { error = "점검 서비스 전용 인증이 필요합니다." }, Json,
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var today = KoreaToday();
+            var config = _configStore.Load();
+            var room = TitleTemplater.ResolveRoomName(config);
+            if (string.IsNullOrWhiteSpace(room)) room = Environment.MachineName.ToLowerInvariant();
+            var knownOnly = string.Equals(ctx.Request.Query["knownOnly"].ToString(), "true",
+                StringComparison.OrdinalIgnoreCase);
+            if (knownOnly)
+            {
+                // The central portal needs durable links for earlier dates, not placeholder rows.
+                // Bound the payload so a long-running installation cannot grow every 10-second
+                // control-plane snapshot without limit.
+                var known = _playlists.Snapshot(room, DateOnly.MinValue, DateOnly.MaxValue)
+                    .OrderByDescending(item => item.Date)
+                    .Take(400)
+                    .ToArray();
+                var oldest = known.Length == 0 ? today : known[^1].Date;
+                var newest = known.Length == 0 ? today : known[0].Date;
+                return Results.Json(new
+                {
+                    room,
+                    from = oldest.ToString("yyyy-MM-dd"),
+                    to = newest.ToString("yyyy-MM-dd"),
+                    items = known
+                }, Json);
+            }
+
+            if (!TryReadDate(ctx.Request.Query["from"].ToString(), today.AddDays(-7), out var from)
+                || !TryReadDate(ctx.Request.Query["to"].ToString(), today.AddDays(7), out var to)
+                || from > to || to.DayNumber - from.DayNumber > 62)
+            {
+                return Results.Json(new { error = "조회 날짜 범위가 올바르지 않습니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+
+            var saved = _playlists.Snapshot(room, from, to)
+                .ToDictionary(item => item.Date);
+            var items = new List<DailyPlaylistRecord>();
+            for (var date = from; date <= to; date = date.AddDays(1))
+            {
+                if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
+                items.Add(saved.TryGetValue(date, out var item)
+                    ? item
+                    : new DailyPlaylistRecord(room, date, $"{room} | {date:yyyy-MM-dd}",
+                        null, null, DailyPlaylistStatus.Creating, null, null));
+            }
+            return Results.Json(new
+            {
+                room,
+                from = from.ToString("yyyy-MM-dd"),
+                to = to.ToString("yyyy-MM-dd"),
+                items = items.OrderByDescending(item => item.Date)
+            }, Json);
+        });
         app.MapPost("/api/inspection/report", async Task<IResult> (HttpContext ctx) =>
         {
+            // A paired phone can view and request a recheck, but it must never be able to forge a
+            // passing inspection report. Only the localhost Coordinator receives this DPAPI-backed
+            // bridge credential during installation.
+            if (!HasInspectionBridgeSecret(ctx))
+            {
+                return Results.Json(new { error = "점검 서비스 전용 인증이 필요합니다." }, Json,
+                    statusCode: StatusCodes.Status403Forbidden);
+            }
+
             var report = await ReadJsonAsync<InspectionReportRequest>(ctx).ConfigureAwait(false);
             if (report is null || string.IsNullOrWhiteSpace(report.RunId) || string.IsNullOrWhiteSpace(report.Room))
             {
@@ -530,7 +598,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             if (saved.ShouldNotify)
             {
                 var prefix = string.IsNullOrWhiteSpace(saved.State.Room) ? string.Empty : $"[{saved.State.Room}] ";
-                var icon = saved.State.Severity == "error" ? "🚨" : "✅";
+                var icon = saved.State.Severity switch { "error" => "🚨", "warning" => "⚠️", _ => "✅" };
                 var message = $"{icon} {prefix}실기기 점검: {saved.State.Message}";
                 foreach (var notifier in _notifiers)
                 {
@@ -542,6 +610,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
         app.MapPost("/api/inspection/command", async Task<IResult> (HttpContext ctx) =>
         {
             var request = await ReadJsonAsync<InspectionCommandRequest>(ctx).ConfigureAwait(false);
+            if (string.Equals(request?.Action, "rerun-check", StringComparison.OrdinalIgnoreCase))
+            {
+                return await RerunCoordinatorInspectionAsync(ctx).ConfigureAwait(false);
+            }
             var result = _inspection.QueueCommand(request);
             return Results.Json(result, Json, statusCode: result.Ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
@@ -684,99 +756,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 ? "원격 요청으로 자동 녹화·방송을 다음 앱 시작부터 다시 켰습니다."
                 : "원격 요청으로 자동 녹화·방송을 중지했습니다.");
             return Results.Json(new { ok = true, automation = BuildAutomation() }, Json);
-        });
-
-        app.MapGet("/api/schedule", () => Results.Json(GetWeekdayDefaults(), Json));
-        app.MapPut("/api/schedule", async Task<IResult> (HttpContext ctx) =>
-        {
-            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
-            {
-                return blocked;
-            }
-            var body = await ReadJsonAsync<Dictionary<string, List<PeriodDto>>>(ctx).ConfigureAwait(false);
-            if (body is null)
-            {
-                return Results.Json(new { ok = false, error = "시간표 형식이 올바르지 않습니다." }, Json,
-                    statusCode: StatusCodes.Status400BadRequest);
-            }
-            foreach (var (key, rows) in body)
-            {
-                if (WeekdayMap.TryGetValue(key, out var day))
-                {
-                    _scheduleStore.SetWeekdayDefault(day, ToDaySchedule(rows));
-                }
-            }
-            _scheduler.NotifyScheduleChanged();
-            _log.Info("요일별 기본 시간표가 갱신되었습니다(원격).");
-            return Results.Json(new { ok = true }, Json);
-        });
-
-        app.MapGet("/api/schedule/today", () =>
-        {
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            return Results.Json(new
-            {
-                date = today.ToString("yyyy-MM-dd"),
-                hasOverride = _scheduleStore.GetOverride(today) is not null,
-                periods = ToDtos(_scheduleStore.ResolveForDate(today))
-            }, Json);
-        });
-        app.MapPut("/api/schedule/today", async Task<IResult> (HttpContext ctx) =>
-        {
-            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
-            {
-                return blocked;
-            }
-            var rows = await ReadJsonAsync<List<PeriodDto>>(ctx).ConfigureAwait(false);
-            if (rows is null)
-            {
-                return Results.Json(new
-                {
-                    ok = false,
-                    error = "시간표 본문은 교시 배열이어야 합니다. 기존 시간표는 변경되지 않았습니다."
-                }, Json, statusCode: StatusCodes.Status400BadRequest);
-            }
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            _scheduleStore.SetOverride(today, ToDaySchedule(rows));
-            _scheduler.NotifyScheduleChanged();
-            _log.Info($"오늘({today:yyyy-MM-dd}) 시간표 덮어쓰기가 적용되었습니다(원격).");
-            return Results.Json(new { ok = true }, Json);
-        });
-        app.MapDelete("/api/schedule/today", () =>
-        {
-            if (BlockSettingsChange(RemoteSettingsSection.Schedule) is { } blocked)
-            {
-                return blocked;
-            }
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            _scheduleStore.ClearOverride(today);
-            _scheduler.NotifyScheduleChanged();
-            _log.Info($"오늘({today:yyyy-MM-dd}) 시간표 덮어쓰기를 해제했습니다(원격).");
-            return Results.Json(new { ok = true }, Json);
-        });
-
-        // ---- 승인 기반 교시 분할 (v8): 승인 카드 조회 + 승인/연강/건너뛰기/연강 취소 ----
-        app.MapGet("/api/splits", () => Results.Json(BuildSplits(), Json));
-        app.MapPost("/api/splits/cancel-merge", () =>
-        {
-            var result = SplitRemote.CancelMerge(_splits, BuildSplits);
-            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
-        });
-        app.MapPost("/api/splits/{id}/approve", async (string id, HttpContext ctx) =>
-        {
-            var body = await ReadJsonAsync<SplitRemote.ApproveRequest>(ctx).ConfigureAwait(false);
-            var result = SplitRemote.Approve(_splits, id, body, BuildSplits);
-            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
-        });
-        app.MapPost("/api/splits/{id}/merge", (string id) =>
-        {
-            var result = SplitRemote.Merge(_splits, id, BuildSplits);
-            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
-        });
-        app.MapPost("/api/splits/{id}/skip", (string id) =>
-        {
-            var result = SplitRemote.Skip(_splits, id, BuildSplits);
-            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 400);
         });
 
         // ---- audio mixer (다중 채널 + 증폭 + 실시간 미터) ----
@@ -1016,19 +995,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private void OnQualityChanged(object? sender, QualityStatus quality) => BroadcastStatus();
 
-    private void OnSplitsChanged(object? sender, EventArgs e) => BroadcastStatus();
-
     private void OnHealthChanged(object? sender, HealthEvent e) => BroadcastStatus();
 
     private void OnPreviewFrame() => BroadcastPreview();
-
-    /// <summary>GET /api/splits body — also embedded in the status push as <c>splits</c>.</summary>
-    private SplitRemote.SplitsDto BuildSplits()
-    {
-        var config = _configStore.Load();
-        return SplitRemote.BuildDto(_splits, _scheduleStore, config.Periods, TitleTemplater.ResolveRoomName(config),
-            DateTime.Now);
-    }
 
     // ---- audio levels + mic-signal push ----
 
@@ -1138,23 +1107,34 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private object BuildAudio()
     {
         var levels = _audioMixer.CurrentLevels.Sources.ToDictionary(l => l.Id);
-        string[] silent;
-        lock (_silentMicsGate)
-        {
-            silent = _silentMics.Values.ToArray();
-        }
+        var microphone = BuildMicrophoneHealth();
+        var statuses = _audioMixer.SourceStatuses.ToDictionary(status => status.Id, StringComparer.Ordinal);
+        HashSet<string> silentIds;
+        lock (_silentMicsGate) silentIds = _silentMics.Keys.ToHashSet(StringComparer.Ordinal);
         return new
         {
-            micWarning = silent.Length > 0,
-            silent,
+            micWarning = microphone.Warning,
+            silent = microphone.Attention,
+            unavailable = microphone.Unavailable,
             sources = _audioMixer.Sources.Select(s =>
             {
                 levels.TryGetValue(s.Id, out var l);
+                statuses.TryGetValue(s.Id, out var status);
                 return new
                 {
                     id = s.Id,
                     name = s.Name,
                     kind = s.Kind == AudioSourceKind.System ? "system" : "mic",
+                    loopback = status?.IsLoopback == true || s.Kind == AudioSourceKind.System || AudioDeviceClassifier.IsLoopbackName(s.Name),
+                    deviceId = s.DeviceId,
+                    resolvedDeviceId = status?.ResolvedDeviceId,
+                    resolvedDeviceName = status?.ResolvedDeviceName,
+                    available = status?.CaptureActive ?? false,
+                    captureError = status?.Error,
+                    captureUpdatedAtUtc = status?.UpdatedAtUtc,
+                    lastPacketAtUtc = status?.LastPacketAtUtc,
+                    bytesReceived = status?.BytesReceived ?? 0,
+                    signalWarning = silentIds.Contains(s.Id),
                     gain = s.Gain,
                     muted = s.Muted,
                     gate = s.GateEnabled,
@@ -1264,6 +1244,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 id = asset.Id,
                 date = asset.Date.ToString("yyyy-MM-dd"),
                 period = asset.PeriodNumber,
+                slotId = asset.ResolvedSlotId,
+                slotLabel = asset.ResolvedSlotLabel,
+                slotKind = asset.ResolvedSlotKind,
+                slotOrder = asset.ResolvedSlotOrder,
                 title = asset.Title,
                 videoId = asset.VideoId,
                 audioAvailable,
@@ -1317,7 +1301,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private static string PeriodAssetDownloadName(PeriodAsset asset, string extension)
     {
-        var fallback = $"{asset.Date:yyyy-MM-dd}_{asset.PeriodNumber}교시";
+        var fallback = $"{asset.Date:yyyy-MM-dd}_{asset.ResolvedSlotLabel}";
         var stem = string.IsNullOrWhiteSpace(asset.Title) ? fallback : asset.Title.Trim();
         var invalid = Path.GetInvalidFileNameChars();
         var safe = new string(stem.Select(ch => invalid.Contains(ch) || char.IsControl(ch) ? '_' : ch).ToArray())
@@ -1351,6 +1335,33 @@ public sealed class RemoteControlServer : IRemoteControlServer
         };
     }
 
+    private MicrophoneHealthSnapshot BuildMicrophoneHealth()
+    {
+        var statuses = _audioMixer.SourceStatuses.ToDictionary(status => status.Id, StringComparer.Ordinal);
+        var names = _audioMixer.Sources
+            .Where(source => source.Kind == AudioSourceKind.Microphone
+                && !AudioDeviceClassifier.IsLoopbackName(source.Name)
+                && !(statuses.TryGetValue(source.Id, out var status) && status.IsLoopback))
+            .ToDictionary(source => source.Id, source => source.Name, StringComparer.Ordinal);
+        string[] silent;
+        lock (_silentMicsGate)
+        {
+            silent = _silentMics
+                .Where(entry => names.ContainsKey(entry.Key))
+                .Select(entry => entry.Value)
+                .ToArray();
+        }
+        var unavailable = statuses.Values
+            .Where(status => names.ContainsKey(status.Id) && !status.CaptureActive && !string.IsNullOrWhiteSpace(status.Error))
+            .Select(status => names[status.Id])
+            .Distinct(StringComparer.CurrentCulture)
+            .ToArray();
+        var attention = silent.Concat(unavailable)
+            .Distinct(StringComparer.CurrentCulture)
+            .ToArray();
+        return new MicrophoneHealthSnapshot(attention.Length > 0, attention, unavailable);
+    }
+
     private IResult? BlockSettingsChange(RemoteSettingsSection section)
     {
         var mode = RemoteSettingsLock.Normalize(_configStore.Load().Remote.SettingsLockMode);
@@ -1381,11 +1392,12 @@ public sealed class RemoteControlServer : IRemoteControlServer
             ? (double?)null
             : Math.Max(0, (nowUtc - metrics.TimestampUtc).TotalSeconds);
         var metricsStale = metricsAgeSeconds is null or > 15;
-        string[] silentMics;
-        lock (_silentMicsGate)
-        {
-            silentMics = _silentMics.Values.ToArray();
-        }
+        var microphone = BuildMicrophoneHealth();
+        var liveReplay = _liveReplays.Latest;
+        var measuredUploads = jobs
+            .Where(job => job.Status == UploadJobStatus.Completed && job.UploadDurationSeconds is >= 0)
+            .TakeLast(20)
+            .ToArray();
 
         return new
         {
@@ -1393,6 +1405,14 @@ public sealed class RemoteControlServer : IRemoteControlServer
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
+            liveReplay = liveReplay is null ? null : new
+            {
+                broadcastId = liveReplay.BroadcastId,
+                url = liveReplay.Url,
+                startedAtUtc = liveReplay.StartedAtUtc,
+                endedAtUtc = liveReplay.EndedAtUtc,
+                replayReady = liveReplay.EndedAtUtc is not null
+            },
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
             recovery = _recovery.Status,
             automation = BuildAutomation(),
@@ -1416,8 +1436,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
             audio = new
             {
-                micWarning = silentMics.Length > 0,
-                silent = silentMics
+                micWarning = microphone.Warning,
+                silent = microphone.Attention,
+                unavailable = microphone.Unavailable
             },
             metrics = new
             {
@@ -1439,25 +1460,34 @@ public sealed class RemoteControlServer : IRemoteControlServer
             today = new
             {
                 date = today.ToString("yyyy-MM-dd"),
-                hasOverride = _scheduleStore.GetOverride(today) is not null,
+                hasOverride = false,
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             },
             diagnostics = BuildDiagnostics(now),
-            // 승인 기반 분할(v8): 승인 카드 + 연강 체인 + 최근 이력. 구버전 페이지는 이 필드를
-            // 모른 채 무시하고, 새 페이지는 null-guard로 구서버와도 호환된다.
-            splits = BuildSplits(),
             queue = new
             {
                 pending = jobs.Count(j => j.Status == UploadJobStatus.Pending),
                 uploading = jobs.Count(j => j.Status == UploadJobStatus.Uploading),
                 completed = jobs.Count(j => j.Status == UploadJobStatus.Completed),
                 failed = jobs.Count(j => j.Status == UploadJobStatus.Failed),
+                measuredCount = measuredUploads.Length,
+                averageDurationSeconds = measuredUploads.Length == 0
+                    ? null as double?
+                    : measuredUploads.Average(job => job.UploadDurationSeconds!.Value),
                 items = jobs.TakeLast(20).Select(j => new
                 {
                     period = j.PeriodNumber,
+                    slotLabel = j.ResolvedSlotLabel,
                     title = j.Title,
                     status = j.Status,
-                    videoId = j.VideoId
+                    videoId = j.VideoId,
+                    fileSizeBytes = j.FileSizeBytes,
+                    uploadStartedAtUtc = j.UploadStartedAtUtc,
+                    uploadCompletedAtUtc = j.UploadCompletedAtUtc,
+                    uploadDurationSeconds = j.UploadDurationSeconds,
+                    uploadElapsedSeconds = j.Status == UploadJobStatus.Uploading && j.UploadStartedAtUtc is { } started
+                        ? Math.Max(0, (DateTimeOffset.UtcNow - started).TotalSeconds)
+                        : null as double?
                 })
             }
         };
@@ -1472,11 +1502,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     {
         var state = _orchestrator.State;
         var recording = _recording.GetStatus();
-        string[] silentMics;
-        lock (_silentMicsGate)
-        {
-            silentMics = _silentMics.Values.ToArray();
-        }
+        var microphone = BuildMicrophoneHealth();
+        var inspection = _inspection.CurrentState;
 
         var quality = _orchestrator.CurrentQuality;
         return new
@@ -1485,14 +1512,24 @@ public sealed class RemoteControlServer : IRemoteControlServer
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
-            micWarning = silentMics.Length > 0,
-            silent = silentMics,
+            micWarning = microphone.Warning,
+            silent = microphone.Attention,
+            unavailableMics = microphone.Unavailable,
+            inspection = inspection is null ? null : new
+            {
+                inspection.RunId,
+                inspection.Phase,
+                inspection.ProgressPercent,
+                inspection.CurrentStep,
+                inspection.Message,
+                inspection.Severity,
+                inspection.UpdatedAtUtc,
+                issueCount = inspection.Issues.Count
+            },
             bitrateKbps = _lastMetrics.UploadBitrateKbps,
             freeBytes = recording.FreeDiskBytes,
             qualityLevel = quality.Level,   // 그리드 카드의 "절약" 칩용 (0 = 원본)
             qualityName = quality.LevelName,
-            // 그리드 "승인 대기 N" 칩 + 일괄 승인 대상 판별용
-            pendingSplits = _splits.Snapshot().Count(s => s.Status == PendingSplitStatus.Pending),
             issues = _health.ActiveEvents.Select(e => new
             {
                 kind = e.Kind.ToString(),
@@ -1513,29 +1550,13 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _ => "대기"
     };
 
-    private Dictionary<string, List<PeriodDto>> GetWeekdayDefaults()
-    {
-        var result = new Dictionary<string, List<PeriodDto>>();
-        foreach (var (key, day) in WeekdayMap)
-        {
-            result[key] = ToDtos(_scheduleStore.GetWeekdayDefault(day));
-        }
-        return result;
-    }
-
     private static List<PeriodDto> ToDtos(DaySchedule schedule) =>
         schedule.Periods
             .Select(p => new PeriodDto(p.Number,
                 p.Start.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-                p.End.ToString("HH:mm:ss", CultureInfo.InvariantCulture)))
+                p.End.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
+                p.ResolvedSlotId, p.ResolvedSlotLabel, p.ResolvedSlotKind, p.ResolvedSlotOrder))
             .ToList();
-
-    private static DaySchedule ToDaySchedule(IEnumerable<PeriodDto> rows) =>
-        new(rows
-            .Where(r => TimeOnly.TryParse(r.Start, out _) && TimeOnly.TryParse(r.End, out _))
-            .Select(r => new SchoolPeriod(r.No, TimeOnly.Parse(r.Start), TimeOnly.Parse(r.End)))
-            .OrderBy(p => p.Number)
-            .ToList());
 
     private static async Task<T?> ReadJsonAsync<T>(HttpContext ctx)
     {
@@ -1549,13 +1570,99 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
     }
 
+    private bool HasInspectionBridgeSecret(HttpContext context)
+    {
+        if (context.Connection.RemoteIpAddress is not { } remoteAddress
+            || !IPAddress.IsLoopback(remoteAddress)) return false;
+        var encrypted = _configStore.Load().Remote.InspectionBridgeTokenEnc;
+        var supplied = context.Request.Headers["X-SilentStream-Inspection-Bridge"].ToString();
+        if (string.IsNullOrWhiteSpace(encrypted) || string.IsNullOrWhiteSpace(supplied)) return false;
+        try
+        {
+            return RemoteAuth.ConstantTimeEquals(_tokenProtector.Unprotect(encrypted), supplied);
+        }
+        catch (Exception ex) when (ex is FormatException or System.Security.Cryptography.CryptographicException)
+        {
+            _log.Warn("점검 서비스 전용 인증 정보를 읽을 수 없습니다.");
+            return false;
+        }
+    }
+
+    private static bool TryReadDate(string? value, DateOnly fallback, out DateOnly date)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            date = fallback;
+            return true;
+        }
+        return DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None, out date);
+    }
+
+    private static DateOnly KoreaToday()
+    {
+        TimeZoneInfo zone;
+        try { zone = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time"); }
+        catch (TimeZoneNotFoundException)
+        {
+            try { zone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Seoul"); }
+            catch (TimeZoneNotFoundException)
+            {
+                zone = TimeZoneInfo.CreateCustomTimeZone("SilentStream-KST", TimeSpan.FromHours(9), "KST", "KST");
+            }
+        }
+        return DateOnly.FromDateTime(TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, zone).DateTime);
+    }
+
+    private async Task<IResult> RerunCoordinatorInspectionAsync(HttpContext context)
+    {
+        try
+        {
+            var encryptedBridgeToken = _configStore.Load().Remote.InspectionBridgeTokenEnc;
+            if (string.IsNullOrWhiteSpace(encryptedBridgeToken))
+            {
+                return Results.Json(new { ok = false, message = "점검 서비스 연결 정보를 다시 등록해야 합니다." }, Json,
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+            string bridgeToken;
+            try { bridgeToken = _tokenProtector.Unprotect(encryptedBridgeToken); }
+            catch (Exception ex) when (ex is FormatException or System.Security.Cryptography.CryptographicException)
+            {
+                return Results.Json(new { ok = false, message = "점검 서비스 연결 정보를 읽을 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post,
+                "http://127.0.0.1:8790/inspect/internal/v1/startup/rerun");
+            request.Headers.TryAddWithoutValidation("X-SilentStream-Inspection-Bridge", bridgeToken);
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            using var response = await client.SendAsync(request, context.RequestAborted).ConfigureAwait(false);
+            var payload = await response.Content.ReadAsStringAsync(context.RequestAborted).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return Results.Text(payload, "application/json; charset=utf-8", statusCode: StatusCodes.Status202Accepted);
+            var message = response.StatusCode switch
+            {
+                System.Net.HttpStatusCode.Conflict => "이미 실행 중인 점검이 있습니다.",
+                System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden => "점검 서비스 연결 권한을 다시 등록해야 합니다.",
+                System.Net.HttpStatusCode.NotFound => "부팅 안전 점검 패키지가 설치되지 않았습니다.",
+                _ => "점검을 다시 시작하지 못했습니다."
+            };
+            return Results.Json(new { ok = false, message }, Json, statusCode: (int)response.StatusCode);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            return Results.Json(new { ok = false, message = "점검 서비스에 연결할 수 없습니다." }, Json,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
     // ---- network / firewall ----
 
     private string? ResolveBindAddress(RemoteBindMode mode) => mode switch
     {
         RemoteBindMode.Tailscale => FindTailscaleIp(),
-        // Cloudflare exposes the loopback server through the tunnel — never bind it to the LAN.
-        RemoteBindMode.Cloudflare => "127.0.0.1",
+        // Cloudflare and the central relay expose only the loopback server — never bind it to LAN.
+        RemoteBindMode.Cloudflare or RemoteBindMode.Central => "127.0.0.1",
         _ => "0.0.0.0"
     };
 
@@ -1704,7 +1811,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private sealed record AutomationRequest(bool? Enabled);
 
-    private sealed record PeriodDto(int No, string Start, string End);
+    private sealed record MicrophoneHealthSnapshot(bool Warning, string[] Attention, string[] Unavailable);
+
+    private sealed record PeriodDto(
+        int No, string Start, string End, string SlotId, string SlotLabel, string SlotKind, int SlotOrder);
 
     private sealed record AudioMuteRequest(string? Id, bool Muted);
 

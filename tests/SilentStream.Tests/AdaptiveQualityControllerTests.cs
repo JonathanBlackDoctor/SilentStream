@@ -386,16 +386,6 @@ public class AdaptiveQualityControllerTests : IDisposable
     {
         public DaySchedule Day = DaySchedule.Empty;
 
-        public DaySchedule GetWeekdayDefault(DayOfWeek day) => Day;
-
-        public void SetWeekdayDefault(DayOfWeek day, DaySchedule schedule) { }
-
-        public DaySchedule? GetOverride(DateOnly date) => null;
-
-        public void SetOverride(DateOnly date, DaySchedule schedule) { }
-
-        public void ClearOverride(DateOnly date) { }
-
         public DaySchedule ResolveForDate(DateOnly date) => Day;
     }
 }

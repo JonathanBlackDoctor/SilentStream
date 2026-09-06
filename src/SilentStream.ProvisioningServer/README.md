@@ -1,4 +1,70 @@
-# 호실 자동 설정 서버
+# SilentStream 상시 중앙 포털
+
+이 ASP.NET Core 서비스 하나를 24시간 켜진 서버에 배포하면 `admin.silentstream.win`,
+`m111.silentstream.win`, `m112.silentstream.win`, `m113.silentstream.win`,
+`baek202.silentstream.win`이 강의실 PC의 전원 상태와 무관하게 열린다. 강의실 PC는
+`agent.silentstream.win`으로 **아웃바운드 WebSocket**만 연결하며 인바운드 포트나 강의실별
+Cloudflare Tunnel을 열지 않는다. PC가 꺼져 있으면 사이트가 죽는 대신 중앙 포털에 오프라인으로 표시된다.
+
+## 배포 구성
+
+Cloudflare Tunnel/DNS에서 다음 호스트를 모두 같은 중앙 서버로 라우팅한다.
+
+- `admin.silentstream.win`, 네 개의 호실 호스트: 사람용 포털
+- `agent.silentstream.win`: 설치 패키지 다운로드와 장치 WebSocket 전용
+
+사람용 호스트에는 Cloudflare Access 애플리케이션과 Google IdP를 적용한다. `agent` 호스트에는
+사람용 Access 로그인을 적용하지 않는다. 대신 Origin의 `/api/device/*`가 일회용 등록 코드와
+장치별 256-bit 비밀값을 검증한다. `agent` 호스트에서 `/control`, `/install`, `/api/control`,
+`/api/install` 경로는 공개하지 않는다. 방화벽에서는 중앙 Origin을 Cloudflare Tunnel 또는 신뢰한
+프록시에서만 접근할 수 있게 제한한다.
+
+`appsettings.json`을 직접 수정하기보다 배포 환경 변수/비밀 저장소로 다음 값을 설정한다.
+
+```text
+ControlPlane__Enabled=true
+ControlPlane__PublicBaseUri=https://admin.silentstream.win
+ControlPlane__DeviceBaseUri=https://agent.silentstream.win
+ControlPlane__AccessTeamDomain=<조직이름>.cloudflareaccess.com
+ControlPlane__AccessAudiences__0=<Access application AUD>
+ControlPlane__AdminEmails__0=admin@example.com
+ControlPlane__RoomManagers__m112__0=manager@example.com
+ControlPlane__StateFile=/보호된볼륨/control-plane-state.json
+ControlPlane__PreparedPackagePath=/보호된볼륨/SilentStream-prepared-package.zip
+ControlPlane__InstallerPath=/보호된볼륨/SilentStream-Central-Installer.exe
+```
+
+호스트마다 별도 Access 애플리케이션을 만들었다면 각 AUD를 `AccessAudiences__0`,
+`AccessAudiences__1`처럼 모두 등록한다. 관리자는 모든 호실, 호실 담당자는 배정된 호실만 볼 수 있다.
+Origin은 `Cf-Access-Jwt-Assertion`의 서명, 발급자, AUD, 만료, 이메일을 다시 검증하므로 프록시 헤더만
+임의로 넣어서는 로그인할 수 없다.
+
+릴리스의 다음 파일을 사용한다.
+
+- `SilentStream-ControlPlane-vX.Y.Z.zip`: 중앙 서버 실행 파일
+- `SilentStream-Central-Installer-vX.Y.Z.exe`: 웹에서 내려줄 작은 부트스트랩 설치기
+- `inspection-package-unsigned-base-vX.Y.Z.zip`: 현장 배포 금지. 운영자 개인키로 `deployment prepare`를
+  실행해 서명된 `SilentStream-prepared-package.zip`을 만든 뒤 서버에 둔다.
+
+배포 후 `/health`는 프로세스 생존, `/ready`는 Google Access 설정·RBAC·두 배포 파일의 준비 여부를
+검사한다. 상태 파일과 준비 패키지는 서비스 계정만 읽고 쓸 수 있는 영구 볼륨에 둔다.
+
+## 현장 설치 흐름
+
+1. 담당자가 해당 호실 사이트에 접속해 Google 로그인 후 **설치**를 누른다.
+2. 내려받은 `SilentStream-Install-m112.exe` 같은 파일을 실행하고 UAC에 한 번 동의한다.
+3. 설치기가 기존 Google Access 세션으로 10분짜리 일회용 등록을 받고, 서명 준비 패키지의 길이와
+   SHA-256을 확인한 뒤 앱·서비스·부팅 자동 점검을 설치한다.
+4. 기존 버전이 있으면 사용자 설정과 YouTube 인증을 유지한다. 새 에이전트가 중앙 서버에 실제로
+   연결되기 전까지 기존 장치 등록도 폐기하지 않는다.
+5. 이후에는 관리자/담당자가 별도 PIN이나 기기 승인을 하지 않고 Google 로그인만으로 상태 확인,
+   안전 점검 재실행, 앱 재시작과 허용된 방송 명령을 수행한다.
+
+Google Access 로그인과 YouTube OAuth는 같은 Google 계정을 쓸 수 있지만 토큰과 권한 범위는 의도적으로
+분리된다. 실제 사람 음성·배선·무선 수신기 전원은 소프트웨어만으로 보증할 수 없으므로 최초 현장 확인은
+남는다. 소프트웨어는 endpoint, 신호, 시험음/녹음, 점검 결과 전송을 자동화한다.
+
+## 이전 호실별 Tunnel 방식(호환용)
 
 이 서비스는 설치본에 터널 토큰을 넣지 않는다. 설치 PC는 호실을 선택한 뒤 이 서버에서 **그 호실의 설정만** HTTPS로 받아, 토큰을 곧바로 해당 Windows 사용자 DPAPI로 암호화한다.
 

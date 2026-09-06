@@ -28,6 +28,7 @@ public static class ServiceCollectionExtensions
         // One shared, token-safe OAuth health source for the live and VOD paths.
         services.AddSingleton<IYouTubeAuthHealth, YouTubeAuthHealth>();
         services.AddSingleton<IYouTubeLiveService, YouTubeLiveService>();
+        services.AddSingleton<ILiveReplayCatalog, LiveReplayCatalog>();
         services.AddSingleton<IRecordingManager, RecordingManager>();
         // 적응형 송출 품질(확장계획서_적응형송출품질): 정책 컨트롤러. 오케스트레이터가 메트릭/상태를
         // 밀어넣고 ChangeRequested를 받아 스왑을 실행한다; 원격 서버는 수동 고정(SetManual)에 쓴다.
@@ -47,11 +48,14 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPeriodAssetCatalog, PeriodAssetCatalog>();
         services.AddSingleton<IYouTubeAudioRecoveryService, YouTubeAudioRecoveryService>();
         services.AddSingleton<IYouTubeUploadService, YouTubeUploadService>();
+        services.AddSingleton<IYouTubePlaylistGateway, YouTubePlaylistGateway>();
+        services.AddSingleton<IYouTubePlaylistService, YouTubePlaylistService>();
         services.AddSingleton<IYouTubeCaptionService, YouTubeCaptionService>();
         services.AddSingleton<IUploadQueue, UploadQueue>();
+        services.AddSingleton<DailyPlaylistCoordinator>();
+        services.AddSingleton<LegacyPendingSplitMigrator>();
         // 승인 기반 교시 분할(v8): 경계마다 즉시 컷 대신 승인 대기 생성 → 폰에서 승인/조정/연강/
         // 건너뛰기, 미조작 시 자동 승인. 원격 서버가 Changed 이벤트를 구독해 폰으로 푸시한다.
-        services.AddSingleton<ISplitApprovalService, SplitApprovalService>();
         services.AddSingleton<VodCoordinator>();
 
         // 헬스/이벤트 레이어(원격 컨트롤러 개선 Phase 0): 오케스트레이터·믹서·녹화·업로드 큐를 구독·폴링해

@@ -41,6 +41,7 @@ public enum InspectionStepType
     AppApi,
     Wait,
     DesktopProbe,
+    AudioProbe,
     Script,
     Privileged,
     Fault,
@@ -54,6 +55,7 @@ public enum InspectionRunStatus
     Running,
     Paused,
     Pass,
+    Warning,
     Fail,
     Unknown,
     Skipped,
@@ -77,6 +79,8 @@ public sealed record InspectionBundleManifest
 public sealed record InspectionPlan
 {
     public string Name { get; init; } = string.Empty;
+    /// <summary>True only for a signed, non-destructive plan intended to run once per Windows boot.</summary>
+    public bool RunAtStartup { get; init; }
     public List<InspectionStep> Steps { get; init; } = [];
 }
 

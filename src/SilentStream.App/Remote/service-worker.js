@@ -6,7 +6,7 @@
 // 네트워크 실패를 감지해 "오프라인"으로 표시해야 오래된 상태를 정상 상태로 오인하지 않는다.
 
 const CACHE_PREFIX = "mch-remote-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v3`;
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",

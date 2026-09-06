@@ -6,8 +6,8 @@ namespace SilentStream.Core.Implementations;
 
 /// <summary>
 /// Persistent, quota-aware upload queue (확장계획서 §4.2). Jobs are stored as JSON so they survive
-/// reboots; a single background worker uploads them oldest-first, never exceeds the daily cap
-/// (~6 inserts/day at 1,600 units each against the default 10,000), and pauses on a 403 quota
+/// reboots; a single background worker uploads them oldest-first until YouTube reports actual
+/// quota exhaustion, and pauses on that quota response
 /// error until the Pacific-time reset before resuming — so 7교시+ overflow uploads the next day (D7).
 /// </summary>
 public sealed class UploadQueue : IUploadQueue
@@ -25,6 +25,7 @@ public sealed class UploadQueue : IUploadQueue
     private readonly IConfigStore _configStore;
     private readonly ILogService _log;
     private readonly IPeriodAssetCatalog? _assets;
+    private readonly IYouTubePlaylistService? _playlists;
     private readonly string _queueFile;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -43,7 +44,7 @@ public sealed class UploadQueue : IUploadQueue
 
     public UploadQueue(IYouTubeUploadService uploadService, IConfigStore configStore, ILogService log)
         : this(uploadService, configStore, log, AppPaths.UploadQueueFile, () => DateTime.Now, Task.Delay,
-            maxPerDay: 6, maxAttempts: 5)
+            maxPerDay: int.MaxValue, maxAttempts: 5)
     {
     }
 
@@ -57,7 +58,18 @@ public sealed class UploadQueue : IUploadQueue
         ILogService log,
         IPeriodAssetCatalog assets)
         : this(uploadService, configStore, log, AppPaths.UploadQueueFile, () => DateTime.Now, Task.Delay,
-            maxPerDay: 6, maxAttempts: 5, assetCatalog: assets)
+            maxPerDay: int.MaxValue, maxAttempts: 5, assetCatalog: assets)
+    {
+    }
+
+    public UploadQueue(
+        IYouTubeUploadService uploadService,
+        IConfigStore configStore,
+        ILogService log,
+        IPeriodAssetCatalog assets,
+        IYouTubePlaylistService playlists)
+        : this(uploadService, configStore, log, AppPaths.UploadQueueFile, () => DateTime.Now, Task.Delay,
+            maxPerDay: int.MaxValue, maxAttempts: 5, assetCatalog: assets, playlistService: playlists)
     {
     }
 
@@ -73,7 +85,8 @@ public sealed class UploadQueue : IUploadQueue
         int maxAttempts,
         int maxCompletedRetained = 50,
         int maxFailedRetained = 20,
-        IPeriodAssetCatalog? assetCatalog = null)
+        IPeriodAssetCatalog? assetCatalog = null,
+        IYouTubePlaylistService? playlistService = null)
     {
         _uploadService = uploadService;
         _configStore = configStore;
@@ -86,10 +99,22 @@ public sealed class UploadQueue : IUploadQueue
         _maxCompletedRetained = maxCompletedRetained;
         _maxFailedRetained = maxFailedRetained;
         _assets = assetCatalog;
+        _playlists = playlistService;
     }
 
     public void Enqueue(UploadJob job)
     {
+        if (job.FileSizeBytes is null)
+        {
+            try
+            {
+                job = job with { FileSizeBytes = new FileInfo(job.FilePath).Length };
+            }
+            catch
+            {
+                // The cutter and worker will surface a missing/unreadable file in the normal path.
+            }
+        }
         lock (_gate)
         {
             var state = LoadLocked();
@@ -169,14 +194,30 @@ public sealed class UploadQueue : IUploadQueue
 
     private async Task TryUploadAsync(UploadJob job, CancellationToken ct)
     {
-        UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Uploading });
+        var startedAtUtc = UtcNow();
+        UpdateJob(job.Id, j => j with
+        {
+            Status = UploadJobStatus.Uploading,
+            UploadStartedAtUtc = startedAtUtc,
+            UploadCompletedAtUtc = null,
+            UploadDurationSeconds = null,
+            FileSizeBytes = j.FileSizeBytes ?? TryGetFileSize(j.FilePath)
+        });
         try
         {
             var privacy = _configStore.Load().Periods.VodPrivacy;
             var videoId = await _uploadService
                 .UploadAsync(job.FilePath, job.Title, privacy, ct).ConfigureAwait(false);
 
-            UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Completed, VideoId = videoId });
+            var completedAtUtc = UtcNow();
+            var durationSeconds = Math.Max(0, (completedAtUtc - startedAtUtc).TotalSeconds);
+            UpdateJob(job.Id, j => j with
+            {
+                Status = UploadJobStatus.Completed,
+                VideoId = videoId,
+                UploadCompletedAtUtc = completedAtUtc,
+                UploadDurationSeconds = durationSeconds
+            });
             try
             {
                 _assets?.MarkUploaded(job.Id, videoId);
@@ -188,6 +229,21 @@ public sealed class UploadQueue : IUploadQueue
                 _log.Warn($"{job.PeriodNumber}교시 다운로드 자산의 YouTube 연결 저장 실패: {ex.Message}");
             }
             IncrementQuota();
+            if (_playlists is not null)
+            {
+                try
+                {
+                    var room = TitleTemplater.ResolveRoomName(_configStore.Load());
+                    await _playlists.AddVideoAsync(room, job.Date, videoId, ct).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Upload success is terminal even if playlist association is temporarily down.
+                    // DailyPlaylistCoordinator will retry from the durable asset/queue metadata.
+                    _log.Warn($"{job.ResolvedSlotLabel} 재생목록 편입 지연: {ex.Message}");
+                }
+            }
+            _log.Info($"{job.ResolvedSlotLabel} VOD 업로드 완료 — {FormatDuration(durationSeconds)}, {FormatBytes(job.FileSizeBytes ?? TryGetFileSize(job.FilePath))}.");
             TryDeleteCutFile(job.FilePath);
             PruneTerminal();
         }
@@ -227,6 +283,37 @@ public sealed class UploadQueue : IUploadQueue
             return LoadLocked().Jobs.FirstOrDefault(j => j.Status == UploadJobStatus.Pending);
         }
     }
+
+    private DateTimeOffset UtcNow()
+    {
+        var value = _now();
+        if (value.Kind == DateTimeKind.Unspecified)
+        {
+            value = DateTime.SpecifyKind(value, DateTimeKind.Local);
+        }
+        return new DateTimeOffset(value).ToUniversalTime();
+    }
+
+    private static long? TryGetFileSize(string path)
+    {
+        try { return new FileInfo(path).Length; }
+        catch { return null; }
+    }
+
+    private static string FormatDuration(double seconds) =>
+        TimeSpan.FromSeconds(seconds) is var duration && duration.TotalHours >= 1
+            ? $"{(int)duration.TotalHours}시간 {duration.Minutes}분 {duration.Seconds}초"
+            : duration.TotalMinutes >= 1
+                ? $"{duration.Minutes}분 {duration.Seconds}초"
+                : $"{duration.Seconds}초";
+
+    private static string FormatBytes(long? bytes) => bytes switch
+    {
+        null => "파일 크기 확인 불가",
+        >= 1_073_741_824 => $"{bytes.Value / 1_073_741_824d:F2} GB",
+        >= 1_048_576 => $"{bytes.Value / 1_048_576d:F1} MB",
+        _ => $"{bytes.Value / 1024d:F1} KB"
+    };
 
     private void UpdateJob(string id, Func<UploadJob, UploadJob> transform)
     {

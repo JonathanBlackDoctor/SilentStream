@@ -23,6 +23,13 @@ public interface IAudioMixer : IDisposable
     /// <summary>The sources currently configured on the mixer.</summary>
     IReadOnlyList<AudioSourceSettings> Sources { get; }
 
+    /// <summary>
+    /// Runtime endpoint state for every configured source. In particular, a configured microphone
+    /// whose cable/device is missing is returned with <c>CaptureActive=false</c> instead of silently
+    /// disappearing from health checks.
+    /// </summary>
+    IReadOnlyList<AudioSourceRuntimeStatus> SourceStatuses { get; }
+
     /// <summary>Real-time gain change for one source (linear; >1 amplifies). No rebuild.</summary>
     void SetGain(string sourceId, double gain);
 

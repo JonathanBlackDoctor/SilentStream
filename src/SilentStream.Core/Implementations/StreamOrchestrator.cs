@@ -42,6 +42,18 @@ public sealed record StreamOrchestratorOptions
 
     /// <summary>Backoff cap for RTMP-leg rebuilds; also the healthy period that forgives it.</summary>
     public TimeSpan RtmpLegRetryMaxDelay { get; init; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// First hard guard against YouTube live archives becoming unavailable after a very long
+    /// broadcast. The YouTube leg is ended while local recording continues.
+    /// </summary>
+    public TimeSpan LiveAutoStopAfter { get; init; } = TimeSpan.FromHours(10);
+
+    /// <summary>
+    /// Second completion attempt. This catches a transient API failure during the first guard and
+    /// still leaves an hour of margin before the 12-hour boundary.
+    /// </summary>
+    public TimeSpan LiveAutoStopRetryAfter { get; init; } = TimeSpan.FromHours(11);
 }
 
 /// <summary>
@@ -61,12 +73,16 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private readonly IScreenCaptureSource _capture;
     private readonly IAudioMixer _audioMixer;
     private readonly IAdaptiveQualityController _quality;
+    private readonly ILiveReplayCatalog? _liveReplays;
     private readonly StreamOrchestratorOptions _options;
 
     private readonly object _gate = new();
     private CancellationTokenSource? _runCts;
     private Task? _supervisorTask;
     private LiveSession? _session;
+    private DateTimeOffset? _liveBroadcastStartedAtUtc;
+    private bool _durationLimitFirstAttempted;
+    private bool _durationLimitRetryAttempted;
     private DateTime _sessionStart;
     private TimeSpan _lastCpuTime;
     private DateTime _lastCpuSample;
@@ -95,7 +111,22 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IAudioMixer audioMixer,
         IAdaptiveQualityController quality)
         : this(configStore, log, youtube, encoder, recording, capture, audioMixer, quality,
-            new StreamOrchestratorOptions())
+            new StreamOrchestratorOptions(), null)
+    {
+    }
+
+    public StreamOrchestrator(
+        IConfigStore configStore,
+        ILogService log,
+        IYouTubeLiveService youtube,
+        IEncoderPipeline encoder,
+        IRecordingManager recording,
+        IScreenCaptureSource capture,
+        IAudioMixer audioMixer,
+        IAdaptiveQualityController quality,
+        ILiveReplayCatalog liveReplays)
+        : this(configStore, log, youtube, encoder, recording, capture, audioMixer, quality,
+            new StreamOrchestratorOptions(), liveReplays)
     {
     }
 
@@ -109,6 +140,21 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IAudioMixer audioMixer,
         IAdaptiveQualityController quality,
         StreamOrchestratorOptions options)
+        : this(configStore, log, youtube, encoder, recording, capture, audioMixer, quality, options, null)
+    {
+    }
+
+    public StreamOrchestrator(
+        IConfigStore configStore,
+        ILogService log,
+        IYouTubeLiveService youtube,
+        IEncoderPipeline encoder,
+        IRecordingManager recording,
+        IScreenCaptureSource capture,
+        IAudioMixer audioMixer,
+        IAdaptiveQualityController quality,
+        StreamOrchestratorOptions options,
+        ILiveReplayCatalog? liveReplays)
     {
         _configStore = configStore;
         _log = log;
@@ -119,6 +165,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         _audioMixer = audioMixer;
         _quality = quality;
         _options = options;
+        _liveReplays = liveReplays;
 
         _encoder.MetricsUpdated += OnEncoderMetrics;
         _quality.ChangeRequested += OnQualityChangeRequested;
@@ -299,6 +346,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
                     .ConfigureAwait(false);
+                RecordBroadcastEnded(session.BroadcastId);
             }
             catch (Exception ex)
             {
@@ -307,6 +355,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         }
 
         SetState(StreamState.Idle);
+        _liveBroadcastStartedAtUtc = null;
         _log.Info("송출·녹화가 중지되었습니다.");
     }
 
@@ -384,6 +433,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                     using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                     await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
                         .ConfigureAwait(false);
+                    RecordBroadcastEnded(session.BroadcastId);
+                    _liveBroadcastStartedAtUtc = null;
                 }
                 catch (Exception ex)
                 {
@@ -641,8 +692,23 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         // silently migrated the stream to a new watch URL. EnableAutoStop=false keeps the broadcast
         // alive across a brief feed drop, so the restarted encoder just reconnects to the same
         // ingest key. A new broadcast is created only for a fresh session (none yet); the explicit
-        // StopAsync at end of session is the only place it is completed.
-        _session ??= await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
+        // Normal/manual stop and the 10h/11h duration guards are the only places it is completed.
+        if (_session is null)
+        {
+            _session = await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
+            _liveBroadcastStartedAtUtc = DateTimeOffset.UtcNow;
+            _durationLimitFirstAttempted = false;
+            _durationLimitRetryAttempted = false;
+            try
+            {
+                _liveReplays?.RecordStarted(_session, _liveBroadcastStartedAtUtc.Value);
+            }
+            catch (Exception ex)
+            {
+                // Link history is operational metadata; a disk error must never block the stream.
+                _log.Warn($"라이브 다시보기 링크 저장 실패: {ex.Message}");
+            }
+        }
 
         var config = _configStore.Load();
         var recordingEnabled = config.Recording.Enabled;
@@ -754,6 +820,14 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 await Task.Delay(_options.WatchdogInterval, ct).ConfigureAwait(false);
 
+                // End the public broadcast well before YouTube's 12-hour archive boundary while
+                // keeping the local recording alive. The second guard retries only when the first
+                // API completion failed and left a pending session behind.
+                if (await EnforceLiveDurationLimitAsync().ConfigureAwait(false))
+                {
+                    return; // recording-disabled path delegated a full stop; do not self-await it
+                }
+
                 // Second liveness signal: is the local recording file still growing? A file that
                 // keeps growing proves the encoder is muxing frames even when its progress line has
                 // gone quiet. 0 length (recording off / not started yet) yields no signal → stats decide.
@@ -855,6 +929,105 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 _log.Error("워치독 루프 오류 — 감시를 계속합니다.", ex);
             }
+        }
+    }
+
+    /// <summary>
+    /// Returns true only when a recording-disabled duration stop was delegated to another task and
+    /// this supervisor must exit to let <see cref="StopAsync"/> await it without a self-deadlock.
+    /// </summary>
+    private async Task<bool> EnforceLiveDurationLimitAsync()
+    {
+        var startedAt = _liveBroadcastStartedAtUtc;
+        if (startedAt is null) return false;
+
+        var elapsed = DateTimeOffset.UtcNow - startedAt.Value;
+        if (!_durationLimitFirstAttempted && elapsed >= _options.LiveAutoStopAfter
+            && State == StreamState.Live)
+        {
+            _durationLimitFirstAttempted = true;
+            _log.Warn($"라이브 {_options.LiveAutoStopAfter.TotalHours:0.#}시간 경과 — 다시보기 보존을 위해 방송을 자동 종료합니다.");
+            if (!_configStore.Load().Recording.Enabled)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await StopAsync().ConfigureAwait(false); }
+                    catch (Exception ex) { _log.Error("장시간 라이브 자동 종료 실패", ex); }
+                });
+                return true;
+            }
+            await StopStreamingKeepRecordingAsync().ConfigureAwait(false);
+        }
+
+        if (!_durationLimitRetryAttempted && elapsed >= _options.LiveAutoStopRetryAfter)
+        {
+            if (State == StreamState.Live)
+            {
+                _durationLimitRetryAttempted = true;
+                _log.Warn($"라이브 {_options.LiveAutoStopRetryAfter.TotalHours:0.#}시간 경과 — 방송 자동 종료를 다시 시도합니다.");
+                if (!_configStore.Load().Recording.Enabled)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await StopAsync().ConfigureAwait(false); }
+                        catch (Exception ex) { _log.Error("장시간 라이브 자동 재종료 실패", ex); }
+                    });
+                    return true;
+                }
+                await StopStreamingKeepRecordingAsync().ConfigureAwait(false);
+            }
+            else if (State == StreamState.RecordingOnly && HasPendingBroadcastCompletion())
+            {
+                _durationLimitRetryAttempted = true;
+                _log.Warn($"라이브 {_options.LiveAutoStopRetryAfter.TotalHours:0.#}시간 경과 — YouTube 종료 상태 전이를 다시 확인합니다.");
+                await RetryPendingBroadcastCompletionAsync().ConfigureAwait(false);
+            }
+        }
+
+        return false;
+    }
+
+    private bool HasPendingBroadcastCompletion()
+    {
+        lock (_gate) return _session is not null;
+    }
+
+    private async Task RetryPendingBroadcastCompletionAsync()
+    {
+        LiveSession? session;
+        lock (_gate)
+        {
+            if (State != StreamState.RecordingOnly) return;
+            session = _session;
+            _session = null;
+        }
+        if (session is null) return;
+
+        try
+        {
+            using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                .ConfigureAwait(false);
+            RecordBroadcastEnded(session.BroadcastId);
+            _liveBroadcastStartedAtUtc = null;
+            _log.Info("장시간 라이브의 YouTube 종료 상태 전이를 재확인했습니다.");
+        }
+        catch (Exception ex)
+        {
+            _log.Error("장시간 라이브의 YouTube 종료 상태 재시도 실패 — 스튜디오에서 확인하세요.", ex);
+            lock (_gate) _session ??= session;
+        }
+    }
+
+    private void RecordBroadcastEnded(string broadcastId)
+    {
+        try
+        {
+            _liveReplays?.RecordEnded(broadcastId, DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex)
+        {
+            _log.Warn($"라이브 다시보기 종료 시각 저장 실패: {ex.Message}");
         }
     }
 

@@ -25,7 +25,12 @@ public class StreamOrchestratorTests : IDisposable
         _configStore.Save(config);
     }
 
-    private StreamOrchestrator CreateOrchestrator(TimeSpan? watchdog = null, TimeSpan? retention = null)
+    private StreamOrchestrator CreateOrchestrator(
+        TimeSpan? watchdog = null,
+        TimeSpan? retention = null,
+        TimeSpan? liveAutoStop = null,
+        TimeSpan? liveAutoStopRetry = null,
+        ILiveReplayCatalog? liveReplays = null)
     {
         var orchestrator = new StreamOrchestrator(
             _configStore, new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
@@ -38,8 +43,10 @@ public class StreamOrchestratorTests : IDisposable
                 StallTimeout = TimeSpan.FromMilliseconds(200),
                 RetentionInterval = retention ?? TimeSpan.FromHours(1),
                 RtmpLegRetryBaseDelay = TimeSpan.FromMilliseconds(100),
-                RtmpLegRetryMaxDelay = TimeSpan.FromMilliseconds(400)
-            });
+                RtmpLegRetryMaxDelay = TimeSpan.FromMilliseconds(400),
+                LiveAutoStopAfter = liveAutoStop ?? TimeSpan.FromHours(10),
+                LiveAutoStopRetryAfter = liveAutoStopRetry ?? TimeSpan.FromHours(11)
+            }, liveReplays);
         orchestrator.StateChanged += (_, s) => { lock (_states) { _states.Add(s); } };
         return orchestrator;
     }
@@ -199,6 +206,68 @@ public class StreamOrchestratorTests : IDisposable
         await orchestrator.StopAsync();
         Assert.Equal(StreamState.Idle, orchestrator.State);
         Assert.Equal(1, _youtube.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task Ten_hour_guard_ends_broadcast_but_keeps_recording_and_records_replay()
+    {
+        var replayFile = Path.Combine(_dir, "live_replays.json");
+        var replays = new LiveReplayCatalog(replayFile);
+        var orchestrator = CreateOrchestrator(
+            liveAutoStop: TimeSpan.FromMilliseconds(80),
+            liveAutoStopRetry: TimeSpan.FromMilliseconds(250),
+            liveReplays: replays);
+
+        await orchestrator.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => orchestrator.State == StreamState.RecordingOnly,
+            TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, _youtube.CompleteCalls);
+        Assert.True(_encoder.IsRunning);
+        Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+        var replay = Assert.IsType<LiveReplayRecord>(replays.Latest);
+        Assert.Equal("https://youtu.be/x", replay.Url);
+        Assert.NotNull(replay.EndedAtUtc);
+
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Eleven_hour_guard_retries_a_failed_youtube_completion()
+    {
+        _youtube.CompleteFailuresBeforeSuccess = 1;
+        var replays = new LiveReplayCatalog(Path.Combine(_dir, "retry-live-replays.json"));
+        var orchestrator = CreateOrchestrator(
+            liveAutoStop: TimeSpan.FromMilliseconds(60),
+            liveAutoStopRetry: TimeSpan.FromMilliseconds(150),
+            liveReplays: replays);
+
+        await orchestrator.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => _youtube.CompleteCalls >= 2, TimeSpan.FromSeconds(5));
+
+        Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
+        Assert.Equal(2, _youtube.CompleteCalls);
+        Assert.NotNull(replays.Latest?.EndedAtUtc);
+
+        await orchestrator.StopAsync();
+    }
+
+    [Fact]
+    public async Task Duration_guard_fully_stops_without_deadlock_when_recording_is_disabled()
+    {
+        var config = _configStore.Load();
+        config.Recording.Enabled = false;
+        _configStore.Save(config);
+        var orchestrator = CreateOrchestrator(
+            liveAutoStop: TimeSpan.FromMilliseconds(60),
+            liveAutoStopRetry: TimeSpan.FromMilliseconds(150));
+
+        await orchestrator.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => orchestrator.State == StreamState.Idle, TimeSpan.FromSeconds(5));
+
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Equal(1, _youtube.CompleteCalls);
+        Assert.False(_encoder.IsRunning);
     }
 
     [Fact]
@@ -672,6 +741,7 @@ public class StreamOrchestratorTests : IDisposable
         public int FailuresBeforeSuccess;
         public int CreateCalls;
         public int CompleteCalls;
+        public int CompleteFailuresBeforeSuccess;
         public string? CompletedBroadcastId;
 
         public Task<bool> AuthenticateAsync(CancellationToken ct) => Task.FromResult(true);
@@ -691,6 +761,10 @@ public class StreamOrchestratorTests : IDisposable
         public Task CompleteBroadcastAsync(string broadcastId, CancellationToken ct)
         {
             CompleteCalls++;
+            if (CompleteFailuresBeforeSuccess-- > 0)
+            {
+                throw new HttpRequestException("simulated completion failure");
+            }
             CompletedBroadcastId = broadcastId;
             return Task.CompletedTask;
         }
@@ -850,6 +924,9 @@ public class StreamOrchestratorTests : IDisposable
         public int StartCalls;
 
         public IReadOnlyList<AudioSourceSettings> Sources { get; private set; } = [];
+        public IReadOnlyList<AudioSourceRuntimeStatus> SourceStatuses => Sources
+            .Select(source => new AudioSourceRuntimeStatus(source.Id, Started, null, DateTime.UtcNow))
+            .ToArray();
         public AudioLevels CurrentLevels => AudioLevels.Empty;
 
 #pragma warning disable CS0067

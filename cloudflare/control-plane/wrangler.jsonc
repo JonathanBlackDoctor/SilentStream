@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "silentstream-control-plane",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "preview_urls": true,
+  "observability": {
+    "enabled": true
+  },
+  "routes": [
+    { "pattern": "silentstream.win/*", "zone_name": "silentstream.win" },
+    { "pattern": "www.silentstream.win/*", "zone_name": "silentstream.win" },
+    { "pattern": "admin.silentstream.win", "custom_domain": true },
+    { "pattern": "agent.silentstream.win", "custom_domain": true },
+    { "pattern": "m111.silentstream.win", "custom_domain": true },
+    { "pattern": "m112.silentstream.win", "custom_domain": true },
+    { "pattern": "m113.silentstream.win", "custom_domain": true },
+    { "pattern": "baek202.silentstream.win", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONTROL", "class_name": "ControlPlane" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ControlPlane"] }
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "run_worker_first": true
+  },
+  "vars": {
+    "PUBLIC_BASE_URI": "https://admin.silentstream.win",
+    "DEVICE_BASE_URI": "https://agent.silentstream.win",
+    "PACKAGE_KEY": "releases/v0.4.1/SilentStream-prepared-package.zip",
+    "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/silentstream-control-v0.4.1/SilentStream-prepared-package-v0.4.1.zip",
+    "PACKAGE_SHA256": "e6a96acab8786f947b0fe5524b33de9464309592cbb82d0c3cf0f77a989b6e6c",
+    "PACKAGE_LENGTH": "514386210",
+    "INSTALLER_KEY": "releases/v0.4.1/SilentStream-Central-Installer.exe",
+    "INSTALLER_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/silentstream-control-v0.4.1/SilentStream-Central-Installer-v0.4.1.exe",
+    "INSTALLER_SHA256": "7a8227d905180b679acab9cf972701f43fb4825f4d06132dbd526d7db6a83135",
+    "INSTALLER_LENGTH": "161705757",
+    "GOOGLE_CLIENT_ID": "909291792658-um7mnfcnu8po4d36hs6n09q6inssc654.apps.googleusercontent.com",
+    "BOOTSTRAP_OWNER_EMAIL": "alpaomegastartend@gmail.com",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  }
+}

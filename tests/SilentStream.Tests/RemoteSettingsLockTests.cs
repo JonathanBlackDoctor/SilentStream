@@ -10,9 +10,10 @@ public class RemoteSettingsLockTests : IDisposable
     private readonly string _dir = Directory.CreateTempSubdirectory("sstream-settings-lock-").FullName;
 
     [Fact]
-    public void Schedule_only_mode_allows_only_timetable_edits()
+    public void Legacy_schedule_only_mode_is_normalized_to_locked()
     {
-        Assert.True(RemoteSettingsLock.Allows(RemoteSettingsLock.ScheduleOnly, RemoteSettingsSection.Schedule));
+        Assert.Equal(RemoteSettingsLock.Locked, RemoteSettingsLock.Normalize(RemoteSettingsLock.ScheduleOnly));
+        Assert.False(RemoteSettingsLock.Allows(RemoteSettingsLock.ScheduleOnly, RemoteSettingsSection.Schedule));
         Assert.False(RemoteSettingsLock.Allows(RemoteSettingsLock.ScheduleOnly, RemoteSettingsSection.Other));
     }
 
@@ -25,12 +26,18 @@ public class RemoteSettingsLockTests : IDisposable
 
     [Theory]
     [InlineData("unlocked", RemoteSettingsLock.Unlocked)]
-    [InlineData("SCHEDULEONLY", RemoteSettingsLock.ScheduleOnly)]
     [InlineData("locked", RemoteSettingsLock.Locked)]
     public void Submitted_modes_are_normalized_case_insensitively(string submitted, string expected)
     {
         Assert.True(RemoteSettingsLock.TryParse(submitted, out var actual));
         Assert.Equal(expected, actual);
+    }
+
+    [Fact]
+    public void Schedule_only_can_no_longer_be_submitted()
+    {
+        Assert.False(RemoteSettingsLock.TryParse("scheduleOnly", out var normalized));
+        Assert.Equal(RemoteSettingsLock.Locked, normalized);
     }
 
     [Fact]
@@ -48,7 +55,7 @@ public class RemoteSettingsLockTests : IDisposable
 
         var config = new ConfigStore(path).Load();
 
-        Assert.Equal(12, config.Version);
+        Assert.Equal(13, config.Version);
         Assert.Equal(RemoteSettingsLock.Unlocked, config.Remote.SettingsLockMode);
     }
 
@@ -60,7 +67,7 @@ public class RemoteSettingsLockTests : IDisposable
 
         var config = new ConfigStore(path).Load();
 
-        Assert.Equal(12, config.Version);
+        Assert.Equal(13, config.Version);
         Assert.True(config.AutomaticOperationEnabled);
     }
 

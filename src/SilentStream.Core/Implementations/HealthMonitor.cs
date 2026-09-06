@@ -35,7 +35,6 @@ public sealed class HealthMonitor : IHealthMonitor
     private readonly IUploadQueue _uploadQueue;
     private readonly IConfigStore _configStore;
     private readonly IYouTubeAuthHealth? _youtubeAuth;
-    private readonly ISplitApprovalService? _splits; // null in older tests — split checks just skip
     private readonly ILogService _log;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -68,10 +67,9 @@ public sealed class HealthMonitor : IHealthMonitor
         IUploadQueue uploadQueue,
         IConfigStore configStore,
         IYouTubeAuthHealth youtubeAuth,
-        ISplitApprovalService splits,
         ILogService log)
         : this(orchestrator, mixer, recording, uploadQueue, configStore, log,
-            () => DateTime.UtcNow, Task.Delay, splits, youtubeAuth)
+            () => DateTime.UtcNow, Task.Delay, youtubeAuth)
     {
     }
 
@@ -85,7 +83,6 @@ public sealed class HealthMonitor : IHealthMonitor
         ILogService log,
         Func<DateTime> now,
         Func<TimeSpan, CancellationToken, Task> delay,
-        ISplitApprovalService? splits = null,
         IYouTubeAuthHealth? youtubeAuth = null)
     {
         _orchestrator = orchestrator;
@@ -94,7 +91,6 @@ public sealed class HealthMonitor : IHealthMonitor
         _uploadQueue = uploadQueue;
         _configStore = configStore;
         _youtubeAuth = youtubeAuth;
-        _splits = splits;
         _log = log;
         _now = now;
         _delay = delay;
@@ -381,7 +377,7 @@ public sealed class HealthMonitor : IHealthMonitor
         IReadOnlyList<PendingSplit>? splits = null;
         try
         {
-            splits = _splits?.Snapshot();
+            splits = Array.Empty<PendingSplit>();
         }
         catch (Exception ex)
         {

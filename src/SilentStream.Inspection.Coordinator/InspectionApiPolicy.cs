@@ -21,6 +21,9 @@ public static class InspectionApiPolicy
             && step.Input.TryGetProperty("ack", out var ack)
             && string.Equals(ack.GetString(), channel, StringComparison.Ordinal));
 
+    public static bool IsSafeStartupBundle(StoredBundle bundle, out string reason)
+        => StartupBundleSafetyPolicy.IsSafe(bundle.Manifest.Plan, out reason);
+
     public static void EnsureBundleReplacementAllowed(StoredBundle? existing, VerifiedInspectionBundle candidate)
     {
         if (existing is null) return;

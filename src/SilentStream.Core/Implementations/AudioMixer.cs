@@ -17,6 +17,11 @@ public sealed class AudioMixer : IAudioMixer
 
     public IReadOnlyList<AudioSourceSettings> Sources => _sources;
 
+    public IReadOnlyList<AudioSourceRuntimeStatus> SourceStatuses => _sources
+        .Select(source => new AudioSourceRuntimeStatus(source.Id, false,
+            "Windows 오디오 캡처 구현이 로드되지 않았습니다.", DateTime.UtcNow))
+        .ToArray();
+
     public void SetGain(string sourceId, double gain) { }
 
     public void SetMuted(string sourceId, bool muted) { }

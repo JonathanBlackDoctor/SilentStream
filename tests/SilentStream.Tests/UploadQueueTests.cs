@@ -60,6 +60,32 @@ public class UploadQueueTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_upload_persists_file_size_and_actual_elapsed_time()
+    {
+        var uploader = new FakeUploader
+        {
+            BeforeComplete = () => _clock.Advance(TimeSpan.FromMinutes(17))
+        };
+        var queue = Create(uploader);
+        queue.Enqueue(MakeJob(1));
+
+        using var cts = new CancellationTokenSource();
+        queue.Start(cts.Token);
+        await WaitUntilAsync(() => queue.Snapshot()[0].Status == UploadJobStatus.Completed,
+            TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        var completed = Assert.Single(queue.Snapshot());
+        Assert.Equal(256, completed.FileSizeBytes);
+        Assert.Equal(17 * 60, completed.UploadDurationSeconds);
+        Assert.NotNull(completed.UploadStartedAtUtc);
+        Assert.NotNull(completed.UploadCompletedAtUtc);
+
+        var restarted = Create(new FakeUploader());
+        Assert.Equal(17 * 60, Assert.Single(restarted.Snapshot()).UploadDurationSeconds);
+    }
+
+    [Fact]
     public async Task Completed_upload_marks_its_durable_asset_with_the_youtube_id()
     {
         var uploader = new FakeUploader();
@@ -77,6 +103,44 @@ public class UploadQueueTests : IDisposable
         cts.Cancel();
 
         Assert.Equal("vid-1", Assert.Single(catalog.Assets).VideoId);
+    }
+
+    [Fact]
+    public async Task Completed_lunch_upload_is_added_to_its_recording_date_playlist()
+    {
+        var uploader = new FakeUploader();
+        var catalog = new FakeAssetCatalog();
+        var playlists = new FakePlaylistService();
+        var path = Path.Combine(_dir, "lunch.mp4");
+        File.WriteAllBytes(path, new byte[256]);
+        var recordingDate = new DateOnly(2026, 6, 12);
+        var job = new UploadJob("lunch-job", path, "lunch", recordingDate, 0,
+            UploadJobStatus.Pending, 0, null, "lunch", "점심시간", ScheduleSlotKinds.Lunch, 5);
+        var queue = new UploadQueue(uploader, _configStore, new LogService(), _queueFile,
+            () => _clock.Now, _clock.Delay, maxPerDay: int.MaxValue, maxAttempts: 5,
+            assetCatalog: catalog, playlistService: playlists);
+        queue.Enqueue(job);
+
+        using var cts = new CancellationTokenSource();
+        queue.Start(cts.Token);
+        await WaitUntilAsync(() => queue.Snapshot()[0].Status == UploadJobStatus.Completed,
+            TimeSpan.FromSeconds(5));
+        cts.Cancel();
+
+        var added = Assert.Single(playlists.Added);
+        Assert.Equal(recordingDate, added.Date);
+        Assert.Equal("vid-1", added.VideoId);
+    }
+
+    [Fact]
+    public void Production_constructor_has_no_artificial_daily_upload_cap()
+    {
+        var queue = new UploadQueue(
+            new FakeUploader(), _configStore, new LogService(), new FakeAssetCatalog(),
+            new FakePlaylistService());
+        var field = typeof(UploadQueue).GetField("_maxPerDay",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.Equal(int.MaxValue, field?.GetValue(queue));
     }
 
     [Fact]
@@ -205,6 +269,11 @@ public class UploadQueueTests : IDisposable
 
         public DateTime Now { get { lock (_lock) { return _now; } } }
 
+        public void Advance(TimeSpan span)
+        {
+            lock (_lock) { _now = _now.Add(span); }
+        }
+
         public Task Delay(TimeSpan span, CancellationToken ct)
         {
             if (ct.IsCancellationRequested)
@@ -230,6 +299,7 @@ public class UploadQueueTests : IDisposable
         public int Calls;
         public bool ThrowQuotaOnFirstCall;
         public bool AlwaysQuota;
+        public Action? BeforeComplete;
 
         public Task<string> UploadAsync(string filePath, string title, string privacy, CancellationToken ct)
         {
@@ -238,6 +308,7 @@ public class UploadQueueTests : IDisposable
             {
                 throw new QuotaExceededException("simulated quota");
             }
+            BeforeComplete?.Invoke();
             return Task.FromResult($"vid-{call}");
         }
     }
@@ -257,5 +328,20 @@ public class UploadQueueTests : IDisposable
         }
         public bool MarkAudioPath(string id, string audioPath) => false;
         public bool MarkCaptionStatus(string id, string status, string? language = null, string? message = null) => false;
+    }
+
+    private sealed class FakePlaylistService : IYouTubePlaylistService
+    {
+        public List<(DateOnly Date, string VideoId)> Added { get; } = [];
+        public bool HasRetryableFailures => false;
+        public Task<DailyPlaylistRecord> EnsurePlaylistAsync(string room, DateOnly date, CancellationToken ct) =>
+            Task.FromResult(new DailyPlaylistRecord(room, date, string.Empty, "PL", string.Empty,
+                DailyPlaylistStatus.Ready, DateTimeOffset.UtcNow, null));
+        public Task AddVideoAsync(string room, DateOnly date, string videoId, CancellationToken ct)
+        {
+            Added.Add((date, videoId));
+            return Task.CompletedTask;
+        }
+        public IReadOnlyList<DailyPlaylistRecord> Snapshot(string room, DateOnly from, DateOnly to) => [];
     }
 }

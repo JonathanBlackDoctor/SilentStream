@@ -14,7 +14,22 @@ public sealed record PeriodAsset(
     string CaptionStatus = PeriodAssetCaptionStatus.Pending,
     string? CaptionLanguage = null,
     string? CaptionMessage = null,
-    DateTime UpdatedAtUtc = default);
+    DateTime UpdatedAtUtc = default,
+    string SlotId = "",
+    string SlotLabel = "",
+    string SlotKind = ScheduleSlotKinds.Period,
+    int SlotOrder = 0)
+{
+    public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
+        ? SlotId
+        : $"period-{PeriodNumber}";
+    public string ResolvedSlotLabel => !string.IsNullOrWhiteSpace(SlotLabel)
+        ? SlotLabel
+        : $"{PeriodNumber}교시";
+    public string ResolvedSlotKind => string.Equals(SlotKind, ScheduleSlotKinds.Lunch,
+        StringComparison.OrdinalIgnoreCase) ? ScheduleSlotKinds.Lunch : ScheduleSlotKinds.Period;
+    public int ResolvedSlotOrder => SlotOrder > 0 ? SlotOrder : PeriodNumber;
+}
 
 /// <summary>Known caption-download states. The catalog also permits future status values.</summary>
 public static class PeriodAssetCaptionStatus

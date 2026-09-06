@@ -18,6 +18,11 @@ public sealed class CloudflaredHostedService : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
+            if (_options.Current.CentralControlEnabled)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken).ConfigureAwait(false);
+                continue;
+            }
             var token = _options.UnprotectMachine(_options.Current.CloudflareTunnelTokenMachineEnc);
             if (string.IsNullOrWhiteSpace(token))
             {
@@ -50,6 +55,8 @@ public sealed class CloudflaredHostedService : BackgroundService
                 _ = DrainAsync(_process.StandardError, stoppingToken);
                 _logger.LogInformation("Named Cloudflare tunnel started for {Hostname}.", _options.Current.CloudflareHostname);
                 await _process.WaitForExitAsync(stoppingToken).ConfigureAwait(false);
+                if (!stoppingToken.IsCancellationRequested)
+                    _logger.LogWarning("cloudflared exited unexpectedly with code {ExitCode}; reconnecting.", _process.ExitCode);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
             catch (Exception ex) { _logger.LogError(ex, "Cloudflare tunnel stopped unexpectedly."); }
@@ -62,8 +69,18 @@ public sealed class CloudflaredHostedService : BackgroundService
         }
     }
 
-    private static async Task DrainAsync(StreamReader reader, CancellationToken token)
+    private async Task DrainAsync(StreamReader reader, CancellationToken token)
     {
-        while (!token.IsCancellationRequested && await reader.ReadLineAsync(token).ConfigureAwait(false) is not null) { }
+        while (!token.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(token).ConfigureAwait(false);
+            if (line is null) break;
+            if (line.Contains("Registered tunnel connection", StringComparison.OrdinalIgnoreCase))
+                _logger.LogInformation("cloudflared connected: {Message}", line);
+            else if (line.Contains("ERR", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("error", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("failed", StringComparison.OrdinalIgnoreCase))
+                _logger.LogWarning("cloudflared: {Message}", line);
+        }
     }
 }

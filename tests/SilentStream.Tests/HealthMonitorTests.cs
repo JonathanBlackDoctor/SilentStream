@@ -24,7 +24,6 @@ public class HealthMonitorTests : IDisposable
     private readonly FakeMixer _mixer = new();
     private readonly FakeRecording _recording = new();
     private readonly FakeQueue _queue = new();
-    private readonly FakeSplits _splits = new();
     private readonly Clock _clock = new();
     private readonly List<HealthEvent> _events = new();
 
@@ -44,7 +43,7 @@ public class HealthMonitorTests : IDisposable
             _orch, _mixer, _recording, _queue, _configStore, new LogService(),
             () => _clock.Now,
             (_, ct) => Task.Delay(Timeout.Infinite, ct), // park the poll loop; tests call RunChecksOnce
-            _splits, youtubeAuth);
+            youtubeAuth);
         hm.HealthChanged += (_, e) => { lock (_events) { _events.Add(e); } };
         hm.Start(CancellationToken.None);
         return hm;
@@ -327,6 +326,7 @@ public class HealthMonitorTests : IDisposable
 
     // ---- split_pending (승인 기반 교시 분할) ----
 
+#if false // Legacy split approval feature was removed with the fixed automatic timetable.
     [Fact]
     public void Pending_split_is_announced_once_per_split_at_info()
     {
@@ -370,6 +370,7 @@ public class HealthMonitorTests : IDisposable
             date.ToDateTime(new TimeOnly(9, 40)), null, null, null, null, null);
     }
 
+#endif
     // ---- ActiveEvents + room stamp ----
 
     [Fact]
@@ -549,6 +550,9 @@ public class HealthMonitorTests : IDisposable
     {
         private readonly List<AudioSourceSettings> _sources = new();
         public IReadOnlyList<AudioSourceSettings> Sources => _sources;
+        public IReadOnlyList<AudioSourceRuntimeStatus> SourceStatuses => _sources
+            .Select(source => new AudioSourceRuntimeStatus(source.Id, true, null, DateTime.UtcNow))
+            .ToArray();
         public IReadOnlyList<AudioDeviceInfo> GetMicrophoneDevices() => Array.Empty<AudioDeviceInfo>();
         public void ConfigureSources(IReadOnlyList<AudioSourceSettings> sources)
         {
@@ -585,6 +589,7 @@ public class HealthMonitorTests : IDisposable
         public void Start(CancellationToken ct) { }
     }
 
+#if false // Legacy split approval test double retained only in source history.
     private sealed class FakeSplits : ISplitApprovalService
     {
         public List<PendingSplit> Items { get; } = new();
@@ -600,6 +605,7 @@ public class HealthMonitorTests : IDisposable
         public SplitActionOutcome Skip(string id) => new(true, null);
     }
 
+#endif
     private sealed class FakeYouTubeAuthHealth : IYouTubeAuthHealth
     {
         public event EventHandler<YouTubeAuthHealthStatus>? StatusChanged;

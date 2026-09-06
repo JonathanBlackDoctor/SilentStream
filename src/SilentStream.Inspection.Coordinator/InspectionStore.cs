@@ -9,6 +9,8 @@ public sealed class InspectionStore
     private readonly string _connectionString;
     private readonly object _eventGate = new();
     private readonly object _auditGate = new();
+    private readonly object _runCreationGate = new();
+    private bool _maintenanceReserved;
     private readonly string _room;
 
     public InspectionStore(CoordinatorOptionsStore options)
@@ -79,6 +81,10 @@ public sealed class InspectionStore
               run_id TEXT NOT NULL, channel TEXT NOT NULL, token_id TEXT NOT NULL, received_at_utc TEXT NOT NULL,
               PRIMARY KEY(run_id,channel), FOREIGN KEY(run_id) REFERENCES runs(run_id)
             );
+            CREATE TABLE IF NOT EXISTS startup_runs (
+              boot_id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, created_at_utc TEXT NOT NULL,
+              FOREIGN KEY(run_id) REFERENCES runs(run_id)
+            );
             """;
         command.ExecuteNonQuery();
     }
@@ -125,7 +131,68 @@ public sealed class InspectionStore
         return values;
     }
 
+    public IReadOnlyList<StoredBundle> ListStoredBundles()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT manifest_json,extracted_path FROM bundles ORDER BY uploaded_at_utc DESC";
+        using var reader = command.ExecuteReader();
+        var values = new List<StoredBundle>();
+        while (reader.Read())
+        {
+            var manifest = JsonSerializer.Deserialize<InspectionBundleManifest>(reader.GetString(0), InspectionProtocol.Json);
+            if (manifest is not null) values.Add(new StoredBundle(manifest, reader.GetString(1)));
+        }
+        return values;
+    }
+
     public string CreateRun(StoredBundle bundle, string owner, bool destructiveApproved)
+    {
+        lock (_runCreationGate) return CreateRunCore(bundle, owner, destructiveApproved);
+    }
+
+    public bool TryCreateRunWhenIdle(StoredBundle bundle, string owner, bool destructiveApproved, out string runId)
+    {
+        lock (_runCreationGate)
+        {
+            if (_maintenanceReserved)
+            {
+                runId = string.Empty;
+                return false;
+            }
+            var active = GetExecutableRuns().FirstOrDefault();
+            if (active is not null)
+            {
+                runId = active;
+                return false;
+            }
+            runId = CreateRunCore(bundle, owner, destructiveApproved);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Atomically reserves the no-run window used to hand a signed service update to the broker.
+    /// New operator runs are rejected until the reservation is released or this process is
+    /// replaced by the updater, preventing an update from cutting through a newly queued run.
+    /// </summary>
+    public bool TryBeginMaintenance(out string? blockingRunId)
+    {
+        lock (_runCreationGate)
+        {
+            blockingRunId = GetExecutableRuns().FirstOrDefault();
+            if (_maintenanceReserved || blockingRunId is not null) return false;
+            _maintenanceReserved = true;
+            return true;
+        }
+    }
+
+    public void EndMaintenance()
+    {
+        lock (_runCreationGate) _maintenanceReserved = false;
+    }
+
+    private string CreateRunCore(StoredBundle bundle, string owner, bool destructiveApproved)
     {
         var id = Guid.NewGuid().ToString("N");
         var now = DateTimeOffset.UtcNow.ToString("O");
@@ -156,6 +223,123 @@ public sealed class InspectionStore
         transaction.Commit();
         AppendEvent(id, "run.queued", new { runId = id, bundleId = bundle.Manifest.BundleId });
         return id;
+    }
+
+    public bool TryCreateStartupRun(StoredBundle bundle, string bootId, out string runId)
+    {
+        lock (_runCreationGate)
+        {
+            if (_maintenanceReserved)
+            {
+                runId = string.Empty;
+                return false;
+            }
+            return TryCreateStartupRunCore(bundle, bootId, out runId);
+        }
+    }
+
+    private bool TryCreateStartupRunCore(StoredBundle bundle, string bootId, out string runId)
+    {
+        using var connection = Open();
+        using var transaction = connection.BeginTransaction();
+        using (var existing = connection.CreateCommand())
+        {
+            existing.Transaction = transaction;
+            existing.CommandText = "SELECT run_id FROM startup_runs WHERE boot_id=$boot";
+            existing.Parameters.AddWithValue("$boot", bootId);
+            if (existing.ExecuteScalar() is string value)
+            {
+                runId = value;
+                transaction.Commit();
+                return false;
+            }
+        }
+
+        runId = Guid.NewGuid().ToString("N");
+        var now = DateTimeOffset.UtcNow.ToString("O");
+        using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "INSERT INTO runs(run_id,bundle_id,status,created_at_utc,updated_at_utc,owner,destructive_approved) VALUES($id,$bundle,'Queued',$now,$now,$owner,0)";
+            command.Parameters.AddWithValue("$id", runId);
+            command.Parameters.AddWithValue("$bundle", bundle.Manifest.BundleId);
+            command.Parameters.AddWithValue("$now", now);
+            command.Parameters.AddWithValue("$owner", $"system:startup:{bootId}");
+            command.ExecuteNonQuery();
+        }
+        foreach (var step in bundle.Manifest.Plan.Steps)
+        {
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = "INSERT INTO steps(run_id,step_id,type,required,status) VALUES($run,$step,$type,$required,'Queued')";
+            command.Parameters.AddWithValue("$run", runId);
+            command.Parameters.AddWithValue("$step", step.Id);
+            command.Parameters.AddWithValue("$type", step.Type.ToString());
+            command.Parameters.AddWithValue("$required", step.Required ? 1 : 0);
+            command.ExecuteNonQuery();
+        }
+        using (var marker = connection.CreateCommand())
+        {
+            marker.Transaction = transaction;
+            marker.CommandText = "INSERT INTO startup_runs(boot_id,run_id,created_at_utc) VALUES($boot,$run,$now)";
+            marker.Parameters.AddWithValue("$boot", bootId);
+            marker.Parameters.AddWithValue("$run", runId);
+            marker.Parameters.AddWithValue("$now", now);
+            marker.ExecuteNonQuery();
+        }
+        transaction.Commit();
+        AppendEvent(runId, "run.queued", new { runId, bundleId = bundle.Manifest.BundleId, bootId, automatic = true });
+        return true;
+    }
+
+    public string? GetLatestRunId()
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT run_id FROM runs ORDER BY created_at_utc DESC LIMIT 1";
+        return command.ExecuteScalar() as string;
+    }
+
+    public IReadOnlyList<object> ListRuns(int limit = 50)
+    {
+        using var connection = Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT run_id,bundle_id,status,created_at_utc,updated_at_utc,message,owner FROM runs ORDER BY created_at_utc DESC LIMIT $limit";
+        command.Parameters.AddWithValue("$limit", Math.Clamp(limit, 1, 200));
+        using var reader = command.ExecuteReader();
+        var runs = new List<object>();
+        while (reader.Read())
+        {
+            runs.Add(new
+            {
+                runId = reader.GetString(0), bundleId = reader.GetString(1), status = reader.GetString(2).ToLowerInvariant(),
+                createdAtUtc = reader.GetString(3), updatedAtUtc = reader.GetString(4), message = reader.GetString(5),
+                automatic = reader.GetString(6).StartsWith("system:startup:", StringComparison.Ordinal)
+            });
+        }
+        return runs;
+    }
+
+    public InspectionRunProgress? GetRunProgress(string runId)
+    {
+        var run = GetStoredRun(runId);
+        if (run is null) return null;
+        var bundle = GetBundle(run.BundleId);
+        if (bundle is null) return null;
+        var states = GetSteps(runId);
+        var ordered = bundle.Manifest.Plan.Steps
+            .Where(step => states.ContainsKey(step.Id))
+            .Select(step => states[step.Id])
+            .ToArray();
+        var terminal = ordered.Count(step => IsTerminal(step.Status));
+        var current = ordered.FirstOrDefault(step => step.Status == InspectionRunStatus.Running)
+            ?? ordered.FirstOrDefault(step => !IsTerminal(step.Status));
+        var issues = ordered
+            .Where(step => step.Status is InspectionRunStatus.Warning or InspectionRunStatus.Fail or InspectionRunStatus.Unknown)
+            .Select(step => $"{step.StepId}: {step.Message}")
+            .ToArray();
+        return new InspectionRunProgress(run.RunId, run.BundleId, run.Status, ordered.Length, terminal,
+            current?.StepId, current?.Message, issues);
     }
 
     public IReadOnlyList<string> GetExecutableRuns()
@@ -401,10 +585,13 @@ public sealed class InspectionStore
         using var reader = command.ExecuteReader(); return reader.Read() ? (reader.GetString(0), reader.GetString(1)) : null;
     }
 
-    public static bool IsTerminal(InspectionRunStatus status) => status is InspectionRunStatus.Pass or InspectionRunStatus.Fail or InspectionRunStatus.Unknown or InspectionRunStatus.Skipped or InspectionRunStatus.Cancelled;
+    public static bool IsTerminal(InspectionRunStatus status) => status is InspectionRunStatus.Pass or InspectionRunStatus.Warning
+        or InspectionRunStatus.Fail or InspectionRunStatus.Unknown or InspectionRunStatus.Skipped or InspectionRunStatus.Cancelled;
     private static InspectionRunStatus ParseStatus(string value) => Enum.Parse<InspectionRunStatus>(value, true);
 }
 
 public sealed record StoredBundle(InspectionBundleManifest Manifest, string Path);
 public sealed record StoredRun(string RunId, string BundleId, InspectionRunStatus Status, string Owner, bool DestructiveApproved, bool PauseRequested, bool CancelRequested);
 public sealed record StoredStep(string StepId, InspectionRunStatus Status, int Attempt, string Message);
+public sealed record InspectionRunProgress(string RunId, string BundleId, InspectionRunStatus Status,
+    int TotalSteps, int TerminalSteps, string? CurrentStep, string? CurrentMessage, string[] Issues);

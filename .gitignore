@@ -8,6 +8,9 @@ secrets.*
 appsettings.*.local.json
 # 호실 자동 설정 서버의 실제 토큰·등록 상태(예제 파일만 추적)
 src/SilentStream.ProvisioningServer/data/rooms.json
+src/SilentStream.ProvisioningServer/data/control-plane-state.json
+src/SilentStream.ProvisioningServer/data/SilentStream-prepared-package.zip
+src/SilentStream.ProvisioningServer/data/SilentStream-Central-Installer.exe
 
 # 녹화 파일 / 로그 (런타임 생성물)
 *.mp4
@@ -57,3 +60,15 @@ inspection/deployment/app-release/
 inspection/deployment/app-agent-update/
 inspection/operator-vault/
 inspection/deployment/사전준비_원격우선_실기기점검_v0.4.0.zip
+inspection/deployment/*.zip
+inspection/deployment/baek202-package/
+
+# Cloudflare Workers local dependencies and emulator state
+cloudflare/control-plane/node_modules/
+cloudflare/control-plane/.wrangler/
+cloudflare/control-plane/.deploy/
+cloudflare/control-plane/.local-config/
+
+# 로컬 중앙서버 publish 및 현장 팩 산출물(소스/스크립트가 아님)
+inspection/deployment/control-plane/
+inspection/deployment/field-pack/

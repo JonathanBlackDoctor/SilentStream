@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SilentStream.Core\SilentStream.Core.csproj" />
+    <ProjectReference Include="..\SilentStream.Inspection.Contracts\SilentStream.Inspection.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

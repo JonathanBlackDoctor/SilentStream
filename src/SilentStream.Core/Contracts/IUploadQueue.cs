@@ -2,7 +2,7 @@ namespace SilentStream.Core.Contracts;
 
 /// <summary>
 /// Persistent, quota-aware upload queue (확장계획서 §4.2). Jobs survive reboots (JSON on disk),
-/// the worker uploads at most ~6/day and pauses on quota exhaustion, resuming after the
+/// the worker uploads oldest-first until YouTube reports quota exhaustion, resuming after the
 /// Pacific-time reset so 7교시+ overflow uploads the next day (D7).
 /// </summary>
 public interface IUploadQueue
@@ -29,6 +29,10 @@ public interface IUploadQueue
 /// <param name="Status">See <see cref="UploadJobStatus"/>.</param>
 /// <param name="Attempts">Number of failed upload attempts so far.</param>
 /// <param name="VideoId">Resulting YouTube video id once completed, else null.</param>
+/// <param name="UploadStartedAtUtc">Start of the latest upload attempt.</param>
+/// <param name="UploadCompletedAtUtc">Successful completion time, if uploaded.</param>
+/// <param name="UploadDurationSeconds">Measured duration of the successful upload attempt.</param>
+/// <param name="FileSizeBytes">Cut-file size captured before successful uploads delete it.</param>
 public sealed record UploadJob(
     string Id,
     string FilePath,
@@ -37,7 +41,26 @@ public sealed record UploadJob(
     int PeriodNumber,
     string Status,
     int Attempts,
-    string? VideoId);
+    string? VideoId,
+    string SlotId = "",
+    string SlotLabel = "",
+    string SlotKind = Models.ScheduleSlotKinds.Period,
+    int SlotOrder = 0,
+    DateTimeOffset? UploadStartedAtUtc = null,
+    DateTimeOffset? UploadCompletedAtUtc = null,
+    double? UploadDurationSeconds = null,
+    long? FileSizeBytes = null)
+{
+    public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
+        ? SlotId
+        : $"period-{PeriodNumber}";
+    public string ResolvedSlotLabel => !string.IsNullOrWhiteSpace(SlotLabel)
+        ? SlotLabel
+        : $"{PeriodNumber}교시";
+    public string ResolvedSlotKind => string.Equals(SlotKind, Models.ScheduleSlotKinds.Lunch,
+        StringComparison.OrdinalIgnoreCase) ? Models.ScheduleSlotKinds.Lunch : Models.ScheduleSlotKinds.Period;
+    public int ResolvedSlotOrder => SlotOrder > 0 ? SlotOrder : PeriodNumber;
+}
 
 /// <summary>Upload job lifecycle states persisted in the queue file.</summary>
 public static class UploadJobStatus

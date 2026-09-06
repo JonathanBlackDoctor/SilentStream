@@ -16,10 +16,17 @@ public sealed record InspectionTokenEntry(
 
 public sealed class CoordinatorOptions
 {
+    public static List<string> CreateDefaultManagedRooms() => ["m111", "m112", "m113", "baek202"];
+
     public int SchemaVersion { get; set; } = 1;
     public int Port { get; set; } = 8790;
     public string BindAddress { get; set; } = "127.0.0.1";
     public string Room { get; set; } = Environment.MachineName;
+    public string RoomId { get; set; } = string.Empty;
+    public List<string> ManagedRooms { get; set; } = CreateDefaultManagedRooms();
+    public Dictionary<string, List<string>> RequiredMicrophoneDeviceIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public bool StartupInspectionEnabled { get; set; } = true;
+    public int StartupInspectionDelaySeconds { get; set; } = 20;
     public string PairingPin { get; set; } = CreatePin();
     public List<InspectionTokenEntry> Tokens { get; set; } = [];
     public Dictionary<string, string> PublicKeys { get; set; } = new(StringComparer.Ordinal);
@@ -27,6 +34,12 @@ public sealed class CoordinatorOptions
     public string CloudflareHostname { get; set; } = string.Empty;
     public string CloudflaredPath { get; set; } = string.Empty;
     public string CloudflareProtocol { get; set; } = "http2";
+    public bool CentralControlEnabled { get; set; }
+    public string CentralControlBaseUri { get; set; } = string.Empty;
+    public string CentralControlWebSocketUri { get; set; } = string.Empty;
+    public string CentralDeviceId { get; set; } = string.Empty;
+    public string CentralInstallationId { get; set; } = string.Empty;
+    public string CentralDeviceSecretMachineEnc { get; set; } = string.Empty;
     public string BrokerSecretMachineEnc { get; set; } = string.Empty;
     public string AppApiTokenMachineEnc { get; set; } = string.Empty;
     public string AppExecutablePath { get; set; } = string.Empty;
@@ -120,8 +133,14 @@ public sealed class CoordinatorOptionsStore
             File.WriteAllText(ConfigPath, JsonSerializer.Serialize(created, InspectionProtocol.Json));
             return created;
         }
-        return JsonSerializer.Deserialize<CoordinatorOptions>(File.ReadAllText(ConfigPath), InspectionProtocol.Json)
+        var loaded = JsonSerializer.Deserialize<CoordinatorOptions>(File.ReadAllText(ConfigPath), InspectionProtocol.Json)
             ?? throw new InvalidDataException("Coordinator configuration is empty.");
+        loaded.ManagedRooms ??= CoordinatorOptions.CreateDefaultManagedRooms();
+        loaded.RequiredMicrophoneDeviceIds ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        loaded.StartupInspectionDelaySeconds = Math.Clamp(loaded.StartupInspectionDelaySeconds, 0, 300);
+        if (loaded.CentralControlEnabled && string.IsNullOrWhiteSpace(loaded.CentralControlWebSocketUri))
+            loaded.CentralControlEnabled = false;
+        return loaded;
     }
 
     private void EnsureBrokerSecret()

@@ -16,7 +16,7 @@ public class ConfigStoreTests : IDisposable
         var store = new ConfigStore(ConfigPath);
         var config = store.Load();
 
-        Assert.Equal(12, config.Version); // schema v12 (automatic operation switch)
+        Assert.Equal(13, config.Version); // schema v13 (fixed automatic schedule)
         Assert.False(string.IsNullOrWhiteSpace(config.Recording.Folder));
         Assert.Equal("Ctrl+Shift+F12", config.Hotkey);
         Assert.False(config.ShowStatusBox); // 방송 상태 박스는 기본 숨김
@@ -26,41 +26,39 @@ public class ConfigStoreTests : IDisposable
     }
 
     [Fact]
-    public void Fresh_install_seeds_the_builtin_weekday_timetable()
+    public void Fresh_install_uses_code_owned_schedule_without_editable_rows()
     {
         var config = new ConfigStore(ConfigPath).Load();
 
-        // Mon–Fri get the built-in 8-period day; weekends stay empty (operator adds them if needed).
-        foreach (var day in new[] { "Mon", "Tue", "Wed", "Thu", "Fri" })
-        {
-            var entries = config.Periods.WeekdayDefaults[day];
-            Assert.Equal(8, entries.Count);
-            Assert.Equal("08:25:00", entries[0].Start);
-            Assert.Equal("09:25:00", entries[0].End);
-            // Lunch 12:25~13:25 is a plain gap between periods 4 and 5, not a period row.
-            Assert.Equal("12:25:00", entries[3].End);
-            Assert.Equal("13:25:00", entries[4].Start);
-            Assert.Equal("17:25:00", entries[7].End);
-        }
-        Assert.False(config.Periods.WeekdayDefaults.ContainsKey("Sat"));
-        Assert.False(config.Periods.WeekdayDefaults.ContainsKey("Sun"));
+        Assert.Empty(config.Periods.WeekdayDefaults);
+        Assert.Empty(config.Periods.Overrides);
+        Assert.False(config.Periods.RequireApproval);
+        Assert.Null(config.Periods.AutoApproveMinutes);
+        Assert.Equal(9, FixedSchoolSchedule.ForDate(new DateOnly(2026, 6, 15)).Periods.Count);
     }
 
     [Fact]
-    public void Pre_v8_file_with_empty_timetable_is_seeded_on_migration()
+    public void Pre_v13_file_with_empty_timetable_migrates_to_fixed_automatic_mode()
     {
         File.WriteAllText(ConfigPath, """{ "version": 7 }""");
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
-        Assert.Equal(8, loaded.Periods.WeekdayDefaults["Mon"].Count);
-        Assert.True(loaded.Periods.RequireApproval);
-        Assert.Equal(15, loaded.Periods.AutoApproveMinutes);
+        Assert.Equal(13, loaded.Version);
+        Assert.Empty(loaded.Periods.WeekdayDefaults);
+        Assert.False(loaded.Periods.RequireApproval);
+        Assert.Null(loaded.Periods.AutoApproveMinutes);
+
+        new ConfigStore(ConfigPath).Save(loaded);
+        var migratedJson = File.ReadAllText(ConfigPath);
+        Assert.DoesNotContain("requireApproval", migratedJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("autoApproveMinutes", migratedJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("weekdayDefaults", migratedJson, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("overrides", migratedJson, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
-    public void Pre_v8_file_with_an_operator_schedule_is_never_reseeded()
+    public void Pre_v13_operator_schedule_is_retired_on_migration()
     {
         // Any operator-entered row (even a single day) blocks the seed — the migration must not
         // silently overwrite or extend a schedule a deployed room is already cutting VODs from.
@@ -71,14 +69,12 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
-        var mon = Assert.Single(loaded.Periods.WeekdayDefaults["Mon"]);
-        Assert.Equal("09:00:00", mon.Start);
-        Assert.False(loaded.Periods.WeekdayDefaults.ContainsKey("Tue"));
+        Assert.Equal(13, loaded.Version);
+        Assert.Empty(loaded.Periods.WeekdayDefaults);
     }
 
     [Fact]
-    public void Explicit_split_approval_settings_are_preserved_on_load()
+    public void Legacy_split_approval_settings_are_disabled_on_migration()
     {
         // AutoApproveMinutes null = wait forever (manual only); RequireApproval false = legacy
         // immediate cut. Both are deliberate operator choices and must survive a reload.
@@ -100,7 +96,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
+        Assert.Equal(13, loaded.Version);
         Assert.Equal(string.Empty, loaded.DeviceName);
     }
 
@@ -117,7 +113,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
+        Assert.Equal(13, loaded.Version);
         Assert.Equal("[LIVE] {호실} | {yyyy-MM-dd}", loaded.YouTube.TitleTemplate);
         Assert.Equal("[영상] {호실} | {yyyy-MM-dd} | {교시}교시", loaded.Periods.TitleTemplate);
     }
@@ -135,7 +131,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
+        Assert.Equal(13, loaded.Version);
         Assert.Equal("보존할 라이브 제목", loaded.YouTube.TitleTemplate);
         Assert.Equal("보존할 영상 제목", loaded.Periods.TitleTemplate);
     }
@@ -202,7 +198,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
+        Assert.Equal(13, loaded.Version);
         Assert.True(loaded.Encoding.Adaptive.Enabled);
         Assert.True(loaded.Encoding.Adaptive.AutoRecover);
         Assert.Equal(3, loaded.Encoding.Adaptive.MaxLevel);
@@ -227,7 +223,7 @@ public class ConfigStoreTests : IDisposable
 
         var loaded = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, loaded.Version);
+        Assert.Equal(13, loaded.Version);
         Assert.True(loaded.Notifications.Enabled);
         Assert.Equal(string.Empty, loaded.Notifications.TelegramBotTokenEnc);
         Assert.Equal("warn", loaded.Notifications.NotifyLevel);
@@ -286,7 +282,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = store.Load();
 
-        Assert.Equal(12, config.Version); // defaults are schema v12
+        Assert.Equal(13, config.Version); // defaults are schema v13
         Assert.True(File.Exists(ConfigPath + ".bak"));
         // A corrupted (but pre-existing) config must NOT be treated as a fresh install: the room
         // label stays empty rather than being silently stamped with this machine's hostname, and
@@ -303,7 +299,7 @@ public class ConfigStoreTests : IDisposable
 
         var config = new ConfigStore(ConfigPath).Load();
 
-        Assert.Equal(12, config.Version);
+        Assert.Equal(13, config.Version);
         Assert.True(config.Provisioning.Completed);
         Assert.Equal(string.Empty, config.Provisioning.RoomId);
     }
