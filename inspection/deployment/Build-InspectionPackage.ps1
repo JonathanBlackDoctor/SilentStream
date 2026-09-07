@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]param([string]$Configuration='Release',[string]$Runtime='win-x64',[string]$Output='')
-$ErrorActionPreference='Stop';$packageVersion='0.4.1';$repo=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+$ErrorActionPreference='Stop';$packageVersion='0.4.2';$repo=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if([string]::IsNullOrWhiteSpace($Output)){$Output=Join-Path $PSScriptRoot 'package'}
 $deploymentRoot=[IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')+'\';$Output=[IO.Path]::GetFullPath($Output)
 if(-not $Output.StartsWith($deploymentRoot,[StringComparison]::OrdinalIgnoreCase)){throw '패키지 출력 경로는 inspection\deployment 내부여야 합니다.'}
@@ -9,7 +9,7 @@ Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter '*v0.4.0.zip' -ErrorActio
   Write-Warning "오래된 v0.4.0 산출물은 startup-v$packageVersion 및 현재 바이너리를 포함하지 않습니다. 배포하지 말고 다시 생성하세요: $($_.Name)"
 }
 $appSetup=Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'app-release') -Filter '*Setup*.exe' -ErrorAction SilentlyContinue|Select-Object -First 1
-if(-not $appSetup){throw 'v0.4.1 앱 Setup이 없습니다. Build-AppSetup.ps1을 먼저 실행하세요.'}
+if(-not $appSetup){throw 'v0.4.2 앱 Setup이 없습니다. Build-AppSetup.ps1을 먼저 실행하세요.'}
 $appSetupVersion=[string]$appSetup.VersionInfo.ProductVersion
 if($appSetupVersion -ne $packageVersion){throw "앱 Setup 버전이 $appSetupVersion 입니다. 오래된 Setup을 배포하지 말고 v$packageVersion 앱 Setup을 다시 생성하세요."}
 if(Test-Path -LiteralPath $Output){Remove-Item -LiteralPath $Output -Recurse -Force};New-Item -ItemType Directory -Path (Join-Path $Output 'bin') -Force|Out-Null

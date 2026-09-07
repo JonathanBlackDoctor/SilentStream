@@ -52,6 +52,12 @@ public static class AppPaths
 
     public static string InspectionCommandFile => Path.Combine(AppDataDir, "inspection-command.json");
 
+    /// <summary>Durable planned power-action state used to detect a successful return after boot.</summary>
+    public static string SystemPowerStateFile => Path.Combine(AppDataDir, "system-power-state.json");
+
+    /// <summary>Append-only local audit trail for prepare, schedule, cancellation and boot return.</summary>
+    public static string SystemPowerAuditFile => Path.Combine(AppDataDir, "system-power-audit.jsonl");
+
     /// <summary>
     /// Durable download assets for completed period VODs. This is intentionally separate from
     /// <see cref="VodDir"/>: the upload worker removes its temporary MP4 after YouTube accepts it,

@@ -17,7 +17,9 @@ using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
 using SilentStream.Core.Provisioning;
 using SilentStream.Core.Recovery;
+using SilentStream.Core.Safety;
 using SilentStream.Media.Windows;
+using SilentStream.Platform.Windows;
 
 namespace SilentStream.App;
 
@@ -50,6 +52,7 @@ public partial class App : Application
         // 송출 미리보기: 캡처 프레임을 저레이트 JPEG 썸네일로 제공(제어창 + 폰).
         collection.AddSingleton<IPreviewProvider, FramePreviewService>();
         collection.AddSingleton<IRecoveryKeyStore, CngRecoveryKeyStore>();
+        collection.AddSingleton<ISystemPowerSafetyProbe, WindowsSystemPowerSafetyProbe>();
         collection.AddSingleton<RecoveryCoordinator>();
         // 원격 재시작은 앱 종료 순서와 단일 인스턴스 가드를 알아야 하므로 WPF 계층에서만 구현한다.
         collection.AddSingleton<RemoteAppRestartService>();

@@ -173,10 +173,10 @@ public sealed class StartupAutomationTests
     public void Repository_startup_plan_is_safe_but_full_maintenance_plan_is_never_automatic()
     {
         var repository = FindRepositoryRoot();
-        var startup = ReadPlan(Path.Combine(repository, "inspection", "bundles", "startup-v0.4.1", "plan.json"));
+        var startup = ReadPlan(Path.Combine(repository, "inspection", "bundles", "startup-v0.4.2", "plan.json"));
         var full = ReadPlan(Path.Combine(repository, "inspection", "bundles", "full-v0.4.0", "plan.json"));
 
-        Assert.True(InspectionApiPolicy.IsSafeStartupBundle(Bundle("startup-template", "0.4.1", startup), out var startupReason), startupReason);
+        Assert.True(InspectionApiPolicy.IsSafeStartupBundle(Bundle("startup-template", "0.4.2", startup), out var startupReason), startupReason);
         Assert.False(InspectionApiPolicy.IsSafeStartupBundle(Bundle("full-template", "0.4.0", full), out var fullReason));
         Assert.Contains("not marked", fullReason, StringComparison.OrdinalIgnoreCase);
 
@@ -190,7 +190,7 @@ public sealed class StartupAutomationTests
     public void Repository_startup_plan_waits_for_application_readiness_and_audio_runtime_settle()
     {
         var repository = FindRepositoryRoot();
-        var plan = ReadPlan(Path.Combine(repository, "inspection", "bundles", "startup-v0.4.1", "plan.json"));
+        var plan = ReadPlan(Path.Combine(repository, "inspection", "bundles", "startup-v0.4.2", "plan.json"));
         var steps = plan.Steps.ToDictionary(step => step.Id, StringComparer.Ordinal);
 
         var initialWait = steps["wait-for-app"];
@@ -656,7 +656,7 @@ public sealed class StartupAutomationTests
     };
 
     private static StoredBundle Bundle(string id, bool runAtStartup, params InspectionStep[] steps) =>
-        Bundle(id, "0.4.1", new InspectionPlan { Name = id, RunAtStartup = runAtStartup, Steps = [.. steps] });
+        Bundle(id, "0.4.2", new InspectionPlan { Name = id, RunAtStartup = runAtStartup, Steps = [.. steps] });
 
     private static StoredBundle Bundle(string id, string version, InspectionPlan plan) => new(
         new InspectionBundleManifest

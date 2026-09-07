@@ -310,6 +310,7 @@
         <button id="automationToggleBtn" class="ghost">자동 운행 확인 중</button>
         <p class="muted" id="automationHint" style="margin:8px 0 0"></p>
         <button id="systemShutdownBtn" class="stop" style="margin-top:14px">PC 종료</button>
+        <button id="systemShutdownCancelBtn" class="ghost" style="margin-top:8px;display:none">예약된 종료 취소</button>
         <small class="muted">PC 종료는 녹화와 방송을 안전하게 종료한 뒤 진행됩니다.</small>
       </div>
     </details>
@@ -948,15 +949,45 @@
     makeHoldable("systemShutdownBtn", 3000, async () => {
       const room = cur;
       if (!await confirmAsk("PC를 종료할까요?",
-        "녹화와 방송을 안전하게 종료한 뒤 이 기기의 전원을 끕니다. 종료 후에는 원격 제어에 다시 연결할 수 없습니다.",
-        "PC 종료")) return;
+        "먼저 SSD·부팅 파티션·Windows Boot Manager를 읽기 전용으로 점검합니다. 이상이 있으면 종료하지 않습니다.",
+        "안전 점검")) return;
       if (cur !== room) return;
       try {
-        const response = await api(room, "/api/system/shutdown", {method:"POST"});
+        const preparedResponse = await api(room, "/api/system/shutdown/prepare",
+          {method:"POST",body:"{}",signal:timeoutSignal(15000)});
+        const prepared = await preparedResponse.json();
+        if (!preparedResponse.ok || !prepared.ok){ toast(prepared.message || "부팅 안전 점검을 통과하지 못했습니다."); return; }
+        const warnings = (prepared.checks||[]).filter(check=>check.severity===1).map(check=>check.message);
+        const detail = "부팅 안전 점검을 통과했습니다. 녹화와 방송을 정상 마감한 뒤 60초 후 종료합니다. 그동안 취소할 수 있습니다." +
+          (warnings.length ? "\n\n주의: " + warnings.join(" ") : "");
+        if (!await confirmAsk("안전 점검을 통과했습니다", detail, "60초 후 종료")) {
+          await api(room, "/api/system/shutdown/cancel", {method:"POST",body:"{}"});
+          return;
+        }
+        if (cur !== room) return;
+        const notBefore = new Date(prepared.notBeforeUtc).getTime();
+        if (Number.isFinite(notBefore) && notBefore > Date.now())
+          await new Promise(resolve=>setTimeout(resolve,notBefore-Date.now()+100));
+        const response = await api(room, "/api/system/shutdown", {method:"POST",
+          body:JSON.stringify({confirmationId:prepared.confirmationId}),signal:timeoutSignal(45000)});
         const data = await response.json();
-        toast(data.message || (data.ok ? "PC 종료를 준비합니다." : "PC 종료를 준비하지 못했습니다."));
+        if (data.ok) {
+          $("systemShutdownCancelBtn").style.display = "block";
+          setTimeout(()=>$("systemShutdownCancelBtn").style.display="none",65000);
+        }
+        toast(data.message || (data.ok ? "PC 종료를 예약했습니다." : "PC 종료를 예약하지 못했습니다."));
       } catch(e){ toast("PC 종료 요청에 실패했습니다. 연결을 확인하세요."); }
     }, "PC를 종료하려면 버튼을 3초간 길게 누르세요.");
+
+    $("systemShutdownCancelBtn").onclick = async () => {
+      const room = cur;
+      try {
+        const response = await api(room, "/api/system/shutdown/cancel", {method:"POST",body:"{}"});
+        const data = await response.json();
+        if (data.ok) $("systemShutdownCancelBtn").style.display = "none";
+        toast(data.message || "PC 종료 취소 요청을 처리했습니다.");
+      } catch(e){ toast("PC 종료를 취소하지 못했습니다."); }
+    };
 
     function inspectionPhaseLabel(phase){
       return ({running:"진행 중", awaiting_reboot:"재부팅 대기", post_reboot:"재부팅 후 확인 중",

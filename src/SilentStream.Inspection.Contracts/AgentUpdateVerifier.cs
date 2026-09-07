@@ -107,8 +107,17 @@ public sealed class InspectionAgentUpdateVerifier
         return new VerifiedInspectionAgentUpdate(manifest, target, packageHash);
     }
 
-    public static byte[] SignaturePayload(InspectionAgentUpdateManifest manifest) =>
-        JsonSerializer.SerializeToUtf8Bytes(manifest with { Signature = null }, InspectionProtocol.Json);
+    public static byte[] SignaturePayload(InspectionAgentUpdateManifest manifest)
+    {
+        // System.Text.Json recreates SortedDictionary with its default, culture-sensitive comparer.
+        // Canonicalise explicitly so signatures remain stable across serialization and PC locales.
+        var canonical = manifest with
+        {
+            Signature = null,
+            Files = new SortedDictionary<string, string>(manifest.Files, StringComparer.Ordinal)
+        };
+        return JsonSerializer.SerializeToUtf8Bytes(canonical, InspectionProtocol.Json);
+    }
 
     private static void ValidateManifest(InspectionAgentUpdateManifest manifest, IEnumerable<string> archivePaths)
     {

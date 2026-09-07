@@ -2,7 +2,7 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>SilentStream.Inspection.Installer</RootNamespace><AssemblyName>SilentStreamInspectionInstaller</AssemblyName>
-    <ApplicationManifest>app.manifest</ApplicationManifest><Version>0.4.1</Version>
+    <ApplicationManifest>app.manifest</ApplicationManifest><Version>0.4.2</Version>
     <PublishSingleFile>true</PublishSingleFile><IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
   <ItemGroup>

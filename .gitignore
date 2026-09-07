@@ -58,6 +58,9 @@ inspection/deployment/원격우선_실기기점검_v0.4.0.zip
 inspection/deployment/app-publish/
 inspection/deployment/app-release/
 inspection/deployment/app-agent-update/
+inspection/deployment/agent-update-payload*/
+inspection/deployment/build-artifacts/
+inspection/deployment/vpk-temp/
 inspection/operator-vault/
 inspection/deployment/사전준비_원격우선_실기기점검_v0.4.0.zip
 inspection/deployment/*.zip

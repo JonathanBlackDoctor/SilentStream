@@ -6,5 +6,6 @@
     <ProjectReference Include="..\..\src\SilentStream.Inspection.Coordinator\SilentStream.Inspection.Coordinator.csproj"/>
     <ProjectReference Include="..\..\src\SilentStream.Inspection.SessionAgent\SilentStream.Inspection.SessionAgent.csproj"/>
     <ProjectReference Include="..\..\src\SilentStream.Inspection.OperatorCli\SilentStream.Inspection.OperatorCli.csproj"/>
+    <ProjectReference Include="..\..\src\SilentStream.Platform.Windows\SilentStream.Platform.Windows.csproj"/>
   </ItemGroup>
 </Project>

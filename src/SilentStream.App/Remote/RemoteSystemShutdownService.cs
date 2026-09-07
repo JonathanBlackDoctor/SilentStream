@@ -1,68 +1,429 @@
 using System.Diagnostics;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text.Json;
+using SilentStream.Core;
 using SilentStream.Core.Contracts;
+using SilentStream.Core.Safety;
 
 namespace SilentStream.App.Remote;
 
 /// <summary>
-/// Queues a deliberate Windows shutdown requested from a paired phone. The HTTP endpoint returns
-/// first; the recording and broadcast are then stopped gracefully before Windows is told to power
-/// off. Only one shutdown can be queued at a time.
+/// Coordinates a fail-closed two-phase Windows shutdown. A paired client must first pass the
+/// read-only boot safety probe, then confirm a short-lived nonce from the same device. The actual
+/// OS command has a visible, cancellable delay and is issued only after recording finalisation.
 /// </summary>
-public sealed class RemoteSystemShutdownService(IStreamOrchestrator orchestrator, ILogService log)
+public sealed class RemoteSystemShutdownService
 {
-    private int _shutdownQueued;
+    private static readonly TimeSpan ConfirmationDelay = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ConfirmationLifetime = TimeSpan.FromSeconds(90);
+    private static readonly TimeSpan RequestCooldown = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan ShutdownDelay = TimeSpan.FromSeconds(60);
+    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
-    public bool RequestShutdown()
+    private readonly IStreamOrchestrator _orchestrator;
+    private readonly ILogService _log;
+    private readonly ISystemPowerSafetyProbe _safety;
+    private readonly object _gate = new();
+    private PendingConfirmation? _pending;
+    private PowerActionState _state;
+    private bool _durableStateAvailable;
+    private bool _shutdownScheduled;
+
+    public RemoteSystemShutdownService(IStreamOrchestrator orchestrator, ILogService log,
+        ISystemPowerSafetyProbe safety)
     {
-        if (Interlocked.CompareExchange(ref _shutdownQueued, 1, 0) != 0)
+        _orchestrator = orchestrator;
+        _log = log;
+        _safety = safety;
+        _state = ReadState(out _durableStateAvailable);
+        if (_state.AwaitingBootConfirmation)
         {
-            return false;
+            var currentBoot = CurrentBootStartedAtUtc();
+            if (_state.BootSessionStartedAtUtc is { } previousBoot
+                && currentBoot > previousBoot.AddMinutes(1))
+            {
+                _state = _state with
+                {
+                    AwaitingBootConfirmation = false,
+                    LastBootObservedAtUtc = DateTimeOffset.UtcNow
+                };
+                _durableStateAvailable &= WriteState(_state);
+                AppendAudit("boot-observed", _state.LastActorId ?? "system",
+                    "예약된 전원 전환 뒤 애플리케이션 시작을 확인했습니다.");
+            }
+            else if (_state.LastActionAtUtc is { } requestedAt
+                     && DateTimeOffset.UtcNow - requestedAt > ShutdownDelay.Add(TimeSpan.FromSeconds(30)))
+            {
+                _state = _state with { AwaitingBootConfirmation = false };
+                _durableStateAvailable &= WriteState(_state);
+                AppendAudit("schedule-expired", _state.LastActorId ?? "system",
+                    "같은 부팅 세션에서 종료 예약 시간이 지났으므로 예약 상태를 해제했습니다.");
+            }
+            else
+            {
+                _shutdownScheduled = true;
+            }
         }
-
-        _ = ShutdownAfterResponseAsync();
-        return true;
     }
 
-    private async Task ShutdownAfterResponseAsync()
+    public async Task<SystemShutdownPreparation> PrepareAsync(string actorId, CancellationToken cancellationToken)
     {
-        // Give Kestrel time to return the accepted response to the phone before its network goes away.
-        await Task.Delay(TimeSpan.FromMilliseconds(750)).ConfigureAwait(false);
+        var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            if (!_durableStateAvailable)
+                return FailedPreparation("전원 전환 상태를 안전하게 기록할 수 없어 PC 종료를 차단했습니다.");
+            if (_shutdownScheduled)
+                return FailedPreparation("PC 종료가 이미 예약되어 있습니다.");
+            if (_pending is not null && _pending.ExpiresAtUtc > now)
+                return FailedPreparation("다른 PC 종료 확인이 진행 중입니다.");
+            _pending = null;
+            if (_state.LastActionAtUtc is { } last && now - last < RequestCooldown)
+                return FailedPreparation($"최근 전원 요청 후 10분이 지나지 않아 종료를 차단했습니다. {last:O}");
+        }
 
+        SystemPowerSafetyAssessment assessment;
         try
         {
-            await orchestrator.StopAsync().ConfigureAwait(false);
+            assessment = await _safety.InspectAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            // A failed graceful finalisation must not strand an explicitly requested shutdown.
-            log.Error("원격 PC 종료 전 송출·녹화 종료 중 오류", ex);
+            var message = $"부팅 안전 점검을 완료하지 못해 PC 종료를 차단했습니다: {ex.GetType().Name}";
+            _log.Error(message, ex);
+            AppendAudit("probe-failed", actorId, message);
+            return FailedPreparation(message);
+        }
+        if (!assessment.Safe)
+        {
+            var message = "부팅 안전 점검을 통과하지 못해 PC 종료를 차단했습니다: " +
+                          string.Join(" ", assessment.Blockers.Select(check => check.Message));
+            _log.Warn(message);
+            AppendAudit("blocked", actorId, message, assessment);
+            return new SystemShutdownPreparation(false, null, null, null, message, assessment.Checks);
         }
 
-        try
+        now = DateTimeOffset.UtcNow;
+        var confirmation = new PendingConfirmation(
+            Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant(),
+            actorId,
+            now.Add(ConfirmationDelay),
+            now.Add(ConfirmationLifetime),
+            assessment);
+        lock (_gate)
         {
-            var shutdownExe = Path.Combine(Environment.SystemDirectory, "shutdown.exe");
-            var command = new ProcessStartInfo
-            {
-                FileName = File.Exists(shutdownExe) ? shutdownExe : "shutdown.exe",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            command.ArgumentList.Add("/s");
-            command.ArgumentList.Add("/t");
-            command.ArgumentList.Add("0");
+            if (_shutdownScheduled || _pending is not null)
+                return FailedPreparation("다른 PC 종료 요청이 먼저 시작되었습니다.");
+            _pending = confirmation;
+        }
 
-            if (Process.Start(command) is null)
+        if (!AppendAudit("prepared", actorId, "부팅 안전 점검을 통과하고 종료 확인을 준비했습니다.", assessment))
+        {
+            lock (_gate)
             {
-                throw new InvalidOperationException("Windows 종료 명령을 시작하지 못했습니다.");
+                if (ReferenceEquals(_pending, confirmation)) _pending = null;
+                _durableStateAvailable = false;
+            }
+            return FailedPreparation("전원 전환 감사 기록을 저장할 수 없어 PC 종료를 차단했습니다.");
+        }
+        return new SystemShutdownPreparation(true, confirmation.Id, confirmation.NotBeforeUtc,
+            confirmation.ExpiresAtUtc, "안전 점검을 통과했습니다. 내용을 확인한 뒤 다시 승인하세요.", assessment.Checks);
+    }
+
+    public async Task<SystemShutdownResult> ConfirmAsync(string? confirmationId, string actorId,
+        CancellationToken cancellationToken)
+    {
+        PendingConfirmation confirmation;
+        var now = DateTimeOffset.UtcNow;
+        lock (_gate)
+        {
+            if (_shutdownScheduled)
+                return new(false, "PC 종료가 이미 예약되어 있습니다.", null);
+            if (_pending is null || string.IsNullOrWhiteSpace(confirmationId)
+                                 || confirmationId.Length != _pending.Id.Length
+                                 || !CryptographicOperations.FixedTimeEquals(
+                                     System.Text.Encoding.UTF8.GetBytes(_pending.Id),
+                                     System.Text.Encoding.UTF8.GetBytes(confirmationId)))
+                return new(false, "유효한 종료 확인 번호가 없습니다. 안전 점검부터 다시 실행하세요.", null);
+            if (!string.Equals(_pending.ActorId, actorId, StringComparison.Ordinal))
+                return new(false, "안전 점검을 요청한 기기에서만 종료를 승인할 수 있습니다.", null);
+            if (now < _pending.NotBeforeUtc)
+                return new(false, "안전 점검 내용을 확인할 시간이 더 필요합니다. 잠시 뒤 다시 승인하세요.", null);
+            if (now > _pending.ExpiresAtUtc)
+            {
+                _pending = null;
+                return new(false, "종료 확인 시간이 만료되었습니다. 안전 점검부터 다시 실행하세요.", null);
             }
 
-            log.Warn("원격 요청으로 PC 종료를 시작합니다.");
+            confirmation = _pending;
+            _pending = null;
+            _shutdownScheduled = true;
+        }
+
+        try
+        {
+            await _orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException ex)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            _log.Error("PC 종료 전 송출·녹화 마감이 취소되거나 제한시간을 초과했습니다.", ex);
+            AppendAudit("finalization-cancelled", actorId, ex.GetType().Name, confirmation.Assessment);
+            return new(false, "송출·녹화 마감이 취소되거나 제한시간을 초과해 PC 종료를 취소했습니다.", null);
         }
         catch (Exception ex)
         {
-            log.Error("원격 PC 종료 요청 실패", ex);
-            Interlocked.Exchange(ref _shutdownQueued, 0);
+            lock (_gate) _shutdownScheduled = false;
+            _log.Error("PC 종료 전 송출·녹화를 정상적으로 마감하지 못해 종료를 취소했습니다.", ex);
+            AppendAudit("finalization-failed", actorId, ex.GetType().Name, confirmation.Assessment);
+            return new(false, "송출·녹화를 정상적으로 마감하지 못해 PC 종료를 취소했습니다.", null);
+        }
+
+        SystemPowerSafetyAssessment finalAssessment;
+        try
+        {
+            finalAssessment = await _safety.InspectAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            return new(false, "최종 부팅 안전 점검이 취소되어 PC 종료를 차단했습니다.", null);
+        }
+        catch (Exception ex)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            _log.Error("최종 부팅 안전 점검을 완료하지 못해 PC 종료를 차단했습니다.", ex);
+            AppendAudit("final-probe-failed", actorId, ex.GetType().Name, confirmation.Assessment);
+            return new(false, "최종 부팅 안전 점검을 완료하지 못해 PC 종료를 차단했습니다.", null);
+        }
+
+        if (!finalAssessment.Safe)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            var blockers = string.Join(" ", finalAssessment.Blockers.Select(check => check.Message));
+            AppendAudit("final-check-blocked", actorId, blockers, finalAssessment);
+            return new(false, "최종 부팅 안전 점검에서 이상을 발견해 PC 종료를 차단했습니다: " + blockers, null);
+        }
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        var previousState = _state;
+        var reservedState = _state with
+        {
+            LastActionAtUtc = requestedAt,
+            LastActorId = actorId,
+            AwaitingBootConfirmation = true,
+            BootSessionStartedAtUtc = CurrentBootStartedAtUtc()
+        };
+        if (!WriteState(reservedState))
+        {
+            lock (_gate)
+            {
+                _shutdownScheduled = false;
+                _durableStateAvailable = false;
+            }
+            AppendAudit("reservation-failed", actorId, "전원 전환 상태를 저장하지 못했습니다.", finalAssessment);
+            return new(false, "전원 전환 상태를 안전하게 기록할 수 없어 PC 종료를 차단했습니다.", null);
+        }
+        _state = reservedState;
+
+        try
+        {
+            var command = CreateShutdownCommand("/s", "/t", ((int)ShutdownDelay.TotalSeconds).ToString(),
+                "/d", "p:4:1", "/c", "Media Capture Helper 안전 종료 - 60초 동안 취소할 수 있습니다.");
+            using var process = Process.Start(command);
+            if (process is null) throw new InvalidOperationException("Windows 종료 명령을 시작하지 못했습니다.");
+            await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
+                .ConfigureAwait(false);
+            if (process.ExitCode != 0) throw new InvalidOperationException($"Windows 종료 명령이 {process.ExitCode}로 종료되었습니다.");
+
+            AppendAudit("scheduled", actorId, "Windows 안전 종료를 60초 뒤로 예약했습니다.", finalAssessment);
+            _log.Warn("원격 요청으로 PC 안전 종료를 예약했습니다. 60초 안에는 취소할 수 있습니다.");
+            _ = ClearExpiredScheduleIfStillRunningAsync(requestedAt);
+            return new(true, "PC 종료를 60초 뒤로 예약했습니다. 필요하면 지금 취소하세요.",
+                requestedAt.Add(ShutdownDelay));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
+                                            or TimeoutException)
+        {
+            await TryAbortWindowsShutdownAsync().ConfigureAwait(false);
+            _state = previousState;
+            _durableStateAvailable = WriteState(previousState);
+            lock (_gate) _shutdownScheduled = false;
+            _log.Error("PC 종료 예약에 실패했습니다.", ex);
+            AppendAudit("schedule-failed", actorId, ex.GetType().Name, finalAssessment);
+            return new(false, "Windows 종료를 예약하지 못했습니다.", null);
         }
     }
+
+    public async Task<SystemShutdownResult> CancelAsync(string actorId, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            if (!_shutdownScheduled)
+            {
+                if (_pending is null) return new(false, "취소할 PC 종료 준비가 없습니다.", null);
+                _pending = null;
+                AppendAudit("preparation-cancelled", actorId, "PC 종료 확인 준비를 취소했습니다.");
+                return new(true, "PC 종료 준비를 취소했습니다.", null);
+            }
+        }
+
+        try
+        {
+            using var process = Process.Start(CreateShutdownCommand("/a"));
+            if (process is null) throw new InvalidOperationException("Windows 종료 취소 명령을 시작하지 못했습니다.");
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            if (process.ExitCode != 0)
+                return new(false, "취소할 Windows 종료 예약이 없습니다.", null);
+
+            lock (_gate)
+            {
+                _shutdownScheduled = false;
+                _pending = null;
+            }
+            _state = _state with { AwaitingBootConfirmation = false };
+            _durableStateAvailable = WriteState(_state);
+            AppendAudit("cancelled", actorId, "예약된 Windows 종료를 취소했습니다.");
+            _log.Warn("예약된 PC 종료를 원격 요청으로 취소했습니다.");
+            return new(true, "예약된 PC 종료를 취소했습니다.", null);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            _log.Error("PC 종료 취소 요청에 실패했습니다.", ex);
+            return new(false, "PC 종료 취소 요청을 처리하지 못했습니다.", null);
+        }
+    }
+
+    private static ProcessStartInfo CreateShutdownCommand(params string[] arguments)
+    {
+        var path = Path.Combine(Environment.SystemDirectory, "shutdown.exe");
+        var start = new ProcessStartInfo(File.Exists(path) ? path : "shutdown.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        return start;
+    }
+
+    private static async Task TryAbortWindowsShutdownAsync()
+    {
+        try
+        {
+            using var process = Process.Start(CreateShutdownCommand("/a"));
+            if (process is not null)
+                await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
+                    .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best effort only: this runs after scheduling failed or became indeterminate.
+        }
+    }
+
+    private static SystemShutdownPreparation FailedPreparation(string message) =>
+        new(false, null, null, null, message, []);
+
+    private PowerActionState ReadState(out bool available)
+    {
+        try
+        {
+            available = true;
+            if (!File.Exists(AppPaths.SystemPowerStateFile)) return new();
+            var state = JsonSerializer.Deserialize<PowerActionState>(File.ReadAllText(AppPaths.SystemPowerStateFile), Json);
+            if (state is null) throw new JsonException("전원 전환 상태가 비어 있습니다.");
+            return state;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            available = false;
+            _log.Error("전원 전환 상태를 읽지 못해 전원 요청을 차단합니다.", ex);
+            return new PowerActionState();
+        }
+    }
+
+    private bool WriteState(PowerActionState state)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AppDataDir);
+            var temporary = AppPaths.SystemPowerStateFile + ".tmp";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(state, Json));
+            File.Move(temporary, AppPaths.SystemPowerStateFile, overwrite: true);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Error("전원 전환 상태를 저장하지 못했습니다.", ex);
+            return false;
+        }
+    }
+
+    private bool AppendAudit(string stage, string actorId, string message,
+        SystemPowerSafetyAssessment? assessment = null)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.AppDataDir);
+            var entry = JsonSerializer.Serialize(new
+            {
+                occurredAtUtc = DateTimeOffset.UtcNow,
+                stage,
+                actorId,
+                message,
+                safe = assessment?.Safe,
+                checks = assessment?.Checks
+            }, Json);
+            File.AppendAllText(AppPaths.SystemPowerAuditFile, entry + Environment.NewLine);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _log.Warn($"전원 전환 감사 로그를 저장하지 못했습니다: {ex.GetType().Name}");
+            return false;
+        }
+    }
+
+    private async Task ClearExpiredScheduleIfStillRunningAsync(DateTimeOffset requestedAt)
+    {
+        await Task.Delay(ShutdownDelay.Add(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+        lock (_gate)
+        {
+            if (!_shutdownScheduled || _state.LastActionAtUtc != requestedAt) return;
+            _shutdownScheduled = false;
+            _state = _state with { AwaitingBootConfirmation = false };
+        }
+        _durableStateAvailable = WriteState(_state);
+        AppendAudit("schedule-expired", _state.LastActorId ?? "system",
+            "종료 예약 뒤에도 같은 부팅 세션이 계속되어 예약 상태를 해제했습니다.");
+    }
+
+    private static DateTimeOffset CurrentBootStartedAtUtc() =>
+        DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+
+    private sealed record PendingConfirmation(string Id, string ActorId, DateTimeOffset NotBeforeUtc,
+        DateTimeOffset ExpiresAtUtc, SystemPowerSafetyAssessment Assessment);
+
+    private sealed record PowerActionState(
+        DateTimeOffset? LastActionAtUtc = null,
+        string? LastActorId = null,
+        bool AwaitingBootConfirmation = false,
+        DateTimeOffset? LastBootObservedAtUtc = null,
+        DateTimeOffset? BootSessionStartedAtUtc = null);
 }
+
+public sealed record SystemShutdownPreparation(
+    bool Ok,
+    string? ConfirmationId,
+    DateTimeOffset? NotBeforeUtc,
+    DateTimeOffset? ExpiresAtUtc,
+    string Message,
+    IReadOnlyList<SystemPowerSafetyCheck> Checks);
+
+public sealed record SystemShutdownResult(bool Ok, string Message, DateTimeOffset? CancelUntilUtc);

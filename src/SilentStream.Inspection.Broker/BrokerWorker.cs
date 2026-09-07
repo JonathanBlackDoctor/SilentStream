@@ -9,6 +9,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using SilentStream.Inspection;
+using SilentStream.Core.Safety;
 
 namespace SilentStream.Inspection.Broker;
 
@@ -17,12 +18,29 @@ public sealed class BrokerWorker : BackgroundService
     private static readonly HashSet<string> AllowedProcesses = new(StringComparer.OrdinalIgnoreCase) { "MediaCaptureHelper", "ffmpeg", "cloudflared" };
     private readonly BrokerConfiguration _configuration;
     private readonly ILogger<BrokerWorker> _logger;
+    private readonly ISystemPowerSafetyProbe _powerSafety;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seen = new();
+    private readonly SemaphoreSlim _rebootGate = new(1, 1);
 
-    public BrokerWorker(BrokerConfiguration configuration, ILogger<BrokerWorker> logger) { _configuration = configuration; _logger = logger; }
+    public BrokerWorker(BrokerConfiguration configuration, ILogger<BrokerWorker> logger,
+        ISystemPowerSafetyProbe powerSafety)
+    {
+        _configuration = configuration;
+        _logger = logger;
+        _powerSafety = powerSafety;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        try
+        {
+            MarkSuccessfulBootIfNeeded();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            _logger.LogCritical(ex,
+                "The durable reboot safety state is unavailable. Reboot requests will remain fail-closed.");
+        }
         while (!stoppingToken.IsCancellationRequested)
         {
             var pipe = CreatePipe();
@@ -107,8 +125,8 @@ public sealed class BrokerWorker : BackgroundService
                 await BounceNicAsync(adapter, seconds, token);
                 return Ok(request, "Network adapter was restored after the bounded interruption.");
             case "reboot":
-                _ = Process.Start(Hidden(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/r", "/t", "5", "/d", "p:0:0"));
-                return Ok(request, "Reboot is scheduled in five seconds.");
+                await ScheduleSafeRebootAsync(request, token);
+                return Ok(request, "Safety checks passed. Reboot is scheduled in 60 seconds and can be cancelled with shutdown /a.");
             case "install-app":
                 var installerHash = await VerifyCachedInstallerAsync(token);
                 return Ok(request, "Cached installer was verified for the interactive session.", new
@@ -126,6 +144,129 @@ public sealed class BrokerWorker : BackgroundService
             default: throw new InvalidDataException("Privileged action is not in the broker schema.");
         }
     }
+
+    private async Task ScheduleSafeRebootAsync(BrokerRequest request, CancellationToken token)
+    {
+        await _rebootGate.WaitAsync(token);
+        try
+        {
+            var now = DateTimeOffset.UtcNow;
+            var state = ReadRebootState();
+            if (state.LastScheduledAtUtc is { } last && now - last < TimeSpan.FromHours(24))
+                throw new InvalidOperationException($"Only one inspection reboot is allowed per 24 hours. Last request: {last:O}");
+
+            var assessment = await _powerSafety.InspectAsync(token);
+            if (!assessment.Safe)
+            {
+                var blockers = string.Join(" ", assessment.Blockers.Select(check => check.Message));
+                WriteRebootAudit("blocked", request, blockers, assessment);
+                throw new InvalidOperationException("Boot safety checks blocked the reboot. " + blockers);
+            }
+
+            var bootStartedAtUtc = CurrentBootStartedAtUtc();
+            var reserved = new RebootSafetyState(now, request.Id, request.ConfirmationId, bootStartedAtUtc,
+                AwaitingBootConfirmation: true, LastBootObservedAtUtc: state.LastBootObservedAtUtc);
+            WriteRebootState(reserved);
+            try
+            {
+                await RunAsync(Hidden(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/r", "/t", "60",
+                    "/d", "p:4:1", "/c",
+                    "SilentStream approved safety reboot - run shutdown /a within 60 seconds to cancel."),
+                    TimeSpan.FromSeconds(10), CancellationToken.None);
+                WriteRebootAudit("scheduled", request,
+                    "Boot safety checks passed; reboot is scheduled for 60 seconds.", assessment);
+            }
+            catch (Exception ex)
+            {
+                await TryAbortShutdownAsync();
+                try { WriteRebootState(state); }
+                catch (Exception rollback) { _logger.LogCritical(rollback, "Could not roll back the failed reboot reservation."); }
+                try { WriteRebootAudit("schedule-failed", request, ex.GetType().Name, assessment); }
+                catch (Exception audit) { _logger.LogError(audit, "Could not audit the failed reboot schedule."); }
+                throw;
+            }
+        }
+        finally
+        {
+            _rebootGate.Release();
+        }
+    }
+
+    private static async Task TryAbortShutdownAsync()
+    {
+        try
+        {
+            await RunAsync(Hidden(Path.Combine(Environment.SystemDirectory, "shutdown.exe"), "/a"),
+                TimeSpan.FromSeconds(10), CancellationToken.None);
+        }
+        catch
+        {
+            // Best effort only: this is used after scheduling failed or became indeterminate.
+        }
+    }
+
+    private void MarkSuccessfulBootIfNeeded()
+    {
+        var state = ReadRebootState();
+        if (!state.AwaitingBootConfirmation || state.BootSessionStartedAtUtc is null) return;
+        var currentBoot = CurrentBootStartedAtUtc();
+        if (currentBoot <= state.BootSessionStartedAtUtc.Value.AddMinutes(1)) return;
+        var observed = state with { AwaitingBootConfirmation = false, LastBootObservedAtUtc = DateTimeOffset.UtcNow };
+        WriteRebootState(observed);
+        _logger.LogInformation("The inspection broker observed a successful Windows return after the planned reboot.");
+    }
+
+    private RebootSafetyState ReadRebootState()
+    {
+        var path = Path.Combine(_configuration.Root, "reboot-safety-state.json");
+        try
+        {
+            if (!File.Exists(path)) return new();
+            return JsonSerializer.Deserialize<RebootSafetyState>(File.ReadAllText(path), InspectionProtocol.Json) ?? new();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            throw new InvalidDataException("The durable reboot safety state could not be read.", ex);
+        }
+    }
+
+    private void WriteRebootState(RebootSafetyState state)
+    {
+        Directory.CreateDirectory(_configuration.Root);
+        var path = Path.Combine(_configuration.Root, "reboot-safety-state.json");
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(state, InspectionProtocol.Json));
+        File.Move(temporary, path, overwrite: true);
+    }
+
+    private void WriteRebootAudit(string stage, BrokerRequest request, string message,
+        SystemPowerSafetyAssessment assessment)
+    {
+        Directory.CreateDirectory(_configuration.Root);
+        var entry = JsonSerializer.Serialize(new
+        {
+            occurredAtUtc = DateTimeOffset.UtcNow,
+            stage,
+            requestId = request.Id,
+            confirmationFingerprint = Convert.ToHexString(SHA256.HashData(
+                Encoding.UTF8.GetBytes(request.ConfirmationId))).ToLowerInvariant()[..16],
+            message,
+            assessment.Safe,
+            assessment.Checks
+        }, InspectionProtocol.Json);
+        File.AppendAllText(Path.Combine(_configuration.Root, "reboot-safety-audit.jsonl"), entry + Environment.NewLine);
+    }
+
+    private static DateTimeOffset CurrentBootStartedAtUtc() =>
+        DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
+
+    private sealed record RebootSafetyState(
+        DateTimeOffset? LastScheduledAtUtc = null,
+        string? RequestId = null,
+        string? ConfirmationId = null,
+        DateTimeOffset? BootSessionStartedAtUtc = null,
+        bool AwaitingBootConfirmation = false,
+        DateTimeOffset? LastBootObservedAtUtc = null);
 
     private object ApproveInspectionUpdate(string packagePath)
     {

@@ -262,7 +262,7 @@ public sealed class CoordinatorAudioPhysicalIntegrationTests
     public void Repository_startup_plan_uses_readiness_only_then_a_bounded_physical_probe()
     {
         var repository = FindRepositoryRoot();
-        var planPath = Path.Combine(repository, "inspection", "bundles", "startup-v0.4.1", "plan.json");
+        var planPath = Path.Combine(repository, "inspection", "bundles", "startup-v0.4.2", "plan.json");
         var plan = JsonSerializer.Deserialize<InspectionPlan>(File.ReadAllText(planPath), InspectionProtocol.Json)!;
         var steps = plan.Steps.ToDictionary(step => step.Id, StringComparer.Ordinal);
 
@@ -359,7 +359,7 @@ public sealed class CoordinatorAudioPhysicalIntegrationTests
             new InspectionBundleManifest
             {
                 BundleId = $"audio-physical-{Guid.NewGuid():N}",
-                Version = "0.4.1",
+                Version = "0.4.2",
                 SigningKeyId = "test",
                 Plan = new InspectionPlan { Name = "audio physical integration", Steps = [.. steps] }
             },

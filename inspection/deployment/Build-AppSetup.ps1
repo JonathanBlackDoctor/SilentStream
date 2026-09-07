@@ -1,5 +1,5 @@
 ﻿[CmdletBinding()]param(
-  [string]$Version = '0.4.1',
+  [string]$Version = '0.4.2',
   [string]$Runtime = 'win-x64',
   [string]$Output = ''
 )
@@ -10,11 +10,13 @@ if ([string]::IsNullOrWhiteSpace($Output)) { $Output = Join-Path $PSScriptRoot '
 $Output = [IO.Path]::GetFullPath($Output)
 if (-not $Output.StartsWith($deploymentRoot,[StringComparison]::OrdinalIgnoreCase)) { throw '앱 출력 경로는 inspection\deployment 내부여야 합니다.' }
 $staging = Join-Path $PSScriptRoot 'app-publish'
-foreach ($path in @($staging,$Output)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
+$buildArtifacts = Join-Path $PSScriptRoot 'build-artifacts'
+$vpkTemp = Join-Path $PSScriptRoot 'vpk-temp'
+foreach ($path in @($staging,$Output,$buildArtifacts,$vpkTemp)) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } }
 
-& dotnet publish (Join-Path $repo 'src\SilentStream.App\SilentStream.App.csproj') -c Release -r $Runtime --self-contained true -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -p:DebugSymbols=false -o $staging
+& dotnet publish (Join-Path $repo 'src\SilentStream.App\SilentStream.App.csproj') -c Release -r $Runtime --self-contained true --artifacts-path $buildArtifacts -p:PublishSingleFile=false "-p:Version=$Version" -p:DebugType=None -p:DebugSymbols=false -o $staging
 if ($LASTEXITCODE -ne 0) { throw '앱 publish 실패' }
-& dotnet publish (Join-Path $repo 'src\SilentStream.UninstallHelper\SilentStream.UninstallHelper.csproj') -c Release -r $Runtime --self-contained true -p:PublishSingleFile=true "-p:Version=$Version" -p:DebugType=None -p:DebugSymbols=false -o (Join-Path $staging 'uninstall-helper')
+& dotnet publish (Join-Path $repo 'src\SilentStream.UninstallHelper\SilentStream.UninstallHelper.csproj') -c Release -r $Runtime --self-contained true --artifacts-path $buildArtifacts -p:PublishSingleFile=true "-p:Version=$Version" -p:DebugType=None -p:DebugSymbols=false -o (Join-Path $staging 'uninstall-helper')
 if ($LASTEXITCODE -ne 0) { throw '제거 도우미 publish 실패' }
 
 $required = @(
@@ -43,8 +45,19 @@ if (Test-Path -LiteralPath $agentUpdates) {
   Get-ChildItem -LiteralPath $agentUpdates -Filter '*.zip' | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $target -Force }
 }
 
-& vpk pack --packId MediaCaptureHelper --packVersion $Version --packDir $staging --mainExe MediaCaptureHelper.exe --packTitle 'Media Capture Helper' --packAuthors 'Media Capture Helper' --delta None --outputDir $Output
-if ($LASTEXITCODE -ne 0) { throw 'Velopack Setup 생성 실패' }
+New-Item -ItemType Directory -Path $vpkTemp -Force | Out-Null
+$previousTemp = $env:TEMP
+$previousTmp = $env:TMP
+try {
+  $env:TEMP = $vpkTemp
+  $env:TMP = $vpkTemp
+  & vpk pack --packId MediaCaptureHelper --packVersion $Version --packDir $staging --mainExe MediaCaptureHelper.exe --packTitle 'Media Capture Helper' --packAuthors 'Media Capture Helper' --delta None --outputDir $Output
+  $vpkExitCode = $LASTEXITCODE
+} finally {
+  $env:TEMP = $previousTemp
+  $env:TMP = $previousTmp
+}
+if ($vpkExitCode -ne 0) { throw 'Velopack Setup 생성 실패' }
 $setup = Get-ChildItem -LiteralPath $Output -Filter '*Setup*.exe' | Select-Object -First 1
 if (-not $setup) { throw 'Velopack Setup 파일을 찾지 못했습니다.' }
 Write-Output $setup.FullName

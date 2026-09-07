@@ -151,6 +151,8 @@ public sealed class CentralControlAgentHostedService : BackgroundService
             return Failure(command.CommandId, HttpStatusCode.BadRequest, "중앙 명령 대상이 안전 정책과 일치하지 않습니다.");
 
         var appToken = _options.UnprotectMachine(_options.Current.AppApiTokenMachineEnc);
+        if (command.Action == "system.shutdown")
+            return await ExecuteSystemShutdownAsync(command.CommandId, appToken, token).ConfigureAwait(false);
         var inspection = expectedPath.StartsWith("/inspect/", StringComparison.Ordinal);
         var uri = inspection ? "http://127.0.0.1:8790" + expectedPath : "http://127.0.0.1:8787" + expectedPath;
         using var request = new HttpRequestMessage(new HttpMethod(expectedMethod), uri);
@@ -174,6 +176,54 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
             return Failure(command.CommandId, HttpStatusCode.ServiceUnavailable, ex.Message);
+        }
+    }
+
+    private async Task<CentralCommandResult> ExecuteSystemShutdownAsync(string commandId, string appToken,
+        CancellationToken token)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(55));
+            var client = _clients.CreateClient(nameof(CentralControlAgentHostedService));
+            using var prepare = new HttpRequestMessage(HttpMethod.Post,
+                "http://127.0.0.1:8787/api/system/shutdown/prepare");
+            prepare.Headers.Authorization = new AuthenticationHeaderValue("Bearer", appToken);
+            prepare.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+            using var preparedResponse = await client.SendAsync(prepare, timeout.Token).ConfigureAwait(false);
+            var preparedText = await preparedResponse.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            if (!preparedResponse.IsSuccessStatusCode)
+                return new CentralCommandResult(commandId, false, (int)preparedResponse.StatusCode,
+                    preparedResponse.Content.Headers.ContentType?.ToString() ?? "application/json", preparedText,
+                    "부팅 안전 점검이 중앙 종료 요청을 차단했습니다.", DateTimeOffset.UtcNow);
+
+            using var document = JsonDocument.Parse(preparedText);
+            var root = document.RootElement;
+            var confirmationId = root.GetProperty("confirmationId").GetString();
+            var notBefore = root.GetProperty("notBeforeUtc").GetDateTimeOffset();
+            if (string.IsNullOrWhiteSpace(confirmationId))
+                return Failure(commandId, HttpStatusCode.Conflict, "종료 확인 번호가 발급되지 않았습니다.");
+            var delay = notBefore - DateTimeOffset.UtcNow;
+            if (delay > TimeSpan.Zero) await Task.Delay(delay.Add(TimeSpan.FromMilliseconds(100)), timeout.Token)
+                .ConfigureAwait(false);
+
+            using var confirm = new HttpRequestMessage(HttpMethod.Post, "http://127.0.0.1:8787/api/system/shutdown");
+            confirm.Headers.Authorization = new AuthenticationHeaderValue("Bearer", appToken);
+            confirm.Content = new StringContent(JsonSerializer.Serialize(new { confirmationId }, Json),
+                Encoding.UTF8, "application/json");
+            using var response = await client.SendAsync(confirm, timeout.Token).ConfigureAwait(false);
+            var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            if (text.Length > 1024 * 1024) text = text[..(1024 * 1024)];
+            return new CentralCommandResult(commandId, response.IsSuccessStatusCode, (int)response.StatusCode,
+                response.Content.Headers.ContentType?.ToString() ?? "application/json", text,
+                response.IsSuccessStatusCode ? null : $"로컬 서비스가 HTTP {(int)response.StatusCode}를 반환했습니다.",
+                DateTimeOffset.UtcNow);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException
+                                   or InvalidOperationException)
+        {
+            return Failure(commandId, HttpStatusCode.ServiceUnavailable, ex.Message);
         }
     }
 

@@ -1,6 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using SilentStream.Core.Safety;
 using SilentStream.Inspection.Broker;
+using SilentStream.Platform.Windows;
 
 if (args.Length == 3 && args[0] == "--nic-watchdog")
 {
@@ -16,5 +18,6 @@ if (args.Length == 6 && args[0] == "--apply-agent-update")
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(options => options.ServiceName = "SilentStream Inspection Privileged Broker");
 builder.Services.AddSingleton<BrokerConfiguration>();
+builder.Services.AddSingleton<ISystemPowerSafetyProbe, WindowsSystemPowerSafetyProbe>();
 builder.Services.AddHostedService<BrokerWorker>();
 await builder.Build().RunAsync();

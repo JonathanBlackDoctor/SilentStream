@@ -6,11 +6,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$version = '0.4.1'
+$version = '0.4.2'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 if ([string]::IsNullOrWhiteSpace($TokenCsv)) { $TokenCsv = Join-Path $repo '..\터널토큰목록.csv' }
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-  $folder = if ($WebSafe) { 'baek202-web-v0.4.1' } else { 'baek202-v0.4.1' }
+  $folder = if ($WebSafe) { 'baek202-web-v0.4.2' } else { 'baek202-v0.4.2' }
   $OutputDirectory = Join-Path $repo "artifacts\$folder"
 }
 $package = Join-Path $PSScriptRoot 'package'

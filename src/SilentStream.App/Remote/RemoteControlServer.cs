@@ -455,6 +455,13 @@ public sealed class RemoteControlServer : IRemoteControlServer
         return ctx.Request.Query.TryGetValue("token", out var q) ? q.ToString() : null;
     }
 
+    private static string ActorFingerprint(HttpContext context)
+    {
+        var token = ExtractToken(context);
+        if (string.IsNullOrWhiteSpace(token)) return "unknown";
+        return RemoteAuth.HashToken(token)[..16];
+    }
+
     // ---- endpoints (확장계획서 §7) ----
 
     private void MapEndpoints(WebApplication app)
@@ -899,16 +906,33 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 message = ok ? "앱을 안전하게 다시 시작합니다." : "앱 재시작이 이미 진행 중입니다."
             }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
-        app.MapPost("/api/system/shutdown", () =>
+        app.MapPost("/api/system/shutdown/prepare", async (HttpContext ctx) =>
         {
-            var ok = _systemShutdown.RequestShutdown();
-            return Results.Json(new
-            {
-                ok,
-                message = ok
-                    ? "PC 종료를 준비합니다. 녹화와 방송을 안전하게 마친 뒤 전원을 끕니다."
-                    : "PC 종료가 이미 준비 중입니다."
-            }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
+            var preparation = await _systemShutdown.PrepareAsync(ActorFingerprint(ctx), ctx.RequestAborted)
+                .ConfigureAwait(false);
+            return Results.Json(preparation, Json, statusCode: preparation.Ok
+                ? StatusCodes.Status200OK
+                : StatusCodes.Status409Conflict);
+        });
+        app.MapPost("/api/system/shutdown", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<SystemShutdownConfirmRequest>(ctx).ConfigureAwait(false);
+            if (body is null || string.IsNullOrWhiteSpace(body.ConfirmationId))
+                return Results.Json(new { ok = false, message = "종료 확인 번호가 필요합니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            var result = await _systemShutdown.ConfirmAsync(body.ConfirmationId, ActorFingerprint(ctx),
+                ctx.RequestAborted).ConfigureAwait(false);
+            return Results.Json(result, Json, statusCode: result.Ok
+                ? StatusCodes.Status202Accepted
+                : StatusCodes.Status409Conflict);
+        });
+        app.MapPost("/api/system/shutdown/cancel", async (HttpContext ctx) =>
+        {
+            var result = await _systemShutdown.CancelAsync(ActorFingerprint(ctx), ctx.RequestAborted)
+                .ConfigureAwait(false);
+            return Results.Json(result, Json, statusCode: result.Ok
+                ? StatusCodes.Status200OK
+                : StatusCodes.Status409Conflict);
         });
         app.MapPost("/api/app/uninstall", async (HttpContext ctx) =>
         {
@@ -1821,6 +1845,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private sealed record AudioGainRequest(string? Id, double Gain);
 
     private sealed record RemoteUninstallRequest(string? AdministratorToken);
+
+    private sealed record SystemShutdownConfirmRequest(string? ConfirmationId);
 
     /// <summary>A connected WebSocket plus a 1-permit gate that serialises sends to it.</summary>
     private sealed class SocketChannel(WebSocket socket)

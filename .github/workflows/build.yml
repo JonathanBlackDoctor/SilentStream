@@ -214,6 +214,34 @@ jobs:
             -DestinationPath "SilentStream-ControlPlane-v${{ steps.ver.outputs.version }}.zip" `
             -CompressionLevel Optimal
 
+      # Release engineering signs this ZIP on the protected Windows workstation and uploads it
+      # to a separate, non-v* staging release. CI can retrieve the signed bytes, but never sees
+      # the non-exportable CNG private key. Classroom brokers verify the signature again locally.
+      - name: Download externally signed inspection service update
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.ver.outputs.version }}"
+          $release = "inspection-agent-v$version"
+          $releaseExists = $true
+          try {
+            gh release view $release --repo "${{ github.repository }}" 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) { $releaseExists = $false }
+          } catch {
+            $releaseExists = $false
+          }
+          if (-not $releaseExists) {
+            Write-Host "No externally signed inspection update release exists: $release"
+            exit 0
+          }
+          $source = "inspection/deployment/app-agent-update"
+          New-Item -ItemType Directory -Force -Path $source | Out-Null
+          gh release download $release --repo "${{ github.repository }}" `
+            --pattern "inspection-agent-$version.zip" --dir $source --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Signed inspection update download failed: $release" }
+
       # A separately signed inspection-agent ZIP may be staged by release engineering. When
       # present, ship it inside the ordinary app update so each classroom Coordinator can verify
       # and apply it before the boot inspection. The signing key itself never enters CI.
@@ -226,7 +254,7 @@ jobs:
             exit 0
           }
           $updates = @(Get-ChildItem -LiteralPath $source -Filter '*.zip' -File)
-          if ($updates.Count -eq 0) { throw "app-agent-update exists but contains no signed ZIP." }
+          if ($updates.Count -ne 1) { throw "app-agent-update must contain exactly one signed ZIP." }
           New-Item -ItemType Directory -Force -Path publish/inspection-update | Out-Null
           $updates | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination publish/inspection-update -Force }
 

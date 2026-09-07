@@ -1,4 +1,4 @@
-# SilentStream 중앙 원격 설치·점검 v0.4.1
+# SilentStream 중앙 원격 설치·점검 v0.4.2
 
 ## 권장 운영 방식: 상시 중앙 포털
 
@@ -30,7 +30,7 @@ Coordinator가 `agent.silentstream.win`으로 아웃바운드 WebSocket을 유�
 1. PC 전원이 켜지면 점검 서비스가 자동 시작되어 서명된 점검 서비스 업데이트를 확인합니다. 새 업데이트는 서명과 파일 해시를 검증한 뒤 적용하며, 새 서비스의 로컬 건강 확인이 60초 안에 통과하지 않으면 이전 설치로 롤백합니다.
 2. Windows 자동 로그인 뒤 앱이 자동 시작되어 앱 업데이트를 확인합니다. 설치형 앱에 새 버전이 있으면 내려받아 조용히 적용하고 다시 시작합니다. 네트워크가 없거나 제한시간을 넘으면 현재 버전으로 계속 시작하고 다음 주기에 다시 확인합니다.
 3. Coordinator는 점검 서비스 업데이트 확인이 끝나고, 업데이트를 마친 앱의 로컬 상태 API가 응답할 때까지 기다립니다.
-4. 서명된 `bundles/startup-v0.4.1`을 Windows 부팅 1회당 한 번 실행합니다. 이 번들은 시스템 정보 수집, 앱 상태·진단·시간표·품질 확인, 화면 캡처, 실제 마이크 경로 확인만 수행합니다. 마지막 오디오 단계에서는 Windows 기본 스피커로 약 800ms의 조용한 1kHz 시험음이 실제로 들릴 수 있으며, 호실에 지정된 정확한 마이크 endpoint에서 그 음이 들어왔는지 확인합니다. 캡처 음원은 저장하지 않고 장치 ID, 수신 바이트, RMS, 시험음 상관도 같은 측정값만 기록합니다. 방송 시작·중지, 시간표 변경, 장애 주입, NIC 차단, 재부팅, 앱 제거·재설치는 자동으로 실행하지 않습니다.
+4. 서명된 `bundles/startup-v0.4.2`를 Windows 부팅 1회당 한 번 실행합니다. 이 번들은 시스템 정보 수집, 앱 상태·진단·시간표·품질 확인, 화면 캡처, 실제 마이크 경로 확인만 수행합니다. 마지막 오디오 단계에서는 Windows 기본 스피커로 약 800ms의 조용한 1kHz 시험음이 실제로 들릴 수 있으며, 호실에 지정된 정확한 마이크 endpoint에서 그 음이 들어왔는지 확인합니다. 캡처 음원은 저장하지 않고 장치 ID, 수신 바이트, RMS, 시험음 상관도 같은 측정값만 기록합니다. 방송 시작·중지, 시간표 변경, 장애 주입, NIC 차단, 재부팅, 앱 제거·재설치는 자동으로 실행하지 않습니다.
 5. 진행률과 Pass/Warning/Fail 결과는 Coordinator의 영구 기록에 저장되고 앱의 원격 화면으로 전달됩니다. **Pass**는 자동 장치 경로를 확인했다는 뜻이며 실제 음질의 최종 청취가 필요합니다. **Warning**은 자동 점검만으로 준비 완료를 확정하지 못했다는 뜻이므로 운영 승인으로 간주하지 않습니다. **Fail**은 필수 경로 실패이므로 조치 후 재점검해야 합니다. 원격 호실 카드에서 네 PC를 구분해 요약을 보고, `/inspect/` 상세 화면에서 단계별 결과를 확인합니다.
 
 시험음의 생성 레벨은 낮지만 실제 음량은 Windows와 앰프 볼륨에 따라 달라집니다. 최초 현장 검증에서 음량을 확인하고, 수업 중에는 PC 재부팅이나 점검 재실행을 피합니다.
@@ -70,65 +70,67 @@ M113에서는 **실제 마이크 입력**과 **스테레오 믹스 같은 시스
 
 ## 배포본 만들기
 
-앱 Setup을 먼저 만든 뒤 **서명 전 기본 패키지**를 만듭니다. 두 스크립트의 기본 버전은 `0.4.1`입니다. 이 단계의 출력물은 `원격점검_서명전_기본패키지_v0.4.1.zip`이며 `deployment prepare`의 입력용일 뿐, 강의실 PC에 직접 설치할 수 없습니다.
+앱 Setup을 먼저 만든 뒤 **서명 전 기본 패키지**를 만듭니다. 두 스크립트의 기본 버전은 `0.4.2`입니다. 이 단계의 출력물은 `원격점검_서명전_기본패키지_v0.4.2.zip`이며 `deployment prepare`의 입력용일 뿐, 강의실 PC에 직접 설치할 수 없습니다.
 
 ```powershell
 .\inspection\deployment\Build-AppSetup.ps1
 .\inspection\deployment\Build-InspectionPackage.ps1
 ```
 
-`Build-InspectionPackage.ps1`은 검토할 자동 실행 원본인 `startup-v0.4.1`만 기본 패키지의 `bundles` 폴더에 넣습니다. 이 원본은 아직 서명·등록된 번들이 아닙니다. 패키지 안의 앱 Setup도 같은 소스와 버전으로 다시 생성해야 하며, 남아 있는 Setup의 제품 버전이 `0.4.1`이 아니면 패키징을 중단합니다. GitHub 릴리스의 `inspection-package-unsigned-base-v0.4.1.zip`도 같은 준비 입력용이며 현장 설치본이 아닙니다.
+`Build-InspectionPackage.ps1`은 검토할 자동 실행 원본인 `startup-v0.4.2`만 기본 패키지의 `bundles` 폴더에 넣습니다. 이 원본은 아직 서명·등록된 번들이 아닙니다. 패키지 안의 앱 Setup도 같은 소스와 버전으로 다시 생성해야 하며, 남아 있는 Setup의 제품 버전이 `0.4.2`가 아니면 패키징을 중단합니다. GitHub 릴리스의 `inspection-package-unsigned-base-v0.4.2.zip`도 같은 준비 입력용이며 현장 설치본이 아닙니다.
 
-저장소에 남아 있는 다음 파일은 **이 변경 전 만들어진 오래된 v0.4.0 산출물**입니다. 파일명이 비슷해도 v0.4.1 배포본으로 사용하지 말고 위 스크립트와 아래 사전 준비 절차로 다시 생성해야 합니다.
+저장소에 남아 있는 다음 파일은 **이 변경 전 만들어진 오래된 v0.4.0 산출물**입니다. 파일명이 비슷해도 v0.4.2 배포본으로 사용하지 말고 위 스크립트와 아래 사전 준비 절차로 다시 생성해야 합니다.
 
 - `inspection/deployment/원격우선_실기기점검_v0.4.0.zip`
 - `inspection/deployment/사전준비_원격우선_실기기점검_v0.4.0.zip`
 
-`inspection/bundles/full-v0.4.0`도 기존 전체 점검 시나리오입니다. 방송 상태 변경, 장애 주입, NIC 변경, 재부팅, 제거·재설치 같은 승인 필요 단계가 포함되어 있으므로 부팅 자동점검에 사용하거나 현재 v0.4.1 합격 증거로 재사용하면 안 됩니다. 필요할 때 별도 검토·버전 갱신·서명 후 관리자 승인 아래에서만 수동 실행합니다.
+`inspection/bundles/full-v0.4.0`도 기존 전체 점검 시나리오입니다. 방송 상태 변경, 장애 주입, NIC 변경, 재부팅, 제거·재설치 같은 승인 필요 단계가 포함되어 있으므로 부팅 자동점검에 사용하거나 현재 v0.4.2 합격 증거로 재사용하면 안 됩니다. 필요할 때 별도 검토·버전 갱신·서명 후 관리자 승인 아래에서만 수동 실행합니다.
 
 ## 현장 작업 없는 사전 준비본
 
 작업실에서 서명 전 기본 패키지를 푼 `package` 폴더와 안전 부팅 번들을 지정해 사전 준비본을 만듭니다. 경로와 키 ID는 운영 환경에 맞게 정하되, 실제 토큰이나 개인키를 문서·명령 기록·저장소에 붙여 넣지 않습니다. `deployment prepare`는 현재 버전, `runAtStartup`, 읽기 전용 허용 단계 정책을 통과하지 못한 번들의 준비본 생성을 거부합니다.
 
 ```powershell
-SilentStreamInspectionCli deployment prepare .\inspection\deployment\package .\inspection\bundles\startup-v0.4.1 silentstream-startup 0.4.1 0.4.1 school-ops-2026 .\prepared\원격우선_실기기점검_v0.4.1.zip .\private\operator-vault.json
+SilentStreamInspectionCli deployment prepare .\inspection\deployment\package .\inspection\bundles\startup-v0.4.2 silentstream-startup 0.4.2 0.4.2 silentstream-ops-2026 .\prepared\원격우선_실기기점검_v0.4.2.zip .\private\operator-vault.json
 ```
 
 개인키는 현재 Windows 사용자의 비내보내기 CNG 저장소에만 남고, 실기기용 ZIP에는 공개키·서명된 안전 점검·관리자 토큰 해시만 들어갑니다. 원문 관리자 토큰은 별도의 `operator-vault.json`에 기록되고 현재 작업실 사용자만 읽도록 ACL이 고정됩니다. 이 보관소 파일은 실기기에 복사하지 않습니다.
 
-`deployment-preseed.json`이 포함된 사전 준비본만 실기기에 풀어 `원격점검_설치.exe`를 실행합니다. 설치기는 서비스를 멈추기 전에 서명·파일 해시·현재 버전·부팅 자동 실행·안전 단계 정책을 다시 검증하고, 준비 파일이 없거나 비어 있으면 설치를 거부합니다. 검증이 끝나면 공개키, 관리자 권한, `startup-v0.4.1` 점검이 함께 등록됩니다. 현장에서는 최초 UAC 한 번 외에 키 생성, PIN 전달, PowerShell 실행, 점검 ZIP 업로드가 필요하지 않습니다. 작업실 브라우저에는 보관소의 관리자 키를 한 번 입력합니다.
+`deployment-preseed.json`이 포함된 사전 준비본만 실기기에 풀어 `원격점검_설치.exe`를 실행합니다. 설치기는 서비스를 멈추기 전에 서명·파일 해시·현재 버전·부팅 자동 실행·안전 단계 정책을 다시 검증하고, 준비 파일이 없거나 비어 있으면 설치를 거부합니다. 검증이 끝나면 공개키, 관리자 권한, `startup-v0.4.2` 점검이 함께 등록됩니다. 현장에서는 최초 UAC 한 번 외에 키 생성, PIN 전달, PowerShell 실행, 점검 ZIP 업로드가 필요하지 않습니다. 작업실 브라우저에는 보관소의 관리자 키를 한 번 입력합니다.
 
 이후 점검 서비스 업데이트 ZIP은 작업실 개인키로 서명해 포털에 올리거나 앱 업데이트의 `inspection-update` 폴더에 포함할 수 있습니다.
 
 ```powershell
-SilentStreamInspectionCli agent-update sign .\새버전-bin 0.4.1 school-ops-2026 .\inspection-agent-0.4.1.zip
+SilentStreamInspectionCli agent-update sign .\새버전-bin 0.4.2 silentstream-ops-2026 .\inspection-agent-0.4.2.zip
 ```
 
 일반 앱 릴리스와 함께 자동 전달하려면 서명된 ZIP만 `inspection/deployment/app-agent-update`에 준비한 뒤 로컬 앱 패키지를 만듭니다. `Build-AppSetup.ps1`은 이를 앱의 `inspection-update`에 포함하고, 각 PC는 부팅 때 다시 서명·해시를 검증한 후 적용합니다. 이 폴더는 git에서 제외되므로 GitHub 릴리스 작업에서는 보안이 확보된 선행 단계가 같은 경로에 서명 ZIP을 배치한 경우에만 포함됩니다. 개인키나 원문 토큰은 이 폴더와 CI에 넣지 않습니다.
 
+GitHub 자동 릴리스에서는 보호된 작업실에서 만든 `inspection-agent-0.4.2.zip`을 먼저 같은 저장소의 `inspection-agent-v0.4.2` 릴리스 자산으로 올립니다. `v0.4.2` 태그 빌드는 이 서명본을 내려받아 앱 패키지에 포함하며, CNG 개인키는 작업실 밖이나 CI로 이동하지 않습니다. 별도 서명 릴리스가 없으면 앱 릴리스는 계속 만들 수 있지만 점검 서비스 자동 업데이트는 포함되지 않습니다.
+
 ## 최초 1회 설치
 
-1. 관리자 PC에서 위 `deployment prepare` 명령으로 `deployment-preseed.json`, 공개키, 서명된 `startup-v0.4.1`이 포함된 준비 완료 ZIP을 만듭니다. 관리자 토큰 원문이 든 `operator-vault.json`은 관리자 PC에만 보관합니다.
+1. 관리자 PC에서 위 `deployment prepare` 명령으로 `deployment-preseed.json`, 공개키, 서명된 `startup-v0.4.2`가 포함된 준비 완료 ZIP을 만듭니다. 관리자 토큰 원문이 든 `operator-vault.json`은 관리자 PC에만 보관합니다.
 2. 각 강의실 PC에서 **준비 완료 ZIP**을 풉니다. 서명 전 기본 패키지나 GitHub의 `unsigned-base` ZIP을 직접 사용하지 않습니다.
 3. 준비 완료 ZIP 안의 앱 Setup으로 앱을 먼저 설치해 한 번 실행하고 M111, M112, M113, 백202 중 해당 호실을 지정합니다. 앱 설정 파일이 없는 상태에서는 내부 연결키가 빠진 반쪽 설치를 막기 위해 점검 설치가 안전하게 중단됩니다.
 4. 같은 준비 완료 폴더의 `원격점검_설치.exe`를 실행하고 호실 ID를 다시 확인합니다. UAC는 이때 한 번만 표시되고, 준비 파일이나 서명된 안전 번들이 없으면 기존 서비스와 설정을 바꾸기 전에 중단됩니다.
 5. 각 PC에서 따로 생성된 `초기_원격점검_연결정보.txt`의 호실과 주소를 확인합니다. 연결이 끝나면 이 파일은 안전한 곳으로 옮기거나 삭제합니다.
 6. Cloudflare Tunnel Public Hostname에 `/inspect/* → http://localhost:8790`, 기본 경로 → `http://localhost:8787`을 설정하고 WebSocket을 허용합니다.
-7. 자동 운행이 필요하면 해당 Windows 계정의 자동 로그인을 별도의 기관 정책과 보안 절차에 따라 설정하고, 실제 재부팅으로 `업데이트 확인 → startup-v0.4.1 → 원격 결과`를 호실별로 검증합니다.
+7. 자동 운행이 필요하면 해당 Windows 계정의 자동 로그인을 별도의 기관 정책과 보안 절차에 따라 설정하고, 실제 재부팅으로 `업데이트 확인 → startup-v0.4.2 → 원격 결과`를 호실별로 검증합니다.
 8. M111, M112, M113, 백202 각각에서 실제 강의실 마이크로 짧은 말소리를 녹음하고 사람이 음질·잡음·채널을 청취한 뒤에만 운영을 승인합니다. 자동 시험음 Pass만으로 이 최종 확인을 생략하지 않습니다.
 
 설치기는 기존 연결 토큰을 `operator`로 옮기고 내부 앱 점검 전용 토큰을 별도로 생성합니다. 원문 토큰은 일반 설정에 평문으로 저장하지 않고 SHA-256 해시 또는 DPAPI 암호문으로 보관합니다.
 
 변경 가능한 실행 기록·번들·감사 DB는 `%ProgramData%\MediaCaptureHelper\Inspection`에 두고 Coordinator 서비스 SID에만 수정 권한을 줍니다. Broker가 신뢰하는 공개키, 앱 경로, 설치 파일 해시와 재설치 캐시는 `%ProgramFiles%\MediaCaptureHelper\InspectionPolicy`에 분리하며 SYSTEM과 Administrators만 수정할 수 있습니다.
 
-실제 제거·재설치 점검을 수동으로 준비하려면 현재 배포용 `MediaCaptureHelper-Setup-*.exe`를 `원격점검_설치.exe`와 같은 폴더에 둔 상태에서 최초 설치합니다. 설치기는 이 파일을 서비스 전용 캐시에 복사하고 SHA-256을 고정합니다. 검증된 캐시가 없거나 해시가 달라지면 제거부터 거부합니다. 이 경로는 `startup-v0.4.1` 자동점검에서는 사용하지 않습니다.
+실제 제거·재설치 점검을 수동으로 준비하려면 현재 배포용 `MediaCaptureHelper-Setup-*.exe`를 `원격점검_설치.exe`와 같은 폴더에 둔 상태에서 최초 설치합니다. 설치기는 이 파일을 서비스 전용 캐시에 복사하고 SHA-256을 고정합니다. 검증된 캐시가 없거나 해시가 달라지면 제거부터 거부합니다. 이 경로는 `startup-v0.4.2` 자동점검에서는 사용하지 않습니다.
 
 ## 새 점검 만들기
 
 점검 폴더에는 `plan.json`과 필요한 자산만 둔 뒤 서명합니다. 부팅 자동점검으로 지정하려면 `runAtStartup: true`와 안전 정책을 모두 통과해야 하며, 서명됐더라도 Script, Privileged, Fault, Checkpoint, Cleanup 단계나 상태를 바꾸는 App API 요청은 부팅 자동점검에서 거부됩니다.
 
 ```powershell
-SilentStreamInspectionCli bundle sign .\inspection\bundles\startup-v0.4.1 silentstream-startup 0.4.1 0.4.1 school-ops-2026 .\silentstream-startup-0.4.1.zip
+SilentStreamInspectionCli bundle sign .\inspection\bundles\startup-v0.4.2 silentstream-startup 0.4.2 0.4.2 school-ops-2026 .\silentstream-startup-0.4.2.zip
 ```
 
 포털의 **새 점검 패키지**에서 ZIP을 올리면 해당 호실에 설치된 공개키, ZIP 경로, 파일별 SHA-256, 실행 DAG를 검증한 뒤 등록합니다. 임의 관리자 PowerShell은 지원하지 않습니다.

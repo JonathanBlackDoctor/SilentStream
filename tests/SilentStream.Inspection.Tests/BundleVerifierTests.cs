@@ -184,6 +184,29 @@ public sealed class BundleVerifierTests : IDisposable
     }
 
     [Fact]
+    public void AgentUpdateSignaturePayloadIsCanonicalAfterJsonRoundTrip()
+    {
+        var manifest = new InspectionAgentUpdateManifest
+        {
+            Version = "0.4.2",
+            SigningKeyId = "test",
+            Files = new SortedDictionary<string, string>(new Dictionary<string, string>
+            {
+                ["coordinator/System.Private.Xml.Linq.dll"] = new('a', 64),
+                ["coordinator/System.Private.Xml.dll"] = new('b', 64),
+                ["coordinator/api-ms-win-core-console-l1-1-0.dll"] = new('c', 64),
+                ["broker/SilentStreamInspectionBroker.exe"] = new('d', 64)
+            }, StringComparer.Ordinal)
+        };
+        var serialized = JsonSerializer.Serialize(manifest, InspectionProtocol.Json);
+        var roundTripped = JsonSerializer.Deserialize<InspectionAgentUpdateManifest>(serialized,
+            InspectionProtocol.Json)!;
+
+        Assert.Equal(InspectionAgentUpdateVerifier.SignaturePayload(manifest),
+            InspectionAgentUpdateVerifier.SignaturePayload(roundTripped));
+    }
+
+    [Fact]
     public void TamperedAgentUpdateIsRejected()
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);

@@ -7,7 +7,7 @@
     <AssemblyName>SilentStreamInspectionSessionAgent</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
-    <Version>0.4.1</Version>
+    <Version>0.4.2</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="System.IO.Pipes.AccessControl" Version="5.0.0" />
