@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -66,7 +67,7 @@ try
 }
 catch (Exception ex)
 {
-    MessageBox.Show($"설치하지 못했습니다.\n\n{ex.Message}", "SilentStream 자동 설치",
+    MessageBox.Show($"설치하지 못했습니다.\n\n{DescribeFailure(ex)}", "SilentStream 자동 설치",
         MessageBoxButtons.OK, MessageBoxIcon.Error);
 }
 
@@ -105,12 +106,23 @@ static async Task<CentralEnrollmentResponse> AuthorizeAndEnrollAsync(Uri control
 
     var installationId = LoadOrCreateInstallationId();
     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-    using var response = await client.PostAsJsonAsync(enrollmentUri,
-        new CentralEnrollmentRedeemRequest(room, installationId, Environment.MachineName, code!), timeout.Token);
+    HttpResponseMessage response;
+    try
+    {
+        response = await client.PostAsJsonAsync(enrollmentUri,
+            new CentralEnrollmentRedeemRequest(room, installationId, Environment.MachineName, code!), timeout.Token);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+    {
+        throw new HttpRequestException($"중앙 등록 서버({enrollmentUri.Host})에 연결하지 못했습니다.", ex);
+    }
+    using (response)
+    {
     if (!response.IsSuccessStatusCode)
-        throw new InvalidOperationException("일회용 설치 승인을 기기 등록으로 교환하지 못했습니다.");
-    return await response.Content.ReadFromJsonAsync<CentralEnrollmentResponse>(cancellationToken: timeout.Token)
-        ?? throw new InvalidDataException("중앙 서버의 기기 등록 응답이 비어 있습니다.");
+        throw new InvalidOperationException($"일회용 설치 승인을 기기 등록으로 교환하지 못했습니다. (HTTP {(int)response.StatusCode})");
+        return await response.Content.ReadFromJsonAsync<CentralEnrollmentResponse>(cancellationToken: timeout.Token)
+            ?? throw new InvalidDataException("중앙 서버의 기기 등록 응답이 비어 있습니다.");
+    }
 }
 
 static async Task DownloadPackageAsync(CentralEnrollmentResponse enrollment, string destination)
@@ -121,11 +133,22 @@ static async Task DownloadPackageAsync(CentralEnrollmentResponse enrollment, str
     using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Device",
         $"{enrollment.RoomId}:{enrollment.DeviceId}:{enrollment.DeviceSecret}");
-    using var response = await client.GetAsync(packageUri, HttpCompletionOption.ResponseHeadersRead);
+    HttpResponseMessage response;
+    try
+    {
+        response = await client.GetAsync(packageUri, HttpCompletionOption.ResponseHeadersRead);
+    }
+    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+    {
+        throw new HttpRequestException($"설치 패키지 서버({packageUri.Host})에 연결하지 못했습니다.", ex);
+    }
+    using (response)
+    {
     response.EnsureSuccessStatusCode();
     await using (var source = await response.Content.ReadAsStreamAsync())
     await using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
         await source.CopyToAsync(output);
+    }
     var info = new FileInfo(destination);
     if (enrollment.PackageLength <= 0 || info.Length != enrollment.PackageLength)
         throw new InvalidDataException("설치 패키지 크기가 중앙 서버 기록과 일치하지 않습니다.");
@@ -299,4 +322,22 @@ static bool SafeHttpsUri(string? value, out Uri uri)
     if (!Uri.TryCreate(value, UriKind.Absolute, out uri!) || !string.IsNullOrEmpty(uri.UserInfo)
         || !string.IsNullOrEmpty(uri.Fragment)) return false;
     return uri.Scheme == Uri.UriSchemeHttps || uri.IsLoopback && uri.Scheme == Uri.UriSchemeHttp;
+}
+
+static string DescribeFailure(Exception exception)
+{
+    var messages = new List<string>();
+    var sslFailure = false;
+    for (var current = exception; current is not null && messages.Count < 6; current = current.InnerException)
+    {
+        if (!string.IsNullOrWhiteSpace(current.Message)
+            && !messages.Contains(current.Message, StringComparer.Ordinal)) messages.Add(current.Message.Trim());
+        sslFailure |= current is AuthenticationException
+            || current.Message.Contains("SSL", StringComparison.OrdinalIgnoreCase)
+            || current.Message.Contains("certificate", StringComparison.OrdinalIgnoreCase);
+    }
+    var detail = string.Join("\n→ ", messages);
+    if (sslFailure)
+        detail += "\n\nWindows 날짜·시간이 정확한지 확인하고, 학교망의 HTTPS 검사 또는 인증서 차단 여부를 확인해 주세요.";
+    return detail;
 }

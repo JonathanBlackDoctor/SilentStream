@@ -80,6 +80,23 @@ public sealed class DeploymentFailClosedStructureTests
         Assert.Contains("강의실 PC에 설치", packageScript, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Service_registration_uses_documented_separate_sc_arguments_and_reports_native_errors()
+    {
+        var repository = FindRepositoryRoot();
+        var source = File.ReadAllText(Path.Combine(
+            repository, "inspection", "deployment", "Install-InspectionServices.ps1"));
+
+        Assert.Contains("function Invoke-ServiceController", source, StringComparison.Ordinal);
+        Assert.Contains("$output = @(& $sc @Arguments 2>&1)", source, StringComparison.Ordinal);
+        Assert.Contains("@('create',$Name,'binPath=',('\"' + $BinaryPath + '\"'),'start=','auto')", source, StringComparison.Ordinal);
+        Assert.Contains("@('obj=',$Account)", source, StringComparison.Ordinal);
+        Assert.Contains("@('displayname=',$DisplayName)", source, StringComparison.Ordinal);
+        Assert.Contains("@('failure',$name,'reset=','86400','actions='", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"binPath= `\"$coordinatorExe`\"\"", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("& sc.exe create", source, StringComparison.Ordinal);
+    }
+
     private static void AssertOrdered(string source, params string[] markers)
     {
         var previous = -1;

@@ -70,6 +70,27 @@ function Write-JsonAtomic([string]$Path,$Value) {
   $Value | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $temp -Encoding UTF8
   Move-Item -LiteralPath $temp -Destination $Path -Force
 }
+function Invoke-ServiceController([string[]]$Arguments,[string]$FailureMessage) {
+  $sc = Join-Path $env:SystemRoot 'System32\sc.exe'
+  if (-not (Test-Path -LiteralPath $sc)) { throw "Windows 서비스 제어 프로그램을 찾을 수 없습니다: $sc" }
+  $output = @(& $sc @Arguments 2>&1)
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    $details = ($output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join ' '
+    if ([string]::IsNullOrWhiteSpace($details)) { throw "$FailureMessage (종료 코드 $exitCode)" }
+    throw "$FailureMessage (종료 코드 $exitCode): $details"
+  }
+}
+function Register-WindowsService([string]$Name,[string]$BinaryPath,[string]$DisplayName,[string]$Account = '') {
+  if (-not (Test-Path -LiteralPath $BinaryPath)) { throw "서비스 실행 파일을 찾을 수 없습니다: $BinaryPath" }
+  # sc.exe requires every option name and value to be separate arguments. Passing strings such as
+  # 'start= auto' as one argument is accepted by some builds but returns ERROR_INVALID_COMMAND_LINE
+  # (1639) on others. Splatting this array preserves the documented token boundary on Windows 10/11.
+  $arguments = @('create',$Name,'binPath=',('"' + $BinaryPath + '"'),'start=','auto')
+  if (-not [string]::IsNullOrWhiteSpace($Account)) { $arguments += @('obj=',$Account) }
+  $arguments += @('displayname=',$DisplayName)
+  Invoke-ServiceController -Arguments $arguments -FailureMessage "$DisplayName 서비스 등록 실패"
+}
 
 $central = $null
 if (-not [string]::IsNullOrWhiteSpace($CentralEnrollmentFile)) {
@@ -322,13 +343,12 @@ foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionB
   while ((Get-Service -Name $name -ErrorAction SilentlyContinue) -and [DateTimeOffset]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
   if (Get-Service -Name $name -ErrorAction SilentlyContinue) { throw "$name 기존 서비스 등록을 교체할 수 없습니다." }
 }
-& sc.exe create SilentStreamInspectionCoordinator "binPath= `"$coordinatorExe`"" 'start= auto' 'obj= NT AUTHORITY\LocalService' 'DisplayName= SilentStream Inspection Coordinator' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Coordinator 서비스 등록 실패: $LASTEXITCODE" }
-& sc.exe create SilentStreamInspectionBroker "binPath= `"$brokerExe`"" 'start= auto' 'obj= LocalSystem' 'DisplayName= SilentStream Inspection Privileged Broker' | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Broker 서비스 등록 실패: $LASTEXITCODE" }
-& sc.exe sidtype SilentStreamInspectionCoordinator unrestricted | Out-Null
-& sc.exe sidtype SilentStreamInspectionBroker unrestricted | Out-Null
-foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) { & sc.exe failure $name 'reset= 86400' 'actions= restart/5000/restart/15000/restart/60000' | Out-Null }
+Register-WindowsService -Name 'SilentStreamInspectionCoordinator' -BinaryPath $coordinatorExe -Account 'NT AUTHORITY\LocalService' -DisplayName 'SilentStream Inspection Coordinator'
+Register-WindowsService -Name 'SilentStreamInspectionBroker' -BinaryPath $brokerExe -DisplayName 'SilentStream Inspection Privileged Broker'
+foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) {
+  Invoke-ServiceController -Arguments @('sidtype',$name,'unrestricted') -FailureMessage "$name 서비스 SID 설정 실패"
+  Invoke-ServiceController -Arguments @('failure',$name,'reset=','86400','actions=','restart/5000/restart/15000/restart/60000') -FailureMessage "$name 복구 정책 설정 실패"
+}
 
 & icacls.exe $dataRoot '/grant' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
 if (-not [string]::IsNullOrWhiteSpace($cachedPath)) {
@@ -350,10 +370,8 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Pr
 Start-ScheduledTask -TaskName $taskName
 
 Stop-Process -Name cloudflared -Force -ErrorAction SilentlyContinue
-& sc.exe start SilentStreamInspectionBroker | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Broker 서비스 시작 실패: $LASTEXITCODE" }
-& sc.exe start SilentStreamInspectionCoordinator | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "Coordinator 서비스 시작 실패: $LASTEXITCODE" }
+Invoke-ServiceController -Arguments @('start','SilentStreamInspectionBroker') -FailureMessage 'Broker 서비스 시작 실패'
+Invoke-ServiceController -Arguments @('start','SilentStreamInspectionCoordinator') -FailureMessage 'Coordinator 서비스 시작 실패'
 foreach ($serviceName in @('SilentStreamInspectionBroker','SilentStreamInspectionCoordinator')) {
   $service = Get-Service -Name $serviceName -ErrorAction Stop
   try { $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30)) }
