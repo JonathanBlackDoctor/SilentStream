@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Models;
@@ -45,7 +46,30 @@ public class TelegramNotifierTests : IDisposable
         var request = Assert.Single(_handler.Requests);
         Assert.Equal("https://api.telegram.org/bot123:ABC/sendMessage", request.Uri);
         Assert.Contains("\"chat_id\":\"42\"", request.Body);
-        Assert.Contains("무음 감지", request.Body);
+        using var payload = JsonDocument.Parse(request.Body);
+        Assert.Equal($"기기: {Environment.MachineName}\n무음 감지", payload.RootElement.GetProperty("text").GetString());
+    }
+
+    [Theory]
+    [InlineData("  M111  ")]
+    [InlineData("   ")]
+    public async Task Includes_current_room_and_machine_in_every_notification(string room)
+    {
+        _configStore.Update(c =>
+        {
+            c.Notifications.TelegramBotTokenEnc = _protector.Protect("123:ABC");
+            c.Notifications.TelegramChatId = "42";
+        });
+        using var notifier = Create();
+        await notifier.SendAsync("테스트 알림", CancellationToken.None);
+        _configStore.Update(c => c.DeviceName = room);
+        Assert.True(await notifier.SendAsync("✅ 복구 알림", CancellationToken.None));
+
+        using var payload = JsonDocument.Parse(_handler.Requests[1].Body);
+        var device = string.IsNullOrWhiteSpace(room)
+            ? Environment.MachineName
+            : $"M111 ({Environment.MachineName})";
+        Assert.Equal($"기기: {device}\n✅ 복구 알림", payload.RootElement.GetProperty("text").GetString());
     }
 
     [Fact]

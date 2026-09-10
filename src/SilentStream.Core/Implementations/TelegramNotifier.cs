@@ -48,7 +48,8 @@ public sealed class TelegramNotifier : INotifier, IDisposable
 
     public async Task<bool> SendAsync(string message, CancellationToken ct)
     {
-        var notif = _configStore.Load().Notifications;
+        var config = _configStore.Load();
+        var notif = config.Notifications;
         if (!notif.Enabled)
         {
             return false;
@@ -63,7 +64,11 @@ public sealed class TelegramNotifier : INotifier, IDisposable
 
         try
         {
-            var body = JsonSerializer.Serialize(new SendMessagePayload(chatId, message), Json);
+            var device = string.IsNullOrWhiteSpace(config.DeviceName)
+                ? Environment.MachineName
+                : $"{config.DeviceName.Trim()} ({Environment.MachineName})";
+            var text = $"기기: {device}\n{message}";
+            var body = JsonSerializer.Serialize(new SendMessagePayload(chatId, text), Json);
             using var content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await _http
                 .PostAsync($"https://api.telegram.org/bot{token}/sendMessage", content, ct)
