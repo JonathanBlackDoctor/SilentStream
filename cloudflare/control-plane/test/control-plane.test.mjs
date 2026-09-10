@@ -44,6 +44,20 @@ test("returns a bodyless 401 for unauthenticated human APIs", async () => {
   assert.equal(await response.text(), "");
 });
 
+test("installer browser navigation resumes its room, state and callback after login", async () => {
+  const requestUrl = new URL("https://admin.silentstream.win/api/install/authorize");
+  requestUrl.search = new URLSearchParams({room: "m112", state: "installer-state-1234567890", callback: "http://127.0.0.1:54321/callback/"}).toString();
+  const response = await worker.fetch(new Request(requestUrl), productionEnv);
+  assert.equal(response.status, 302);
+  const login = new URL(response.headers.get("location"));
+  assert.equal(login.origin, productionEnv.PUBLIC_BASE_URI);
+  assert.equal(login.pathname, "/auth/login");
+  assert.equal(login.searchParams.get("returnTo"), requestUrl.pathname + requestUrl.search);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const post = await worker.fetch(new Request(requestUrl, {method: "POST"}), productionEnv);
+  assert.equal(post.status, 401);
+});
+
 test("redirects the apex and www hostnames to the protected admin portal without content", async () => {
   for (const hostname of ["silentstream.win", "www.silentstream.win"]) {
     const response = await worker.fetch(new Request(`https://${hostname}/`), productionEnv);

@@ -8,7 +8,7 @@ using System.Security.Cryptography;
 using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
+using SilentStream.Inspection.Installer;
 using SilentStream.Inspection;
 
 Application.EnableVisualStyles();
@@ -276,9 +276,7 @@ static Uri ResolveControlPlane(string root)
 
 static string? RoomFromFileName(string? path)
 {
-    var match = Regex.Match(Path.GetFileNameWithoutExtension(path) ?? string.Empty,
-        @"(?:install|setup)[-_](?<room>[a-zA-Z0-9_-]{1,64})$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-    return match.Success ? match.Groups["room"].Value.ToLowerInvariant() : null;
+    return InstallerFileName.RoomFromPath(path);
 }
 
 static int ReserveLoopbackPort()

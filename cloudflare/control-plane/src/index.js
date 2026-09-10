@@ -633,7 +633,10 @@ export default {
       try { email = await humanEmail(request, env); }
       catch (failure) {
         if (failure instanceof HttpFailure && failure.status === 401) {
-          if (url.pathname.startsWith("/api/")) return security(new Response(null, { status: 401 }));
+          // The installer opens this endpoint as a browser navigation. Resume the exact
+          // authorization request after login; other APIs must continue returning 401.
+          const installNavigation = url.pathname === "/api/install/authorize" && request.method === "GET";
+          if (url.pathname.startsWith("/api/") && !installNavigation) return security(new Response(null, { status: 401 }));
           return redirect(new URL(`/auth/login?returnTo=${encodeURIComponent(url.pathname + url.search)}`, publicBase));
         }
         throw failure;
