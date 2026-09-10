@@ -12,11 +12,30 @@ using SilentStream.Inspection.Installer;
 using SilentStream.Inspection;
 
 Application.EnableVisualStyles();
+using var singleInstance = new Mutex(false, @"Global\SilentStreamCentralInstaller", out var firstInstance);
+if (!firstInstance)
+{
+    MessageBox.Show("설치 프로그램이 이미 실행 중입니다. 열려 있는 로그인 또는 설치 창을 완료해 주세요.", "SilentStream 자동 설치");
+    return;
+}
 var root = AppContext.BaseDirectory;
 var legacyPreseed = Path.Combine(root, "deployment-preseed.json");
+var stage = "설치 사전 확인";
+var diagnosticPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "MediaCaptureHelper", "InstallerLogs", $"install-{DateTime.Now:yyyyMMdd-HHmmss}-{Environment.ProcessId}.txt");
+void Progress(string value)
+{
+    stage = value;
+    try { Directory.CreateDirectory(Path.GetDirectoryName(diagnosticPath)!); File.AppendAllText(diagnosticPath, $"{DateTimeOffset.Now:O} {value}\n"); }
+    catch { /* Diagnostics must not break installation. No credentials or response bodies are logged. */ }
+}
 
 try
 {
+    Progress("설치 사전 확인");
+    var tempDrive = new DriveInfo(Path.GetPathRoot(Path.GetTempPath())!);
+    if (tempDrive.AvailableFreeSpace < 3L * 1024 * 1024 * 1024)
+        throw new IOException("설치·압축 해제·복구용으로 임시 드라이브에 최소 3GB의 여유 공간이 필요합니다.");
     if (File.Exists(legacyPreseed))
     {
         var output = await RunPackageInstallAsync(root, null, installAppFirst: false);
@@ -35,23 +54,31 @@ try
     }
 
     var controlPlane = ResolveControlPlane(root);
+    Progress("브라우저 로그인 및 호실 설치 승인");
     var enrollment = await AuthorizeAndEnrollAsync(controlPlane, room);
     var temporary = Path.Combine(Path.GetTempPath(), "SilentStreamCentralInstall-" + Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(temporary);
     try
     {
         var archive = Path.Combine(temporary, "prepared-package.zip");
+        Progress("서명 패키지 다운로드 및 SHA-256 검증 (일시 오류 최대 3회 자동 재시도)");
         await DownloadPackageAsync(enrollment, archive);
+        Progress("패키지 압축 해제");
         var packageRoot = Path.Combine(temporary, "package");
         ZipFile.ExtractToDirectory(archive, packageRoot);
         packageRoot = FindPackageRoot(packageRoot);
         var enrollmentFile = Path.Combine(packageRoot, "central-enrollment.json");
         await File.WriteAllTextAsync(enrollmentFile, JsonSerializer.Serialize(enrollment,
             new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }));
+        Progress("앱 초기 동의 및 서비스 설치·복구 설정");
         var output = await RunPackageInstallAsync(packageRoot, enrollmentFile, installAppFirst: true);
-        await WaitForCentralReportAsync(enrollment);
-        MessageBox.Show($"설치·중앙 연결·첫 상태 보고가 모두 확인되었습니다.\n\n{output}", "SilentStream 자동 설치",
-            MessageBoxButtons.OK, MessageBoxIcon.Information);
+        Progress("서비스 설치 완료 — 중앙 연결 및 첫 상태 보고 확인");
+        var reported = await WaitForCentralReportAsync(enrollment);
+        Progress(reported ? "설치·중앙 연결·첫 상태 보고 확인 완료" : "설치 완료, 중앙 연결 확인 대기 (서비스가 자동 재연결)");
+        MessageBox.Show(reported
+            ? $"설치·중앙 연결·첫 상태 보고가 모두 확인되었습니다.\n\n{output}"
+            : $"서비스 설치는 완료되었습니다. 중앙 연결은 아직 확인되지 않았습니다.\n\n전체 설치를 반복할 필요는 없습니다. 인터넷 연결을 유지하면 서비스가 자동 재연결합니다.\n중앙 관리 페이지에서 {room.ToUpperInvariant()}의 연결 상태를 확인해 주세요.\n\n진단 기록: {diagnosticPath}",
+            "SilentStream 자동 설치", MessageBoxButtons.OK, reported ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
     }
     finally
     {
@@ -67,30 +94,49 @@ try
 }
 catch (Exception ex)
 {
-    MessageBox.Show($"설치하지 못했습니다.\n\n{DescribeFailure(ex)}", "SilentStream 자동 설치",
+    var failedStage = stage;
+    Progress($"실패: {ex.GetType().Name}, HRESULT=0x{ex.HResult:X8}");
+    var safeDetail = System.Text.RegularExpressions.Regex.Replace(DescribeFailure(ex), @"https?://\S+", "[서버 주소 생략]");
+    safeDetail = System.Text.RegularExpressions.Regex.Replace(safeDetail, @"[A-Za-z0-9_+/=-]{32,}", "[보안 값 생략]");
+    try { File.AppendAllText(diagnosticPath, safeDetail + "\n"); } catch { }
+    MessageBox.Show($"설치를 완료하지 못했습니다.\n단계: {failedStage}\n\n{DescribeFailure(ex)}\n\n진단 기록: {diagnosticPath}", "SilentStream 자동 설치",
         MessageBoxButtons.OK, MessageBoxIcon.Error);
 }
 
 static async Task<CentralEnrollmentResponse> AuthorizeAndEnrollAsync(Uri controlPlane, string room)
 {
-    var port = ReserveLoopbackPort();
-    var callback = $"http://127.0.0.1:{port}/callback/";
     var state = Token(32);
     using var listener = new HttpListener();
-    listener.Prefixes.Add(callback);
-    listener.Start();
+    string callback;
+    for (var attempt = 0; ; attempt++)
+    {
+        callback = $"http://127.0.0.1:{ReserveLoopbackPort()}/callback/";
+        listener.Prefixes.Clear();
+        listener.Prefixes.Add(callback);
+        try { listener.Start(); break; }
+        catch (HttpListenerException) when (attempt < 4) { }
+    }
 
     var authorize = new Uri(controlPlane,
         $"/api/install/authorize?room={Uri.EscapeDataString(room)}&state={Uri.EscapeDataString(state)}&callback={Uri.EscapeDataString(callback)}");
     Process.Start(new ProcessStartInfo(authorize.AbsoluteUri) { UseShellExecute = true });
 
-    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
-    var context = await listener.GetContextAsync().WaitAsync(timeout.Token);
+    using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+    string? code;
+    Uri enrollmentUri;
+    while (true)
+    {
+    HttpListenerContext context;
+    try { context = await listener.GetContextAsync().WaitAsync(timeout.Token); }
+    catch (OperationCanceledException) { throw new TimeoutException("10분 안에 설치 승인을 받지 못했습니다. 브라우저에서 Google 로그인과 호실 권한을 확인한 후 설치파일을 다시 실행해 주세요. 기존 설치는 변경하지 않았습니다."); }
     var returnedState = context.Request.QueryString["state"];
     var returnedRoom = context.Request.QueryString["room"];
-    var code = context.Request.QueryString["code"];
+    code = context.Request.QueryString["code"];
     var enroll = context.Request.QueryString["enroll"];
-    var safeEnrollmentUri = SafeHttpsUri(enroll, out var enrollmentUri);
+    var safeEnrollmentUri = SafeHttpsUri(enroll, out enrollmentUri)
+        && enrollmentUri.AbsolutePath == "/api/device/enroll"
+        && (enrollmentUri.Host.Equals(controlPlane.Host, StringComparison.OrdinalIgnoreCase)
+            || controlPlane.Host == "admin.silentstream.win" && enrollmentUri.Host == "agent.silentstream.win");
     var ok = CryptographicEquals(state, returnedState) && string.Equals(room, returnedRoom, StringComparison.OrdinalIgnoreCase)
         && !string.IsNullOrWhiteSpace(code) && safeEnrollmentUri;
     var html = Encoding.UTF8.GetBytes(ok
@@ -99,10 +145,12 @@ static async Task<CentralEnrollmentResponse> AuthorizeAndEnrollAsync(Uri control
     context.Response.StatusCode = ok ? 200 : 400;
     context.Response.ContentType = "text/html; charset=utf-8";
     context.Response.ContentLength64 = html.Length;
-    await context.Response.OutputStream.WriteAsync(html);
-    context.Response.Close();
+    try { await context.Response.OutputStream.WriteAsync(html, timeout.Token); }
+    catch (Exception ex) when (ex is IOException or HttpListenerException) { }
+    finally { context.Response.Close(); }
+    if (ok) break; // An unrelated or stale callback must not consume the active approval.
+    }
     listener.Stop();
-    if (!ok) throw new InvalidOperationException("Google 설치 승인 응답이 올바르지 않습니다.");
 
     var installationId = LoadOrCreateInstallationId();
     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
@@ -130,32 +178,17 @@ static async Task DownloadPackageAsync(CentralEnrollmentResponse enrollment, str
     if (!Uri.TryCreate(enrollment.PackageDownloadUri, UriKind.Absolute, out var packageUri)
         || packageUri.Scheme != Uri.UriSchemeHttps && !packageUri.IsLoopback)
         throw new InvalidDataException("설치 패키지 주소가 안전하지 않습니다.");
-    using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+    using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Device",
         $"{enrollment.RoomId}:{enrollment.DeviceId}:{enrollment.DeviceSecret}");
-    HttpResponseMessage response;
     try
     {
-        response = await client.GetAsync(packageUri, HttpCompletionOption.ResponseHeadersRead);
+        await VerifiedDownload.RunAsync(client, packageUri, destination, enrollment.PackageLength, enrollment.PackageSha256);
     }
     catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
     {
         throw new HttpRequestException($"설치 패키지 서버({packageUri.Host})에 연결하지 못했습니다.", ex);
     }
-    using (response)
-    {
-    response.EnsureSuccessStatusCode();
-    await using (var source = await response.Content.ReadAsStreamAsync())
-    await using (var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-        await source.CopyToAsync(output);
-    }
-    var info = new FileInfo(destination);
-    if (enrollment.PackageLength <= 0 || info.Length != enrollment.PackageLength)
-        throw new InvalidDataException("설치 패키지 크기가 중앙 서버 기록과 일치하지 않습니다.");
-    await using var stream = File.OpenRead(destination);
-    var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream)).ToLowerInvariant();
-    if (!CryptographicEquals(hash, enrollment.PackageSha256))
-        throw new CryptographicException("설치 패키지 SHA-256이 중앙 서버 기록과 일치하지 않습니다.");
 }
 
 static async Task<string> RunPackageInstallAsync(string packageRoot, string? enrollmentFile, bool installAppFirst)
@@ -170,6 +203,7 @@ static async Task<string> RunPackageInstallAsync(string packageRoot, string? enr
 
     var setup = Directory.EnumerateFiles(packageRoot, "*Setup*.exe", SearchOption.TopDirectoryOnly)
         .FirstOrDefault(path => !Path.GetFileName(path).Contains("Inspection", StringComparison.OrdinalIgnoreCase));
+    if (installAppFirst && setup is null) throw new InvalidDataException("앱 설치 프로그램이 패키지에 없습니다.");
     if (installAppFirst && setup is not null)
     {
         using var setupProcess = Process.Start(new ProcessStartInfo(setup)
@@ -177,21 +211,23 @@ static async Task<string> RunPackageInstallAsync(string packageRoot, string? enr
             UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
             Arguments = "--silent"
         }) ?? throw new InvalidOperationException("앱 설치 프로그램을 시작하지 못했습니다.");
-        await setupProcess.WaitForExitAsync().WaitAsync(TimeSpan.FromMinutes(5));
+        // Do not abandon a still-running setup and delete its extracted files on a timeout.
+        await setupProcess.WaitForExitAsync();
         if (setupProcess.ExitCode != 0) throw new InvalidOperationException($"앱 설치가 종료 코드 {setupProcess.ExitCode}로 실패했습니다.");
     }
 
     var appConfig = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "MediaCaptureHelper", "config.json");
     var appExecutable = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MediaCaptureHelper", "current", "MediaCaptureHelper.exe");
-    if (installAppFirst && !File.Exists(appConfig))
+    var consent = Path.Combine(Path.GetDirectoryName(appConfig)!, ".consent");
+    if (installAppFirst && (!File.Exists(appConfig) || !File.Exists(consent)))
     {
         if (!File.Exists(appExecutable)) throw new FileNotFoundException("설치된 SilentStream 앱을 찾을 수 없습니다.", appExecutable);
         Process.Start(new ProcessStartInfo(appExecutable) { UseShellExecute = true });
-        var deadline = DateTimeOffset.UtcNow.AddMinutes(3);
-        while (!File.Exists(appConfig) && DateTimeOffset.UtcNow < deadline) await Task.Delay(500);
-        if (!File.Exists(appConfig))
-            throw new InvalidOperationException("앱의 Google 로그인 또는 초기 설정이 완료되지 않았습니다. 앱 화면을 완료한 뒤 설치를 다시 실행하세요.");
+        var deadline = DateTimeOffset.UtcNow.AddMinutes(10);
+        while ((!File.Exists(appConfig) || !File.Exists(consent)) && DateTimeOffset.UtcNow < deadline) await Task.Delay(500);
+        if (!File.Exists(appConfig) || !File.Exists(consent))
+            throw new InvalidOperationException("앱의 최초 사용 동의가 완료되지 않았습니다. 앱 화면에서 직접 동의한 뒤 설치를 다시 실행하세요. 기존 서비스는 변경하지 않았습니다.");
     }
 
     var powershell = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),
@@ -223,7 +259,7 @@ static async Task<string> RunPackageInstallAsync(string packageRoot, string? enr
     return output;
 }
 
-static async Task WaitForCentralReportAsync(CentralEnrollmentResponse enrollment)
+static async Task<bool> WaitForCentralReportAsync(CentralEnrollmentResponse enrollment)
 {
     var packageUri = new Uri(enrollment.PackageDownloadUri, UriKind.Absolute);
     var statusUri = new Uri(packageUri, "/api/device/self");
@@ -241,13 +277,13 @@ static async Task WaitForCentralReportAsync(CentralEnrollmentResponse enrollment
                 using var document = JsonDocument.Parse(await response.Content.ReadAsByteArrayAsync());
                 var root = document.RootElement;
                 if (root.TryGetProperty("connected", out var connected) && connected.GetBoolean()
-                    && root.TryGetProperty("reporting", out var reporting) && reporting.GetBoolean()) return;
+                    && root.TryGetProperty("reporting", out var reporting) && reporting.GetBoolean()) return true;
             }
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException) { }
         await Task.Delay(TimeSpan.FromSeconds(2));
     }
-    throw new InvalidOperationException("서비스 설치는 완료됐지만 2분 안에 중앙 연결과 첫 상태 보고를 확인하지 못했습니다. 네트워크를 확인한 뒤 설치파일을 다시 실행해 주세요.");
+    return false;
 }
 
 static string FindPackageRoot(string extracted)

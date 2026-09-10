@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import WebSocket from "ws";
 
-const base = process.env.SILENTSTREAM_SMOKE_BASE || "http://127.0.0.1:8799";
+const base = process.env.SILENTSTREAM_SMOKE_BASE || "http://localhost:8799";
+const deviceBase = process.env.SILENTSTREAM_SMOKE_DEVICE_BASE || "http://127.0.0.1:8799";
 const ownerHeaders = { "x-silentstream-dev-email": "owner@example.com" };
 
 async function json(response) {
@@ -11,9 +12,9 @@ async function json(response) {
   return body;
 }
 
-const health = await json(await fetch(`${base}/health`));
+const health = await json(await fetch(`${deviceBase}/health`));
 assert.equal(health.runtime, "cloudflare-workers");
-assert.equal((await json(await fetch(`${base}/ready`))).status, "ready");
+assert.equal((await json(await fetch(`${deviceBase}/ready`))).status, "ready");
 
 const owner = await json(await fetch(`${base}/api/control/session`, { headers: ownerHeaders }));
 assert.equal(owner.admin, true);
@@ -22,7 +23,7 @@ assert.deepEqual(owner.rooms, ["m111", "m112", "m113", "baek202"]);
 
 await json(await fetch(`${base}/api/control/members`, {
   method: "POST",
-  headers: { ...ownerHeaders, origin: "http://admin.silentstream.win", "content-type": "application/json" },
+  headers: { ...ownerHeaders, origin: new URL(base).origin, "content-type": "application/json" },
   body: JSON.stringify({ email: "manager@example.com", role: "manager", rooms: ["m112"] })
 }));
 const manager = await json(await fetch(`${base}/api/control/session`, { headers: { "x-silentstream-dev-email": "manager@example.com" } }));
@@ -75,7 +76,7 @@ assert.equal(managerRooms[0].playlists.items[1].url, "https://www.youtube.com/pl
 const commandMessage = once(socket, "message");
 const commandRequest = fetch(`${base}/api/control/rooms/m112/actions/inspection.rerun`, {
   method: "POST",
-  headers: { ...ownerHeaders, origin: "http://admin.silentstream.win", "content-type": "application/json" },
+  headers: { ...ownerHeaders, origin: new URL(base).origin, "content-type": "application/json" },
   body: "{}"
 });
 const [rawCommand] = await commandMessage;

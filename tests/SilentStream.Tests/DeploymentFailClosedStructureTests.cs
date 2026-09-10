@@ -17,10 +17,7 @@ public sealed class DeploymentFailClosedStructureTests
             "DownloadPackageAsync(enrollment, archive)",
             "ZipFile.ExtractToDirectory(archive, packageRoot)",
             "RunPackageInstallAsync(packageRoot, enrollmentFile, installAppFirst: true)");
-        AssertOrdered(source,
-            "var hash = Convert.ToHexString(await SHA256.HashDataAsync(stream))",
-            "if (!CryptographicEquals(hash, enrollment.PackageSha256))",
-            "throw new CryptographicException");
+        Assert.Contains("await VerifiedDownload.RunAsync", source);
         AssertOrdered(source,
             "var preseed = Path.Combine(packageRoot, \"deployment-preseed.json\");",
             "if (!File.Exists(script) || !Directory.Exists(source) || !File.Exists(publicKey) || !File.Exists(preseed))",
@@ -55,7 +52,7 @@ public sealed class DeploymentFailClosedStructureTests
             "& $cli bundle verify-startup $source $PublicKeyFile $destination",
             "foreach ($relative in @($preseed.agentUpdates))",
             "& $cli agent-update verify $source $PublicKeyFile $destination",
-            "& sc.exe stop SilentStreamInspectionCoordinator");
+            "Stop-Service -Name $name -ErrorAction Stop");
 
         var verificationBlock = Slice(source,
             "$cli = Join-Path $SourceRoot 'cli\\SilentStreamInspectionCli.exe'",
@@ -81,7 +78,7 @@ public sealed class DeploymentFailClosedStructureTests
     }
 
     [Fact]
-    public void Service_registration_uses_documented_separate_sc_arguments_and_reports_native_errors()
+    public void Service_registration_avoids_native_creation_and_keeps_recovery_material()
     {
         var repository = FindRepositoryRoot();
         var source = File.ReadAllText(Path.Combine(
@@ -89,9 +86,11 @@ public sealed class DeploymentFailClosedStructureTests
 
         Assert.Contains("function Invoke-ServiceController", source, StringComparison.Ordinal);
         Assert.Contains("$output = @(& $sc @Arguments 2>&1)", source, StringComparison.Ordinal);
-        Assert.Contains("@('create',$Name,'binPath=',('\"' + $BinaryPath + '\"'),'start=','auto')", source, StringComparison.Ordinal);
-        Assert.Contains("@('obj=',$Account)", source, StringComparison.Ordinal);
-        Assert.Contains("@('displayname=',$DisplayName)", source, StringComparison.Ordinal);
+        Assert.Contains("-MethodName Change", source, StringComparison.Ordinal);
+        Assert.Contains("-MethodName Create", source, StringComparison.Ordinal);
+        Assert.Contains("$result.ReturnValue -ne 0", source, StringComparison.Ordinal);
+        Assert.Contains("InspectionRollback-", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Administrators:(OI)(CI)F", source, StringComparison.Ordinal);
         Assert.Contains("@('failure',$name,'reset=','86400','actions='", source, StringComparison.Ordinal);
         Assert.DoesNotContain("\"binPath= `\"$coordinatorExe`\"\"", source, StringComparison.Ordinal);
         Assert.DoesNotContain("& sc.exe create", source, StringComparison.Ordinal);

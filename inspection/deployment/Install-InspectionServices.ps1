@@ -83,13 +83,32 @@ function Invoke-ServiceController([string[]]$Arguments,[string]$FailureMessage) 
 }
 function Register-WindowsService([string]$Name,[string]$BinaryPath,[string]$DisplayName,[string]$Account = '') {
   if (-not (Test-Path -LiteralPath $BinaryPath)) { throw "서비스 실행 파일을 찾을 수 없습니다: $BinaryPath" }
-  # sc.exe requires every option name and value to be separate arguments. Passing strings such as
-  # 'start= auto' as one argument is accepted by some builds but returns ERROR_INVALID_COMMAND_LINE
-  # (1639) on others. Splatting this array preserves the documented token boundary on Windows 10/11.
-  $arguments = @('create',$Name,'binPath=',('"' + $BinaryPath + '"'),'start=','auto')
-  if (-not [string]::IsNullOrWhiteSpace($Account)) { $arguments += @('obj=',$Account) }
-  $arguments += @('displayname=',$DisplayName)
-  Invoke-ServiceController -Arguments $arguments -FailureMessage "$DisplayName 서비스 등록 실패"
+  # CIM passes the quoted image path as data, without PowerShell 5.1 native-command quote loss.
+  # Change in place: deleting a service makes retries race ERROR_SERVICE_MARKED_FOR_DELETE.
+  if ([string]::IsNullOrWhiteSpace($Account)) { $Account = 'LocalSystem' }
+  $arguments = @{ PathName=('"' + [IO.Path]::GetFullPath($BinaryPath) + '"'); DisplayName=$DisplayName; StartMode='Automatic'; StartName=$Account; StartPassword='' }
+  $existing = Get-CimInstance Win32_Service -Filter "Name='$Name'"
+  if ($existing) { $result = Invoke-CimMethod -InputObject $existing -MethodName Change -Arguments $arguments }
+  else {
+    $arguments.Name = $Name
+    $arguments.ServiceType = [byte]16
+    $arguments.ErrorControl = [byte]1
+    $result = Invoke-CimMethod -ClassName Win32_Service -MethodName Create -Arguments $arguments
+  }
+  if ($result.ReturnValue -ne 0) { throw "$DisplayName 서비스 등록 실패 (Windows 서비스 API 코드 $($result.ReturnValue))" }
+  $registered = Get-CimInstance Win32_Service -Filter "Name='$Name'"
+  if ($registered.PathName -ne $arguments.PathName -or $registered.StartMode -ne 'Auto') {
+    throw "$DisplayName 서비스 실행 경로 또는 자동 시작 검증 실패"
+  }
+}
+function Set-InstallAcl([string]$Path,[string[]]$Rules) {
+  $output = @(& (Join-Path $env:SystemRoot 'System32\icacls.exe') $Path @Rules 2>&1)
+  if ($LASTEXITCODE -ne 0) { throw "설치 폴더 권한 설정 실패 (종료 코드 $LASTEXITCODE): $Path" }
+}
+function Stop-OwnedProcess([string]$Executable) {
+  Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    try { $_.Path -and [string]::Equals($_.Path,$Executable,[StringComparison]::OrdinalIgnoreCase) } catch { $false }
+  } | Stop-Process -Force -ErrorAction Stop
 }
 
 $central = $null
@@ -141,7 +160,7 @@ $hostname = if ($appConfig -and $appConfig.remote) { [string]$appConfig.remote.c
 $tunnelToken = ''
 $previousBridgeToken = ''
 if ($appConfig -and $appConfig.remote) {
-  if (-not [string]::IsNullOrWhiteSpace([string]$appConfig.remote.cloudflareTunnelTokenEnc)) { $tunnelToken = Unprotect-AppSecret ([string]$appConfig.remote.cloudflareTunnelTokenEnc) }
+  if (-not $central -and -not [string]::IsNullOrWhiteSpace([string]$appConfig.remote.cloudflareTunnelTokenEnc)) { $tunnelToken = Unprotect-AppSecret ([string]$appConfig.remote.cloudflareTunnelTokenEnc) }
   elseif (-not [string]::IsNullOrWhiteSpace([string]$appConfig.remote.cloudflareTunnelToken)) { $tunnelToken = [string]$appConfig.remote.cloudflareTunnelToken }
   if (-not [string]::IsNullOrWhiteSpace([string]$appConfig.remote.inspectionBridgeTokenEnc)) { $previousBridgeToken = Unprotect-AppSecret ([string]$appConfig.remote.inspectionBridgeTokenEnc) }
 }
@@ -177,6 +196,10 @@ if (-not [string]::IsNullOrWhiteSpace($PreseedFile)) {
 $programFilesRoot = [IO.Path]::GetFullPath($env:ProgramFiles).TrimEnd('\') + '\'
 $resolvedInstallRoot = [IO.Path]::GetFullPath($InstallRoot)
 if (-not $resolvedInstallRoot.StartsWith($programFilesRoot,[StringComparison]::OrdinalIgnoreCase)) { throw '설치 경로는 Program Files 내부여야 합니다.' }
+if ([IO.Path]::GetFileName($resolvedInstallRoot) -ne 'Inspection' -or
+    [IO.Path]::GetFullPath((Split-Path $resolvedInstallRoot -Parent)).TrimEnd('\') -eq $programFilesRoot.TrimEnd('\')) {
+  throw '설치 경로는 제품 전용 폴더 아래의 Inspection 폴더여야 합니다.'
+}
 if (-not (Test-Path -LiteralPath $AppExecutablePath)) { throw "SilentStream 앱 실행 파일을 찾을 수 없습니다: $AppExecutablePath" }
 if (-not [string]::IsNullOrWhiteSpace($CachedInstallerPath) -and -not (Test-Path -LiteralPath $CachedInstallerPath)) {
   throw "재설치 캐시 파일 없음: $CachedInstallerPath"
@@ -228,11 +251,34 @@ $brokerSecretMachineEnc = Protect-Machine $brokerSecret
 $appApiTokenMachineEnc = Protect-Machine $appApiToken
 $centralDeviceSecretMachineEnc = if ($central) { Protect-Machine ([string]$central.deviceSecret) } else { '' }
 
-& sc.exe stop SilentStreamInspectionCoordinator 2>$null | Out-Null
-& sc.exe stop SilentStreamInspectionBroker 2>$null | Out-Null
+$productRoot = Split-Path $resolvedInstallRoot -Parent
+$policyRoot = Join-Path $productRoot 'InspectionPolicy'
+$dataRoot = Join-Path $env:ProgramData 'MediaCaptureHelper\Inspection'
+$coordinatorConfigPath = Join-Path $dataRoot 'coordinator.json'
+$taskName = 'SilentStream Inspection Session Agent'
+$serviceNames = @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')
+$serviceSnapshot = @($serviceNames | ForEach-Object { Get-CimInstance Win32_Service -Filter "Name='$_'" })
+$previousTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$previousTaskXml = if ($previousTask) { Export-ScheduledTask -TaskName $taskName } else { $null }
+$appWasRunning = @(Get-Process -Name MediaCaptureHelper -ErrorAction SilentlyContinue | Where-Object {
+  try { [string]::Equals($_.Path,$AppExecutablePath,[StringComparison]::OrdinalIgnoreCase) } catch { $false }
+}).Count -gt 0
+# Store rollback credentials only in an administrator-only directory. Never delete user settings.
+New-Item -ItemType Directory -Path $productRoot -Force | Out-Null
+$rollbackRoot = Join-Path $productRoot ('InspectionRollback-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $rollbackRoot | Out-Null
+Set-InstallAcl $rollbackRoot @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
+Copy-Item -LiteralPath $AppConfigPath -Destination (Join-Path $rollbackRoot 'app-config.json')
+$hadCoordinatorConfig = Test-Path -LiteralPath $coordinatorConfigPath
+if ($hadCoordinatorConfig) { Copy-Item -LiteralPath $coordinatorConfigPath -Destination (Join-Path $rollbackRoot 'coordinator.json') }
+$replacedDirectories = @()
+try {
+foreach ($name in $serviceNames) {
+  if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Stop-Service -Name $name -ErrorAction Stop }
+}
 Stop-ScheduledTask -TaskName 'SilentStream Inspection Session Agent' -ErrorAction SilentlyContinue
-Stop-Process -Name MediaCaptureHelper -Force -ErrorAction SilentlyContinue
-Stop-Process -Name SilentStreamInspectionSessionAgent -Force -ErrorAction SilentlyContinue
+Stop-OwnedProcess $AppExecutablePath
+Stop-OwnedProcess (Join-Path $InstallRoot 'session\SilentStreamInspectionSessionAgent.exe')
 foreach ($serviceName in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) {
   $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
   if ($service -and $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -257,7 +303,7 @@ if ($appConfig) {
     $appConfig.remote.cloudflareHostname = ''
     $appConfig.remote.cloudflareTunnelToken = ''
     $appConfig.remote.cloudflareTunnelTokenEnc = ''
-    if (-not $appConfig.provisioning) { $appConfig | Add-Member -NotePropertyName provisioning -NotePropertyValue ([ordered]@{}) -Force }
+    if (-not $appConfig.provisioning) { $appConfig | Add-Member -NotePropertyName provisioning -NotePropertyValue ([pscustomobject]@{}) -Force }
     $appConfig.provisioning | Add-Member -NotePropertyName roomId -NotePropertyValue $roomId -Force
     $appConfig.provisioning | Add-Member -NotePropertyName installationId -NotePropertyValue $centralInstallationId -Force
     $appConfig.provisioning | Add-Member -NotePropertyName completed -NotePropertyValue $true -Force
@@ -266,15 +312,17 @@ if ($appConfig) {
   Write-JsonAtomic $AppConfigPath $appConfig
 }
 
-$productRoot = Split-Path $resolvedInstallRoot -Parent
-$policyRoot = Join-Path $productRoot 'InspectionPolicy'
-$stagingRoot = Join-Path $productRoot 'InspectionAgentStaging'
-$updaterRoot = Join-Path $productRoot 'InspectionUpdater'
-if (Test-Path -LiteralPath $resolvedInstallRoot) { Remove-Item -LiteralPath $resolvedInstallRoot -Recurse -Force }
-foreach ($old in @($policyRoot,$stagingRoot,$updaterRoot)) { if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Recurse -Force } }
+foreach ($directory in @($resolvedInstallRoot,$policyRoot)) {
+  $resolved = [IO.Path]::GetFullPath($directory)
+  if (-not $resolved.StartsWith($programFilesRoot,[StringComparison]::OrdinalIgnoreCase)) { throw '복구 대상 경로 검증 실패' }
+  $backup = Join-Path $rollbackRoot (Split-Path $resolved -Leaf)
+  $existed = Test-Path -LiteralPath $resolved
+  if ($existed) { Move-Item -LiteralPath $resolved -Destination $backup }
+  $replacedDirectories += @{ Path=$resolved; Backup=$backup; Existed=$existed }
+}
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $policyRoot -Force | Out-Null
-& icacls.exe $policyRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+Set-InstallAcl $policyRoot @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'coordinator') -Destination $InstallRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'broker') -Destination $InstallRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $SourceRoot 'session') -Destination $InstallRoot -Recurse -Force
@@ -282,7 +330,7 @@ if (Test-Path -LiteralPath (Join-Path $SourceRoot 'cli')) { Copy-Item -LiteralPa
 
 $dataRoot = Join-Path $env:ProgramData 'MediaCaptureHelper\Inspection'
 New-Item -ItemType Directory -Path $dataRoot -Force | Out-Null
-& icacls.exe $dataRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' | Out-Null
+Set-InstallAcl $dataRoot @('/inheritance:r','/grant:r','*S-1-5-18:(OI)(CI)F','*S-1-5-32-544:(OI)(CI)F')
 if ($preseed) {
   $packageRoot = [IO.Path]::GetFullPath((Split-Path $PreseedFile -Parent)).TrimEnd('\') + '\'
   foreach ($group in @(@{ Values=@($preseed.bundles);Target='preseed-bundles' },@{ Values=@($preseed.agentUpdates);Target='incoming-agent-updates' })) {
@@ -337,12 +385,6 @@ Write-JsonAtomic (Join-Path $policyRoot 'broker-policy.json') $brokerPolicy
 $coordinatorExe = Join-Path $InstallRoot 'coordinator\SilentStreamInspectionCoordinator.exe'
 $brokerExe = Join-Path $InstallRoot 'broker\SilentStreamInspectionBroker.exe'
 $sessionExe = Join-Path $InstallRoot 'session\SilentStreamInspectionSessionAgent.exe'
-foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) {
-  & sc.exe delete $name 2>$null | Out-Null
-  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-  while ((Get-Service -Name $name -ErrorAction SilentlyContinue) -and [DateTimeOffset]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-  if (Get-Service -Name $name -ErrorAction SilentlyContinue) { throw "$name 기존 서비스 등록을 교체할 수 없습니다." }
-}
 Register-WindowsService -Name 'SilentStreamInspectionCoordinator' -BinaryPath $coordinatorExe -Account 'NT AUTHORITY\LocalService' -DisplayName 'SilentStream Inspection Coordinator'
 Register-WindowsService -Name 'SilentStreamInspectionBroker' -BinaryPath $brokerExe -DisplayName 'SilentStream Inspection Privileged Broker'
 foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionBroker')) {
@@ -350,36 +392,23 @@ foreach ($name in @('SilentStreamInspectionCoordinator','SilentStreamInspectionB
   Invoke-ServiceController -Arguments @('failure',$name,'reset=','86400','actions=','restart/5000/restart/15000/restart/60000') -FailureMessage "$name 복구 정책 설정 실패"
 }
 
-& icacls.exe $dataRoot '/grant' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
+Set-InstallAcl $dataRoot @('/grant','NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M')
 if (-not [string]::IsNullOrWhiteSpace($cachedPath)) {
-  & icacls.exe (Split-Path $cachedPath -Parent) '/grant' "$($identity.Name):(OI)(CI)RX" | Out-Null
-  & icacls.exe $cachedPath '/grant' "$($identity.Name):(R,X)" | Out-Null
+  Set-InstallAcl (Split-Path $cachedPath -Parent) @('/grant',"*$($identity.User.Value):(OI)(CI)RX")
+  Set-InstallAcl $cachedPath @('/grant',"*$($identity.User.Value):(R,X)")
 }
 if (Test-Path -LiteralPath (Split-Path $AppConfigPath -Parent)) {
-  & icacls.exe (Split-Path $AppConfigPath -Parent) '/grant' 'SYSTEM:(OI)(CI)F' 'NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M' | Out-Null
+  Set-InstallAcl (Split-Path $AppConfigPath -Parent) @('/grant','*S-1-5-18:(OI)(CI)F','NT SERVICE\SilentStreamInspectionCoordinator:(OI)(CI)M')
 }
 
 Import-Module ScheduledTasks
 $taskName = 'SilentStream Inspection Session Agent'
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 $action = New-ScheduledTaskAction -Execute $sessionExe
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 10 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $settings | Out-Null
-Start-ScheduledTask -TaskName $taskName
-
-Stop-Process -Name cloudflared -Force -ErrorAction SilentlyContinue
-Invoke-ServiceController -Arguments @('start','SilentStreamInspectionBroker') -FailureMessage 'Broker 서비스 시작 실패'
-Invoke-ServiceController -Arguments @('start','SilentStreamInspectionCoordinator') -FailureMessage 'Coordinator 서비스 시작 실패'
-foreach ($serviceName in @('SilentStreamInspectionBroker','SilentStreamInspectionCoordinator')) {
-  $service = Get-Service -Name $serviceName -ErrorAction Stop
-  try { $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30)) }
-  catch { throw "$serviceName 서비스가 30초 안에 실행 상태가 되지 않았습니다." }
-}
-if (Test-Path -LiteralPath $AppExecutablePath) { Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden }
-
-$resultPath = Join-Path (Split-Path $PublicKeyFile -Parent) '초기_원격점검_연결정보.txt'
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $taskPrincipal -Settings $settings -Force | Out-Null
+$resultPath = Join-Path $policyRoot '초기_원격점검_연결정보.txt'
 $portal = if ($central) { "$($centralBaseUri.TrimEnd('/'))/control/?room=$roomId" } elseif ([string]::IsNullOrWhiteSpace($hostname)) { 'http://127.0.0.1:8790/inspect/' } else { "https://$hostname/inspect/" }
 $authLines = if ($central) { '인증: 중앙 포털 Google 로그인' } else { "연결 번호(조작자): $pairingPin`r`n초기 관리자 토큰: $adminToken" }
 @"
@@ -390,7 +419,7 @@ SilentStream 중앙 원격 점검
 $authLines
 
 자동 운행 전제: 이 PC의 Windows 사용자 자동 로그인은 별도로 설정해야 합니다.
-전원 → 앱/점검 서비스 업데이트 확인 → startup-v0.4.2 안전 점검 → 원격 결과 순서로 진행됩니다.
+전원 → 앱/점검 서비스 업데이트 확인 → 서명된 부팅 안전 점검 → 원격 결과 순서로 진행됩니다.
 M113은 실제 마이크와 스테레오 믹스를 구분합니다. 스테레오 믹스만 있으면 실제 마이크 합격이 아닙니다.
 무선 수신기 전원·배터리·페어링·케이블은 소프트웨어가 켜거나 복구할 수 없습니다.
 이 연결 정보와 호실 설정을 다른 강의실 PC에 복사하지 마세요.
@@ -401,5 +430,61 @@ M113은 실제 마이크와 스테레오 믹스를 구분합니다. 스테레오
 if ($preseed -and -not $central) {
   (Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8).Replace('초기 관리자 토큰: ', '초기 관리자 토큰: 작업실 전용 보관소에 사전 등록됨') | Set-Content -LiteralPath $resultPath -Encoding UTF8
 }
-& icacls.exe $resultPath '/inheritance:r' "/grant:r" "$($identity.Name):(R,W,D)" | Out-Null
-Write-Output "설치 완료(v0.5.0 중앙 연결, $room): $resultPath"
+Set-InstallAcl $resultPath @('/inheritance:r','/grant:r','*S-1-5-18:F','*S-1-5-32-544:F',"*$($identity.User.Value):(R,W,D)")
+# Finish all file, ACL and task registration work before the new identity can connect centrally.
+if ($cloudflared) { Stop-OwnedProcess $cloudflared }
+Start-ScheduledTask -TaskName $taskName
+Invoke-ServiceController -Arguments @('start','SilentStreamInspectionBroker') -FailureMessage 'Broker 서비스 시작 실패'
+Invoke-ServiceController -Arguments @('start','SilentStreamInspectionCoordinator') -FailureMessage 'Coordinator 서비스 시작 실패'
+foreach ($serviceName in @('SilentStreamInspectionBroker','SilentStreamInspectionCoordinator')) {
+  $service = Get-Service -Name $serviceName -ErrorAction Stop
+  try { $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30)) }
+  catch { throw "$serviceName 서비스가 30초 안에 실행 상태가 되지 않았습니다." }
+}
+if (Test-Path -LiteralPath $AppExecutablePath) { Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden }
+Write-Output "서비스 설치 완료 ($room): $resultPath"
+} catch {
+  $installFailure = $_
+  try {
+    foreach ($name in $serviceNames) {
+      if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Stop-Service -Name $name -ErrorAction Stop }
+    }
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Stop-OwnedProcess $AppExecutablePath
+    Stop-OwnedProcess (Join-Path $InstallRoot 'session\SilentStreamInspectionSessionAgent.exe')
+    foreach ($entry in $replacedDirectories) {
+      # Paths were resolved and checked before being recorded above; never delete the backup.
+      if (Test-Path -LiteralPath $entry.Path) { Remove-Item -LiteralPath $entry.Path -Recurse -Force }
+      if ($entry.Existed) { Move-Item -LiteralPath $entry.Backup -Destination $entry.Path }
+    }
+    Copy-Item -LiteralPath (Join-Path $rollbackRoot 'app-config.json') -Destination $AppConfigPath -Force
+    if ($hadCoordinatorConfig) { Copy-Item -LiteralPath (Join-Path $rollbackRoot 'coordinator.json') -Destination $coordinatorConfigPath -Force }
+    elseif (Test-Path -LiteralPath $coordinatorConfigPath) { Remove-Item -LiteralPath $coordinatorConfigPath -Force }
+    foreach ($name in $serviceNames) {
+      $previous = $serviceSnapshot | Where-Object { $_.Name -eq $name }
+      $current = Get-CimInstance Win32_Service -Filter "Name='$name'"
+      if ($previous -and $current) {
+        $mode = if ($previous.StartMode -eq 'Auto') { 'Automatic' } else { $previous.StartMode }
+        $restored = Invoke-CimMethod -InputObject $current -MethodName Change -Arguments @{ PathName=$previous.PathName; DisplayName=$previous.DisplayName; StartMode=$mode; StartName=$previous.StartName }
+        if ($restored.ReturnValue -ne 0) { throw "기존 $name 서비스 복구 실패: $($restored.ReturnValue)" }
+        if ($previous.State -eq 'Running') { Start-Service -Name $name }
+      } elseif (-not $previous -and $current) {
+        Invoke-ServiceController -Arguments @('delete',$name) -FailureMessage '신규 서비스 등록 정리 실패'
+      }
+    }
+    if ($previousTaskXml) {
+      Register-ScheduledTask -TaskName $taskName -Xml $previousTaskXml -Force | Out-Null
+      if ($previousTask.State -eq 'Running') { Start-ScheduledTask -TaskName $taskName }
+    } else { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
+    if ($appWasRunning -and (Test-Path -LiteralPath $AppExecutablePath)) { Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden }
+  } catch {
+    throw "설치 및 기존 상태 자동 복구가 완료되지 않았습니다. 복구 자료는 $rollbackRoot 에 보존했습니다. 설치 오류: $($installFailure.Exception.Message) / 복구 오류: $($_.Exception.Message)"
+  }
+  throw "설치 중 오류가 발생하여 기존 설정과 서비스 파일을 복구했습니다. 복구 자료: $rollbackRoot / 원인: $($installFailure.Exception.Message)"
+}
+# Remove only this run's validated rollback directory after successful installation.
+$resolvedRollback = [IO.Path]::GetFullPath($rollbackRoot)
+if ($resolvedRollback.StartsWith(([IO.Path]::GetFullPath($productRoot).TrimEnd('\') + '\'),[StringComparison]::OrdinalIgnoreCase) -and
+    [IO.Path]::GetFileName($resolvedRollback).StartsWith('InspectionRollback-')) {
+  try { Remove-Item -LiteralPath $resolvedRollback -Recurse -Force } catch { Write-Warning "이전 설치 복구 자료를 보존했습니다: $resolvedRollback" }
+}

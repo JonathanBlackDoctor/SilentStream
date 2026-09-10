@@ -1,0 +1,26 @@
+{
+  "name": "silentstream-local-smoke-only",
+  "main": "../src/index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [],
+  "durable_objects": { "bindings": [{ "name": "CONTROL", "class_name": "ControlPlane" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ControlPlane"] }],
+  "r2_buckets": [{ "binding": "ARTIFACTS", "bucket_name": "silentstream-smoke-fixtures" }],
+  "assets": { "directory": "../public", "binding": "ASSETS", "html_handling": "none", "run_worker_first": true },
+  "vars": {
+    "ENABLE_DEVELOPMENT_IDENTITY": "true",
+    "PUBLIC_BASE_URI": "http://localhost:8799",
+    "DEVICE_BASE_URI": "http://127.0.0.1:8799",
+    "BOOTSTRAP_OWNER_EMAIL": "owner@example.com",
+    "GOOGLE_CLIENT_ID": "local-test-only",
+    "GOOGLE_CLIENT_SECRET": "local-test-only",
+    "PACKAGE_KEY": "package.bin",
+    "PACKAGE_LENGTH": "26",
+    "PACKAGE_SHA256": "b36b339adabf55d829c99c813a1986305b9e6de80623f92071f87eabec439880",
+    "INSTALLER_KEY": "installer.bin",
+    "INSTALLER_LENGTH": "28",
+    "INSTALLER_SHA256": "b895101ea53425d5330a0425ff7c968b270598b4f1c8d9560f0a71b07c411dd6"
+  }
+}
