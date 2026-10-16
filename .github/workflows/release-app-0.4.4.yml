@@ -63,17 +63,17 @@ jobs:
           if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'Production sidecar archive hash mismatch.' }
           Expand-Archive -LiteralPath $archive -DestinationPath previous/extracted
           foreach ($directory in @('ffmpeg','cloudflared','yt-dlp')) {
-            $source = "previous/extracted/$directory"
+            $source = "previous/extracted/current/$directory"
             if (-not (Test-Path -LiteralPath $source)) { throw "Missing production sidecar: $directory" }
             Copy-Item -LiteralPath $source -Destination "publish/$directory" -Recurse
           }
           foreach ($file in @('client_secret.json','THIRD_PARTY_NOTICES.md')) {
-            $source = "previous/extracted/$file"
+            $source = "previous/extracted/current/$file"
             if (-not (Test-Path -LiteralPath $source)) { throw "Missing production asset: $file" }
             Copy-Item -LiteralPath $source -Destination "publish/$file"
           }
           foreach ($optional in @('provisioning.json','inspection-update')) {
-            $source = "previous/extracted/$optional"
+            $source = "previous/extracted/current/$optional"
             if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination "publish/$optional" -Recurse }
           }
       - name: Pack and publish immutable app update
