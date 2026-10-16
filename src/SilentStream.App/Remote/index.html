@@ -288,6 +288,13 @@
     </div>
 
     <div class="card">
+      <h2>오늘 YouTube 재생목록 <span class="muted" id="playlistDate"></span></h2>
+      <p class="muted" id="playlistHint" role="status" aria-live="polite">재생목록 정보를 기다리는 중입니다.</p>
+      <input id="playlistLink" class="hidden" readonly aria-label="오늘 재생목록 링크" />
+      <button id="copyTodayPlaylistBtn" disabled>오늘 재생목록 링크 복사</button>
+    </div>
+
+    <div class="card">
       <h2>업로드 큐 <span id="qSummary" class="muted"></span></h2>
       <div id="qList"></div>
     </div>
@@ -764,6 +771,7 @@
     // ---- 단일 호실 대시보드 (room-aware: 선택된 호실의 baseUrl+token 사용) ----
     function openRoom(room){
       cur = room;
+      renderTodayPlaylist(null);
       show("dash");
       const bb = $("backBtn");
       bb.disabled = false;
@@ -782,6 +790,7 @@
     }
     function openDemo(){
       cur = { label:"201호", baseUrl:"", token:"demo" };
+      renderTodayPlaylist(null);
       show("dash");
       $("backBtn").classList.add("hidden");
       renderStatus({
@@ -1071,7 +1080,55 @@
       } catch(e){ toast("원격 제거 요청에 실패했습니다."); }
     });
 
+    // ---- Today's persisted playlist: no YouTube API call or creation on a copy click. ----
+    let todayPlaylist = null, todayPlaylistRoom = null;
+    function playlistKoreaToday(){
+      const parts = new Intl.DateTimeFormat("en-US", {timeZone:"Asia/Seoul", year:"numeric", month:"2-digit", day:"2-digit"}).formatToParts(new Date());
+      const part = type => parts.find(value => value.type === type).value;
+      return `${part("year")}-${part("month")}-${part("day")}`;
+    }
+    function renderTodayPlaylist(value){
+      const changed = value?.date !== todayPlaylist?.date || value?.url !== todayPlaylist?.url || cur !== todayPlaylistRoom;
+      todayPlaylist = value; todayPlaylistRoom = cur;
+      $("playlistDate").textContent = value?.date || "";
+      const ready = value?.status === "ready" && value?.url && value.date === playlistKoreaToday();
+      $("copyTodayPlaylistBtn").disabled = !ready;
+      if (changed || !ready){
+        $("playlistLink").value = ready ? value.url : "";
+        $("playlistLink").classList.add("hidden");
+        const labels = {creating:"오늘 재생목록을 생성하고 있습니다.", "auth-required":"PC에서 YouTube 계정 인증을 확인해주세요.", failed:"오늘 재생목록 생성에 실패했습니다.", missing:"오늘 재생목록이 아직 없습니다."};
+        $("playlistHint").textContent = ready ? `${value.room} · ${value.date} 재생목록을 복사합니다.`
+          : !value ? "재생목록 정보가 없습니다. PC 앱 버전과 연결을 확인해주세요."
+          : value.date !== playlistKoreaToday() ? "오늘 재생목록 정보를 기다리는 중입니다."
+          : labels[value.status] || "오늘 재생목록 링크를 기다리는 중입니다.";
+      }
+    }
+    $("playlistLink").onclick = () => $("playlistLink").select();
+    $("copyTodayPlaylistBtn").onclick = async () => {
+      const item = todayPlaylist, room = cur;
+      if (room !== todayPlaylistRoom || !item?.url || item.status !== "ready" || item.date !== playlistKoreaToday()){
+        renderTodayPlaylist(item); return;
+      }
+      const field = $("playlistLink");
+      field.value = item.url; field.classList.remove("hidden");
+      let copied = false;
+      try {
+        if (window.isSecureContext && navigator.clipboard?.writeText){
+          await navigator.clipboard.writeText(item.url); copied = true;
+        }
+      } catch(e) {}
+      if (cur !== room || todayPlaylist?.url !== item.url || todayPlaylist?.date !== item.date) return;
+      if (!copied){
+        field.focus(); field.select(); field.setSelectionRange(0, item.url.length);
+        try { copied = document.execCommand("copy"); } catch(e) {}
+      }
+      $("playlistHint").textContent = copied ? "오늘 재생목록 링크를 복사했습니다."
+        : "자동 복사가 차단되었습니다. 위 링크를 길게 눌러 복사해주세요.";
+      if (copied) toast("오늘 재생목록 링크를 복사했습니다.");
+    };
+
     function renderStatus(s){
+      renderTodayPlaylist(s.dailyPlaylist || null);
       if (cur) setRoomOnline(cur, true);
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (s.recovery) renderRecovery(s.recovery);

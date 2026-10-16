@@ -289,7 +289,7 @@ test("room manager app shows five recent playlist links and searches older dates
   assert.match(app, /document\.execCommand\("copy"\)/);
   assert.match(document, /playlist-history-toggle/);
   assert.doesNotMatch(document, /app\.js\?v=3/);
-  assert.match(document, /app\.js\?v=4/);
+  assert.match(document, /app\.js\?v=5/);
 });
 
 test("room PWA assets include install guidance, a safe offline page, and valid PNG sizes", async () => {
@@ -298,7 +298,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
   assert.match(document, /rel="manifest"/);
   assert.match(document, /apple-touch-icon/);
-  assert.match(document, /\/app\.js\?v=4/);
+  assert.match(document, /\/app\.js\?v=5/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);
   assert.doesNotMatch(document, /id="installButton" hidden/);
   assert.match(app, /beforeinstallprompt/);
