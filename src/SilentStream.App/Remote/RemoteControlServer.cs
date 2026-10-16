@@ -1439,6 +1439,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             },
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
             dailyPlaylist = DailyPlaylistRemote.Build(_playlists, _configStore.Load(), DateTimeOffset.UtcNow),
+            // Older coordinators already forward /api/status; include history for compatibility.
+            playlists = DailyPlaylistRemote.BuildHistory(_playlists, _configStore.Load()),
             recovery = _recovery.Status,
             automation = BuildAutomation(),
             settingsLock = BuildSettingsLock(),

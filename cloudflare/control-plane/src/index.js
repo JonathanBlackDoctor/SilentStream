@@ -54,7 +54,7 @@ function roomOrigin(roomId, env) {
 export function normalizePlaylistHistory(value, roomId) {
   if (!value || typeof value !== "object" || !Array.isArray(value.items)) return null;
   const room = normalizeRoom(roomId);
-  if (!room) return null;
+  if (!room || (value.room != null && normalizeRoom(value.room) !== room)) return null;
   const statuses = new Set(["ready", "creating", "auth-required", "failed"]);
   const byDate = new Map();
   for (const candidate of value.items.slice(0, 1000)) {
@@ -1014,7 +1014,8 @@ export class ControlPlane {
       const key = `device:${attachment.deviceId}`;
       const device = await this.state.storage.get(key);
       if (!device || device.revokedAtUtc) return;
-      const playlists = normalizePlaylistHistory(snapshot.playlists, attachment.roomId);
+      const playlists = normalizePlaylistHistory(snapshot.playlists, attachment.roomId)
+        ?? normalizePlaylistHistory(snapshot.app?.playlists, attachment.roomId);
       await this.state.storage.put(key, {
         ...device, machineName: String(snapshot.machineName || device.machineName).slice(0, 128), agentVersion: String(snapshot.agentVersion || "").slice(0, 64),
         lastSeenAtUtc: snapshot.capturedAtUtc || new Date().toISOString(), app: snapshot.app || null, audio: snapshot.audio || null,

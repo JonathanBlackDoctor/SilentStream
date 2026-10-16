@@ -10,6 +10,19 @@ public static class DailyPlaylistRemote
 {
     public sealed record TodayDto(string Room, string Date, string Status, string? Url);
 
+    public sealed record HistoryDto(string Room, string? From, string? To, IReadOnlyList<DailyPlaylistRecord> Items);
+
+    public static HistoryDto BuildHistory(IYouTubePlaylistService playlists, AppConfig config)
+    {
+        var room = TitleTemplater.ResolveRoomName(config);
+        if (string.IsNullOrWhiteSpace(room)) room = Environment.MachineName.ToLowerInvariant();
+        var items = playlists.Snapshot(room, DateOnly.MinValue, DateOnly.MaxValue)
+            .Where(item => string.Equals(item.Room, room, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(item => item.Date).Take(400).ToArray();
+        return new HistoryDto(room, items.LastOrDefault()?.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            items.FirstOrDefault()?.Date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), items);
+    }
+
     public static TodayDto Build(IYouTubePlaylistService playlists, AppConfig config, DateTimeOffset now)
     {
         var date = DateOnly.FromDateTime(now.ToOffset(TimeSpan.FromHours(9)).DateTime);

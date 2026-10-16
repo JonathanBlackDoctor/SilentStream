@@ -74,4 +74,25 @@ public class DailyPlaylistRemoteTests
             DateTimeOffset.Parse("2026-10-17T00:00:00Z"));
         Assert.Null(result.Url);
     }
+    [Fact]
+    public void History_filters_other_rooms_and_bounds_sorted_payload()
+    {
+        var records = Enumerable.Range(0, 410).Select(i => Item("m112", new DateOnly(2025, 1, 1).AddDays(i).ToString("yyyy-MM-dd")))
+            .Append(Item("m111", "2026-10-17")).Reverse().ToArray();
+        var result = DailyPlaylistRemote.BuildHistory(new Playlists(records), Config());
+        Assert.Equal(400, result.Items.Count);
+        Assert.All(result.Items, item => Assert.Equal("m112", item.Room));
+        Assert.Equal(result.Items[0].Date.ToString("yyyy-MM-dd"), result.To);
+        Assert.Equal(result.Items[^1].Date.ToString("yyyy-MM-dd"), result.From);
+        Assert.True(result.Items[0].Date > result.Items[^1].Date);
+    }
+
+    [Fact]
+    public void Empty_history_has_no_fabricated_dates_or_links()
+    {
+        var result = DailyPlaylistRemote.BuildHistory(new Playlists(), Config());
+        Assert.Empty(result.Items);
+        Assert.Null(result.From);
+        Assert.Null(result.To);
+    }
 }
