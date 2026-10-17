@@ -30,7 +30,7 @@ USB의 PPT·PPTX·PDF를 프로그램이 읽으면 해당 문서를 같은 PC에
 - 중앙 /api/control/rooms/{room}/usb-documents 및 /{id}/download : 호실 인증·원격 중계.
 
 ## 패키징과 현장 확인
-앱, Broker, Coordinator를 함께 업데이트해야 한다. Broker publish 폴더의 TraceEvent 및 native DLL을 포함해 기존 도우미 패키징 절차를 적용한다. 기존 서명·설치 권한 절차는 유지한다. 0.4.10 앱·도우미 통합 설치본과 운영 웹이 게시됐다. 기존 구버전 신뢰키를 사용하는 PC는 공식 호실 설치 페이지에서 관리자 권한으로 통합 설치본을 실행한다. 배포 기록은 docs/usb-release-0.4.10.md를 참조한다.
+앱, Broker, Coordinator를 함께 업데이트해야 한다. Broker publish 폴더의 TraceEvent 및 native DLL을 포함해 기존 도우미 패키징 절차를 적용한다. 기존 서명·설치 권한 절차는 유지한다. 0.4.10 앱·도우미 통합 설치본과 운영 웹이 게시됐다. 0.4.11부터 기존 설치의 신뢰키·도우미 갱신은 앱 제어창의 ‘도우미 업데이트’ 버튼과 Windows 관리자 승인으로 진행한다. 웹 다운로드·재로그인은 필요하지 않다. 최초 설치는 공식 호실 설치 페이지를 이용한다. docs/in-app-helper-update-0.4.11.md를 참조한다.
 
 현장 관리자로 도우미 설치 후 기능을 켜고 PowerPoint, Edge/Chrome PDF, Adobe Reader, 탐색기 복사/이동/미리보기를 확인한다. USB 연결·폴더 조회만으로 수집하지 않는지, 분리/재연결, 문서 변경, 동명 파일, 다운로드 해시, 녹음 동시 수행을 확인한다.
 
