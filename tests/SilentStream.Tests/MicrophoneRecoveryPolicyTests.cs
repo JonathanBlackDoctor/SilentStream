@@ -15,7 +15,7 @@ public sealed class MicrophoneRecoveryPolicyTests
     {
         var policy = new MicrophoneRecoveryPolicy(Start);
         var now = Start;
-        foreach (var delay in new[] { 15, 30, 60, 120, 300, 300 })
+        foreach (var delay in new[] { 60, 300, 600, 600 })
         {
             now = now.AddSeconds(delay);
             Assert.False(policy.CanRetrySilence(now.AddMilliseconds(-1), Mic, false));
@@ -23,16 +23,16 @@ public sealed class MicrophoneRecoveryPolicyTests
             policy.Attempt(now, silent: true);
         }
         policy.ObserveSignal(now);
-        Assert.False(policy.CanRetrySilence(now.AddSeconds(14), Mic, false));
-        Assert.True(policy.CanRetrySilence(now.AddSeconds(15), Mic, false));
+        Assert.False(policy.CanRetrySilence(now.AddSeconds(59), Mic, false));
+        Assert.True(policy.CanRetrySilence(now.AddSeconds(60), Mic, false));
     }
 
     [Fact]
-    public void Failed_opens_cannot_spin_and_continue_retrying_after_one_minute_cap()
+    public void Failed_opens_cannot_spin_and_continue_retrying_after_five_minute_cap()
     {
         var policy = new MicrophoneRecoveryPolicy(Start);
         var now = Start;
-        foreach (var delay in new[] { 5, 10, 20, 40, 60, 60 })
+        foreach (var delay in new[] { 30, 60, 120, 300, 300 })
         {
             Assert.True(policy.CanRetryFailure(now));
             policy.Attempt(now, silent: false);

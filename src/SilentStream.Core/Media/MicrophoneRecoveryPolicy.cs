@@ -6,7 +6,7 @@ namespace SilentStream.Core.Media;
 /// <summary>Per-input retry budget. Opening a capture is not proof that sound has recovered.</summary>
 public sealed class MicrophoneRecoveryPolicy(DateTime startedAtUtc)
 {
-    private DateTime _nextSilentRetry = startedAtUtc.AddSeconds(15);
+    private DateTime _nextSilentRetry = startedAtUtc.AddSeconds(60);
     private DateTime _nextFailureRetry = startedAtUtc;
     private int _silentAttempts;
     private int _failureAttempts;
@@ -18,22 +18,23 @@ public sealed class MicrophoneRecoveryPolicy(DateTime startedAtUtc)
     public void ObserveSignal(DateTime now)
     {
         _silentAttempts = _failureAttempts = 0;
-        _nextSilentRetry = now.AddSeconds(15);
+        _nextSilentRetry = now.AddSeconds(60);
         _nextFailureRetry = now;
     }
 
     public void Attempt(DateTime now, bool silent)
     {
-        _nextFailureRetry = now.AddSeconds(Math.Min(60, 5 * Math.Pow(2, Math.Min(_failureAttempts++, 4))));
+        int[] failureDelays = [30, 60, 120, 300];
+        _nextFailureRetry = now.AddSeconds(failureDelays[Math.Min(_failureAttempts++, failureDelays.Length - 1)]);
         if (silent)
         {
-            int[] delays = [30, 60, 120, 300];
+            int[] delays = [300, 600];
             _nextSilentRetry = now.AddSeconds(delays[Math.Min(_silentAttempts++, delays.Length - 1)]);
         }
         else
         {
             // Give a reopened stream time to produce audible samples.
-            if (_nextSilentRetry < now.AddSeconds(15)) _nextSilentRetry = now.AddSeconds(15);
+            if (_nextSilentRetry < now.AddSeconds(60)) _nextSilentRetry = now.AddSeconds(60);
         }
     }
 

@@ -65,7 +65,7 @@ public sealed class MicrophoneHotplugTests
         try
         {
             var count = 1;
-            foreach (var seconds in new[] { 15, 30, 60 })
+            foreach (var seconds in new[] { 60, 300, 600 })
             {
                 clock.Advance(seconds);
                 current!.Emit(0);
@@ -77,7 +77,7 @@ public sealed class MicrophoneHotplugTests
             current!.Emit(.25f);
             mixer.TickLevels();
             var before = captures.Count;
-            clock.Advance(14);
+            clock.Advance(59);
             current.Emit(0);
             mixer.TickLevels();
             Assert.Equal(before, captures.Count);
@@ -110,7 +110,7 @@ public sealed class MicrophoneHotplugTests
             await WaitUntil(() => Volatile.Read(ref micOpens) == 2);
             // Read status under the lifecycle lock to wait for publication of the reopened capture.
             Assert.True(mixer.SourceStatuses.Single(s => s.Id == "mic:a").CaptureActive);
-            clock.Advance(11);
+            clock.Advance(31);
             mixer.TickLevels();
             await WaitUntil(() => Volatile.Read(ref micOpens) == 3);
         }
@@ -146,14 +146,14 @@ public sealed class MicrophoneHotplugTests
             mixer.TickLevels();
             await WaitUntil(() => Volatile.Read(ref attempts) == 2);
             Assert.False(mixer.SourceStatuses.Single(s => s.Id == "mic:a").CaptureActive);
-            clock.Advance(4);
+            clock.Advance(29);
             mixer.TickLevels();
             Assert.Equal(2, attempts);
             clock.Advance(1);
             mixer.TickLevels();
             await WaitUntil(() => Volatile.Read(ref attempts) == 3);
             Assert.False(mixer.SourceStatuses.Single(s => s.Id == "mic:a").CaptureActive);
-            clock.Advance(10);
+            clock.Advance(60);
             mixer.TickLevels();
             await WaitUntil(() => Volatile.Read(ref attempts) == 4);
             Assert.True(mixer.SourceStatuses.Single(s => s.Id == "mic:a").CaptureActive);
