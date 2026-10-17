@@ -66,3 +66,9 @@ test('cloud archive remains usable after the current PC status becomes unavailab
  app.run('device.app={available:false};device.uploads={items:[{date:koreaToday(),period:1,status:"completed",videoId:"saved-video",slotLabel:"1교시"}],days:{}};openSections.add("uploads");render()');
  assert.match(app.fields.room.innerHTML,/saved-video/);
 });
+test('legacy lunch archive and latest snapshot merge as one slot',()=>{
+ const app=setup();
+ app.run('device.app={queue:{items:[{period:0,slotLabel:"점심시간",status:"completed",title:"[영상] m112 | 2026-10-16 | 점심시간"}]}};device.uploads={items:[{date:"2026-10-16",period:0,slotId:"lunch",slotLabel:"점심시간",status:"completed",title:"[영상] m112 | 2026-10-16 | 점심시간"}],days:{}}');
+ assert.equal(app.run('archivedApp(device,"2026-10-16").queue.items.length'),1);
+ assert.equal(app.run('archivedApp(device,"2026-10-16").queue.items[0].slotId'),"lunch");
+});

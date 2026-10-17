@@ -53,3 +53,8 @@ test('shared renderer is served as a room asset without granting API access',asy
   assert.equal(response.status,200);assert.equal(path,'/room/upload-view.js');
   assert.match(await response.text(),/UploadView/);
 });
+test('legacy lunch without slot identity matches its timetable and never duplicates a row',()=>{
+ const data=view.model({queue:{items:[{date,period:0,slotLabel:"점심시간",status:"completed"}]},
+   today:{date,periods:[{no:0,slotId:"lunch",slotLabel:"점심시간",start:"12:25:00",end:"13:25:00",slotOrder:5}]}},{date});
+ assert.equal(data.rows.length,1);assert.equal(data.rows[0].key,"lunch");assert.equal(data.rows[0].order,5);
+});

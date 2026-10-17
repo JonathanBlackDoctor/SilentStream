@@ -55,11 +55,12 @@ function uploadPanel(value){
 function archivedApp(value,date){
   const app=value.app||{},saved=value.uploads;
   if(!saved)return app;
-  const items=new Map((saved.items||[]).map(item=>[item.date+":"+(item.slotId||"period-"+item.period)+":"+(item.id||item.title||item.period),item]));
+  const slotId=item=>item.slotId||(item.period===0?"lunch":"period-"+item.period);
+  const items=new Map((saved.items||[]).map(item=>[item.date+":"+slotId(item)+":"+(item.id||item.title||item.period),item]));
   for(const item of app.queue?.items||[]){
     const d=item.date||item.title?.match(/\|\s*(\d{4}-\d{2}-\d{2})\s*\|/)?.[1];
-    const key=d+":"+(item.slotId||"period-"+item.period)+":"+(item.id||item.title||item.period);
-    if(items.get(key)?.status!=="completed"||item.status==="completed")items.set(key,item);
+    const key=d+":"+slotId(item)+":"+(item.id||item.title||item.period);
+    if(items.get(key)?.status!=="completed"||item.status==="completed")items.set(key,{...items.get(key),...item,slotId:slotId(item)});
   }
   return {...app,queue:{...app.queue,items:[...items.values()]},today:saved.days?.[date]?{date,periods:saved.days[date]}:app.today};
 }

@@ -19,7 +19,7 @@
     const date = options.date || day(), now = options.now ?? Date.now(), online = options.fresh === true;
     const queue = app?.queue, jobs = queue?.items || [], selected = jobs.filter(j => jobDate(j) === date);
     const slots = app?.today?.date === date ? app.today.periods || [] : [];
-    const slotKey = item => item.slotId || "period-" + (item.period ?? item.no);
+    const slotKey = item => item.slotId || ((item.period ?? item.no) === 0 ? "lunch" : "period-" + (item.period ?? item.no));
     const rows = selected.map(job => {
       let detail = "", label = ({completed:"업로드 완료",uploading:"업로드 중",pending:"업로드 대기",failed:"업로드 실패"})[job.status] || "상태 확인 필요";
       if (job.status === "completed")
