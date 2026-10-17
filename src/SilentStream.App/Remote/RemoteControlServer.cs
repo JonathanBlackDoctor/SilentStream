@@ -210,6 +210,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         MapEndpoints(app);
 
         _orchestrator.StateChanged += OnStateOrMetricsChanged;
+        _systemShutdown.ScheduleChanged += BroadcastStatus;
         _orchestrator.MetricsUpdated += OnMetrics;
         _orchestrator.QualityChanged += OnQualityChanged;
         _audioMixer.LevelsUpdated += OnLevels;
@@ -329,6 +330,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         }
         _app = null;
         _orchestrator.StateChanged -= OnStateOrMetricsChanged;
+        _systemShutdown.ScheduleChanged -= BroadcastStatus;
         _orchestrator.MetricsUpdated -= OnMetrics;
         _orchestrator.QualityChanged -= OnQualityChanged;
         _audioMixer.LevelsUpdated -= OnLevels;
@@ -948,6 +950,28 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 message = ok ? "앱을 안전하게 다시 시작합니다." : "앱 재시작이 이미 진행 중입니다."
             }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
+        app.MapPost("/api/system/shutdown/schedule", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<SystemShutdownScheduleRequest>(ctx).ConfigureAwait(false);
+            if (body?.TargetUtc is null
+                || !System.Text.RegularExpressions.Regex.IsMatch(body.TargetUtc, @"(Z|[+-]\d{2}:\d{2})$")
+                || !DateTimeOffset.TryParse(body.TargetUtc, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var targetUtc))
+                return Results.Json(new { ok = false, message = "시간대가 포함된 올바른 종료 날짜·시각이 필요합니다." }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
+            var result = _systemShutdown.Schedule(targetUtc, ActorFingerprint(ctx));
+            BroadcastStatus();
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 409);
+        });
+        app.MapPost("/api/system/shutdown/schedule/cancel", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<SystemShutdownScheduleCancelRequest>(ctx).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body?.Id))
+                return Results.Json(new { ok = false, message = "취소할 예약 번호가 필요합니다." }, Json, statusCode: 400);
+            var result = await _systemShutdown.CancelScheduleAsync(body.Id, ActorFingerprint(ctx)).ConfigureAwait(false);
+            BroadcastStatus();
+            return Results.Json(result, Json, statusCode: result.Ok ? 200 : 409);
+        });
         app.MapPost("/api/system/shutdown/prepare", async (HttpContext ctx) =>
         {
             var preparation = await _systemShutdown.PrepareAsync(ActorFingerprint(ctx), ctx.RequestAborted)
@@ -1487,6 +1511,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
         return new
         {
             updatedAtUtc = nowUtc,
+            shutdownScheduleControl = true,
+            shutdownSchedule = _systemShutdown.ScheduleStatus,
+            windowsShutdownPending = _systemShutdown.WindowsShutdownPending,
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,
@@ -1911,6 +1938,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private sealed record RemoteUninstallRequest(string? AdministratorToken);
 
     private sealed record SystemShutdownConfirmRequest(string? ConfirmationId);
+    private sealed record SystemShutdownScheduleRequest(string? TargetUtc);
+    private sealed record SystemShutdownScheduleCancelRequest(string? Id);
 
     /// <summary>A connected WebSocket plus a 1-permit gate that serialises sends to it.</summary>
     private sealed class SocketChannel(WebSocket socket)

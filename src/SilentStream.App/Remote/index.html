@@ -316,6 +316,14 @@
       <div class="fold-body">
         <button id="automationToggleBtn" class="ghost">자동 운행 확인 중</button>
         <p class="muted" id="automationHint" style="margin:8px 0 0"></p>
+        <div id="shutdownScheduleCard" class="hidden" style="margin-top:14px">
+          <label for="shutdownDateTime">종료 날짜·시각 (한국 시간)</label>
+          <input id="shutdownDateTime" type="datetime-local" style="margin-top:8px;width:100%;box-sizing:border-box" />
+          <button id="shutdownScheduleBtn" class="stop" style="margin-top:8px">선택 시각에 PC 종료</button>
+          <p id="shutdownScheduleStatus" class="muted" role="status"></p>
+          <button id="shutdownScheduleCancelBtn" class="ghost hidden">종료 예약 취소</button>
+          <small class="muted">1회 예약 · 종료 2분 전부터 녹화·방송 마감. PC와 앱이 켜져 있으면 휴대폰을 닫아도 실행합니다. 준비 지연 시 최소 60초의 취소 시간을 확보하여 종료가 늦어질 수 있습니다.</small>
+        </div>
         <button id="systemShutdownBtn" class="stop" style="margin-top:14px">PC 종료</button>
         <button id="systemShutdownCancelBtn" class="ghost" style="margin-top:8px;display:none">예약된 종료 취소</button>
         <small class="muted">PC 종료는 녹화와 방송을 안전하게 종료한 뒤 진행됩니다.</small>
@@ -772,6 +780,7 @@
     function openRoom(room){
       cur = room;
       renderTodayPlaylist(null);
+      renderShutdownSchedule({});
       show("dash");
       const bb = $("backBtn");
       bb.disabled = false;
@@ -791,6 +800,7 @@
     function openDemo(){
       cur = { label:"201호", baseUrl:"", token:"demo" };
       renderTodayPlaylist(null);
+      renderShutdownSchedule({});
       show("dash");
       $("backBtn").classList.add("hidden");
       renderStatus({
@@ -982,7 +992,7 @@
         const data = await response.json();
         if (data.ok) {
           $("systemShutdownCancelBtn").style.display = "block";
-          setTimeout(()=>$("systemShutdownCancelBtn").style.display="none",65000);
+
         }
         toast(data.message || (data.ok ? "PC 종료를 예약했습니다." : "PC 종료를 예약하지 못했습니다."));
       } catch(e){ toast("PC 종료 요청에 실패했습니다. 연결을 확인하세요."); }
@@ -1127,8 +1137,50 @@
       if (copied) toast("오늘 재생목록 링크를 복사했습니다.");
     };
 
+
+    let currentShutdownSchedule=null;
+    function shutdownTarget(value){
+      if(!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value))throw Error('종료 날짜와 시각을 선택하세요.');
+      const date=new Date(value+':00+09:00'),ms=date.getTime();
+      if(!Number.isFinite(ms)||new Date(ms+9*3600000).toISOString().slice(0,16)!==value)throw Error('올바른 날짜와 시각을 선택하세요.');
+      if(ms-Date.now()<180000||ms-Date.now()>30*86400000)throw Error('현재부터 3분 이후, 30일 이내의 시각을 선택하세요.');
+      return date.toISOString();
+    }
+
+    function renderShutdownSchedule(status){
+      const state=status.shutdownSchedule;
+      currentShutdownSchedule=state||null;
+      $('shutdownScheduleCard').classList.toggle('hidden',!status.shutdownScheduleControl);
+      const active=state&&(['pending','executing'].includes(state.status)||state.status==='scheduled'&&new Date(state.targetUtc)>new Date());
+      const labels={pending:'예약됨',executing:'녹화 마감·안전 점검 중',scheduled:'Windows 종료 대기',cancelled:'취소됨',failed:'실패·확인 필요',missed:'예약 시각 지남'};
+      $('shutdownScheduleStatus').textContent=state?(labels[state.status]||state.status)+' · '+new Date(state.targetUtc).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})+' (한국 시간) · '+state.message:'예약된 종료가 없습니다.';
+      $('shutdownScheduleCancelBtn').classList.toggle('hidden',!active);
+      $('shutdownScheduleBtn').disabled=!!active;
+      $('systemShutdownBtn').disabled=!!active;
+      $('systemShutdownCancelBtn').style.display=status.windowsShutdownPending&&!active?'block':'none';
+    }
+    $('shutdownScheduleBtn').onclick=async()=>{
+      const room=cur;
+      try{
+        const targetUtc=shutdownTarget($('shutdownDateTime').value);
+        if(!await confirmAsk('PC 종료 예약',new Date(targetUtc).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})+' (한국 시간)에 종료합니다. 2분 전부터 녹화와 방송을 마감합니다.','종료 예약'))return;
+        if(cur!==room)return;
+        const response=await api(room,'/api/system/shutdown/schedule',{method:'POST',body:JSON.stringify({targetUtc})});
+        const result=await response.json();toast(result.message||'예약 요청을 처리했습니다.');
+      }catch(error){toast(error.message||'종료 예약에 실패했습니다.')}
+    };
+    $('shutdownScheduleCancelBtn').onclick=async()=>{
+      const room=cur,id=currentShutdownSchedule?.id;
+      if(!id)return;
+      try{
+        const response=await api(room,'/api/system/shutdown/schedule/cancel',{method:'POST',body:JSON.stringify({id}),signal:timeoutSignal(90000)});
+        const result=await response.json();toast(result.message||'예약 취소를 요청했습니다.');
+      }catch(error){toast('예약 취소 결과를 확인하지 못했습니다. PC 상태를 다시 확인하세요.')}
+    };
+
     function renderStatus(s){
       renderTodayPlaylist(s.dailyPlaylist || null);
+      renderShutdownSchedule(s);
       if (cur) setRoomOnline(cur, true);
       const badge=$("badge"); paintBadge(badge, s.state, s.badge);
       if (s.recovery) renderRecovery(s.recovery);

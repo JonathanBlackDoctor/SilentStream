@@ -49,7 +49,8 @@ public sealed class DeviceConnectionHub
             var dispatch = new CentralCommandDispatch(commandId, action, payload.Clone(), requestedBy, DateTimeOffset.UtcNow);
             await session.Outgoing.Writer.WriteAsync(dispatch, cancellationToken).ConfigureAwait(false);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.CommandTimeoutSeconds, 5, 120)));
+            timeout.CancelAfter(TimeSpan.FromSeconds(action == "system.shutdown.schedule.cancel"
+                ? 90 : Math.Clamp(_options.CommandTimeoutSeconds, 5, 120)));
             var result = await completion.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
             _store.CompleteCommand(commandId, result);
             return result;
@@ -200,7 +201,9 @@ public static class CentralCommandPolicy
             ["live.stopAll"] = new("POST", "/api/live/stop", ControlPlaneRole.Admin),
             ["app.restart"] = new("POST", "/api/app/restart", ControlPlaneRole.Manager),
             ["inspection.rerun"] = new("POST", "/inspect/internal/v1/startup/rerun", ControlPlaneRole.Manager),
-            ["system.shutdown"] = new("POST", "/api/system/shutdown", ControlPlaneRole.Admin)
+            ["system.shutdown"] = new("POST", "/api/system/shutdown", ControlPlaneRole.Admin),
+            ["system.shutdown.schedule"] = new("POST", "/api/system/shutdown/schedule", ControlPlaneRole.Admin),
+            ["system.shutdown.schedule.cancel"] = new("POST", "/api/system/shutdown/schedule/cancel", ControlPlaneRole.Admin)
         };
 
     public static bool TryResolve(string? action, out CommandTarget target) =>

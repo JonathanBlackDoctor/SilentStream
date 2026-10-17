@@ -1,0 +1,19 @@
+{
+  "name": "M111/M112/M113/백202 부팅 안전 실기기 점검 v0.4.8",
+  "runAtStartup": true,
+  "steps": [
+    { "id":"wait-for-app", "type":"wait", "timeoutSeconds":15, "input":{ "seconds":5 } },
+    { "id":"collect-system", "type":"collect", "dependsOn":["wait-for-app"], "timeoutSeconds":60, "input":{} },
+    { "id":"app-status", "type":"appApi", "dependsOn":["wait-for-app"], "timeoutSeconds":300, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/status", "expectedStatus":200, "waitForReadySeconds":240 } },
+    { "id":"desktop-capture", "type":"desktopProbe", "dependsOn":["app-status"], "timeoutSeconds":45, "input":{ "monitor":0 } },
+    { "id":"app-diagnostics", "type":"appApi", "dependsOn":["app-status"], "timeoutSeconds":30, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/diagnostics", "expectedStatus":200 } },
+    { "id":"microphone-path", "type":"audioProbe", "dependsOn":["app-status"], "timeoutSeconds":90, "input":{ "captureReadyTimeoutSeconds":60, "signalSettleSeconds":12, "readinessOnly":true } },
+    { "id":"schedule", "type":"appApi", "dependsOn":["app-status"], "timeoutSeconds":30, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/schedule/today", "expectedStatus":200 } },
+    { "id":"quality", "type":"appApi", "dependsOn":["app-status"], "timeoutSeconds":30, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/quality", "expectedStatus":200 } },
+    { "id":"recovery", "type":"appApi", "dependsOn":["app-status"], "required":false, "timeoutSeconds":30, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/recovery/status", "expectedStatus":200 } },
+    { "id":"notification", "type":"appApi", "dependsOn":["app-status"], "required":false, "timeoutSeconds":30, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/push/vapid", "expectedStatus":200 } },
+    { "id":"runtime-settle", "type":"wait", "dependsOn":["app-diagnostics","microphone-path","desktop-capture"], "timeoutSeconds":30, "input":{ "seconds":15 } },
+    { "id":"final-status", "type":"appApi", "dependsOn":["runtime-settle","schedule","quality"], "timeoutSeconds":30, "retry":2, "input":{ "method":"GET", "url":"http://127.0.0.1:8787/api/status", "expectedStatus":200 } },
+    { "id":"final-audio", "type":"audioProbe", "dependsOn":["runtime-settle"], "timeoutSeconds":120, "input":{ "captureReadyTimeoutSeconds":60, "signalSettleSeconds":12, "physical":true, "physicalTimeoutSeconds":8 } }
+  ]
+}

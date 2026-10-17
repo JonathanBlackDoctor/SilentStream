@@ -106,6 +106,12 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         var client = _clients.CreateClient(nameof(CentralControlAgentHostedService));
         client.Timeout = TimeSpan.FromSeconds(5);
         var app = await GetLocalJsonAsync(client, "/api/status", appToken, token).ConfigureAwait(false);
+        if (app.ValueKind == JsonValueKind.Object)
+        {
+            var capabilities = app.Deserialize<Dictionary<string, JsonElement>>(Json)!;
+            capabilities["remoteShutdownScheduleCommands"] = JsonSerializer.SerializeToElement(true);
+            app = JsonSerializer.SerializeToElement(capabilities, Json);
+        }
         var audio = await GetLocalJsonAsync(client, "/api/audio", appToken, token).ConfigureAwait(false);
         if (audio.ValueKind == JsonValueKind.Object)
         {
@@ -170,7 +176,7 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            timeout.CancelAfter(TimeSpan.FromSeconds(command.Action == "system.shutdown.schedule.cancel" ? 80 : 15));
             using var response = await _clients.CreateClient(nameof(CentralControlAgentHostedService))
                 .SendAsync(request, timeout.Token).ConfigureAwait(false);
             var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
@@ -293,6 +299,8 @@ public sealed class CentralControlAgentHostedService : BackgroundService
             "app.restart" => ("POST", "/api/app/restart"),
             "inspection.rerun" => ("POST", "/inspect/internal/v1/startup/rerun"),
             "system.shutdown" => ("POST", "/api/system/shutdown"),
+            "system.shutdown.schedule" => ("POST", "/api/system/shutdown/schedule"),
+            "system.shutdown.schedule.cancel" => ("POST", "/api/system/shutdown/schedule/cancel"),
             _ => (string.Empty, string.Empty)
         };
         return method.Length > 0;

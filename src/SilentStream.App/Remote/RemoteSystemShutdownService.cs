@@ -13,7 +13,7 @@ namespace SilentStream.App.Remote;
 /// read-only boot safety probe, then confirm a short-lived nonce from the same device. The actual
 /// OS command has a visible, cancellable delay and is issued only after recording finalisation.
 /// </summary>
-public sealed class RemoteSystemShutdownService
+public sealed class RemoteSystemShutdownService : IDisposable
 {
     private static readonly TimeSpan ConfirmationDelay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ConfirmationLifetime = TimeSpan.FromSeconds(90);
@@ -29,6 +29,16 @@ public sealed class RemoteSystemShutdownService
     private PowerActionState _state;
     private bool _durableStateAvailable;
     private bool _shutdownScheduled;
+    private readonly ShutdownScheduleManager _schedule;
+    private readonly Timer _scheduleTimer;
+    private readonly CancellationTokenSource _scheduleLifetime = new();
+    public event Action? ScheduleChanged
+    {
+        add => _schedule.Changed += value;
+        remove => _schedule.Changed -= value;
+    }
+    public ShutdownScheduleState? ScheduleStatus => _schedule.State;
+    public bool WindowsShutdownPending => _shutdownScheduled;
 
     public RemoteSystemShutdownService(IStreamOrchestrator orchestrator, ILogService log,
         ISystemPowerSafetyProbe safety)
@@ -53,7 +63,7 @@ public sealed class RemoteSystemShutdownService
                     "예약된 전원 전환 뒤 애플리케이션 시작을 확인했습니다.");
             }
             else if (_state.LastActionAtUtc is { } requestedAt
-                     && DateTimeOffset.UtcNow - requestedAt > ShutdownDelay.Add(TimeSpan.FromSeconds(30)))
+                     && DateTimeOffset.UtcNow > (_state.ShutdownAtUtc ?? requestedAt.Add(ShutdownDelay)).AddSeconds(30))
             {
                 _state = _state with { AwaitingBootConfirmation = false };
                 _durableStateAvailable &= WriteState(_state);
@@ -65,15 +75,67 @@ public sealed class RemoteSystemShutdownService
                 _shutdownScheduled = true;
             }
         }
+        _schedule = new ShutdownScheduleManager(Path.Combine(AppPaths.AppDataDir, "shutdown-schedule.json"),
+            nativeShutdownPending: _shutdownScheduled);
+        _scheduleTimer = new Timer(state => _ = _schedule.PollAsync(ExecuteScheduleAsync), null,
+            TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(2));
     }
 
-    public async Task<SystemShutdownPreparation> PrepareAsync(string actorId, CancellationToken cancellationToken)
+    public SystemShutdownResult Schedule(DateTimeOffset targetUtc, string actorId)
+    {
+        lock (_gate)
+        {
+            if (_pending is { } pending && pending.ExpiresAtUtc <= DateTimeOffset.UtcNow) _pending = null;
+            if (_shutdownScheduled || _pending is not null)
+                return new(false, "다른 종료 처리가 진행 중입니다.", null);
+            var result = _schedule.Schedule(targetUtc, actorId);
+            if (result.Ok) AppendAudit("future-scheduled", actorId, $"PC 종료 예약: {targetUtc:O}");
+            return new(result.Ok, result.Message, null);
+        }
+    }
+
+    public async Task<SystemShutdownResult> CancelScheduleAsync(string? id, string actorId)
+    {
+        var result = await _schedule.CancelAsync(id, async () =>
+        {
+            if (!_shutdownScheduled) return new ShutdownScheduleResult(true, "Windows 종료 대기가 없습니다.");
+            var cancelled = await CancelAsync(actorId, CancellationToken.None).ConfigureAwait(false);
+            return new ShutdownScheduleResult(cancelled.Ok, cancelled.Message);
+        }).ConfigureAwait(false);
+        if (result.Ok) AppendAudit("future-cancelled", actorId, result.Message);
+        return new(result.Ok, result.Message, null);
+    }
+
+    private async Task<ShutdownScheduleResult> ExecuteScheduleAsync(ShutdownScheduleState schedule)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_scheduleLifetime.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(55));
+        var prepared = await PrepareAsync(schedule.ActorId, timeout.Token, scheduled: true).ConfigureAwait(false);
+        if (!prepared.Ok) return new(false, prepared.Message);
+        var delay = prepared.NotBeforeUtc!.Value - DateTimeOffset.UtcNow;
+        if (delay > TimeSpan.Zero) await Task.Delay(delay.Add(TimeSpan.FromMilliseconds(100)), timeout.Token).ConfigureAwait(false);
+        var result = await ConfirmAsync(prepared.ConfirmationId, schedule.ActorId, timeout.Token,
+            schedule.TargetUtc).ConfigureAwait(false);
+        return new(result.Ok, result.Message, result.CancelUntilUtc);
+    }
+
+    public void Dispose()
+    {
+        _scheduleLifetime.Cancel();
+        _scheduleTimer.Dispose();
+        _scheduleLifetime.Dispose();
+    }
+
+    public async Task<SystemShutdownPreparation> PrepareAsync(string actorId, CancellationToken cancellationToken,
+        bool scheduled = false)
     {
         var now = DateTimeOffset.UtcNow;
         lock (_gate)
         {
             if (!_durableStateAvailable)
                 return FailedPreparation("전원 전환 상태를 안전하게 기록할 수 없어 PC 종료를 차단했습니다.");
+            if (!scheduled && _schedule.Active)
+                return FailedPreparation("기존 종료 예약을 먼저 취소하세요.");
             if (_shutdownScheduled)
                 return FailedPreparation("PC 종료가 이미 예약되어 있습니다.");
             if (_pending is not null && _pending.ExpiresAtUtc > now)
@@ -117,7 +179,7 @@ public sealed class RemoteSystemShutdownService
             assessment);
         lock (_gate)
         {
-            if (_shutdownScheduled || _pending is not null)
+            if (_shutdownScheduled || _pending is not null || !scheduled && _schedule.Active)
                 return FailedPreparation("다른 PC 종료 요청이 먼저 시작되었습니다.");
             _pending = confirmation;
         }
@@ -136,7 +198,7 @@ public sealed class RemoteSystemShutdownService
     }
 
     public async Task<SystemShutdownResult> ConfirmAsync(string? confirmationId, string actorId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, DateTimeOffset? targetUtc = null)
     {
         PendingConfirmation confirmation;
         var now = DateTimeOffset.UtcNow;
@@ -213,12 +275,16 @@ public sealed class RemoteSystemShutdownService
 
         var requestedAt = DateTimeOffset.UtcNow;
         var previousState = _state;
+        var shutdownSeconds = Math.Max((int)ShutdownDelay.TotalSeconds,
+            targetUtc.HasValue ? (int)Math.Ceiling((targetUtc.Value - DateTimeOffset.UtcNow).TotalSeconds) : 60);
+        var shutdownAt = DateTimeOffset.UtcNow.AddSeconds(shutdownSeconds);
         var reservedState = _state with
         {
             LastActionAtUtc = requestedAt,
             LastActorId = actorId,
             AwaitingBootConfirmation = true,
-            BootSessionStartedAtUtc = CurrentBootStartedAtUtc()
+            BootSessionStartedAtUtc = CurrentBootStartedAtUtc(),
+            ShutdownAtUtc = shutdownAt
         };
         if (!WriteState(reservedState))
         {
@@ -234,19 +300,19 @@ public sealed class RemoteSystemShutdownService
 
         try
         {
-            var command = CreateShutdownCommand("/s", "/t", ((int)ShutdownDelay.TotalSeconds).ToString(),
-                "/d", "p:4:1", "/c", "Media Capture Helper 안전 종료 - 60초 동안 취소할 수 있습니다.");
+            var command = CreateShutdownCommand("/s", "/t", shutdownSeconds.ToString(),
+                "/d", "p:4:1", "/c", "SilentStream 예약 종료 - 종료 전까지 원격 화면에서 취소할 수 있습니다.");
             using var process = Process.Start(command);
             if (process is null) throw new InvalidOperationException("Windows 종료 명령을 시작하지 못했습니다.");
             await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
                 .ConfigureAwait(false);
             if (process.ExitCode != 0) throw new InvalidOperationException($"Windows 종료 명령이 {process.ExitCode}로 종료되었습니다.");
 
-            AppendAudit("scheduled", actorId, "Windows 안전 종료를 60초 뒤로 예약했습니다.", finalAssessment);
-            _log.Warn("원격 요청으로 PC 안전 종료를 예약했습니다. 60초 안에는 취소할 수 있습니다.");
-            _ = ClearExpiredScheduleIfStillRunningAsync(requestedAt);
-            return new(true, "PC 종료를 60초 뒤로 예약했습니다. 필요하면 지금 취소하세요.",
-                requestedAt.Add(ShutdownDelay));
+            var message = $"PC 종료를 {shutdownSeconds}초 뒤로 예약했습니다. 종료 전까지 취소할 수 있습니다.";
+            AppendAudit("scheduled", actorId, message, finalAssessment);
+            _log.Warn(message);
+            _ = ClearExpiredScheduleIfStillRunningAsync(requestedAt, shutdownAt);
+            return new(true, message, shutdownAt);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
                                             or TimeoutException)
@@ -390,9 +456,10 @@ public sealed class RemoteSystemShutdownService
         }
     }
 
-    private async Task ClearExpiredScheduleIfStillRunningAsync(DateTimeOffset requestedAt)
+    private async Task ClearExpiredScheduleIfStillRunningAsync(DateTimeOffset requestedAt, DateTimeOffset shutdownAt)
     {
-        await Task.Delay(ShutdownDelay.Add(TimeSpan.FromSeconds(30))).ConfigureAwait(false);
+        var delay = shutdownAt.AddSeconds(30) - DateTimeOffset.UtcNow;
+        if (delay > TimeSpan.Zero) await Task.Delay(delay).ConfigureAwait(false);
         lock (_gate)
         {
             if (!_shutdownScheduled || _state.LastActionAtUtc != requestedAt) return;
@@ -415,7 +482,8 @@ public sealed class RemoteSystemShutdownService
         string? LastActorId = null,
         bool AwaitingBootConfirmation = false,
         DateTimeOffset? LastBootObservedAtUtc = null,
-        DateTimeOffset? BootSessionStartedAtUtc = null);
+        DateTimeOffset? BootSessionStartedAtUtc = null,
+        DateTimeOffset? ShutdownAtUtc = null);
 }
 
 public sealed record SystemShutdownPreparation(

@@ -69,6 +69,11 @@ public sealed class CentralControlPlaneTests : IDisposable
         Assert.Equal(ControlPlaneRole.Manager, start.MinimumRole);
         Assert.True(CentralCommandPolicy.TryResolve("system.shutdown", out var shutdown));
         Assert.Equal(ControlPlaneRole.Admin, shutdown.MinimumRole);
+        foreach (var action in new[] { "system.shutdown.schedule", "system.shutdown.schedule.cancel" })
+        {
+            Assert.True(CentralCommandPolicy.TryResolve(action, out var scheduled));
+            Assert.Equal(ControlPlaneRole.Admin, scheduled.MinimumRole);
+        }
         Assert.False(CentralCommandPolicy.TryResolve("shell.execute", out _));
     }
 
