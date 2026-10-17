@@ -6,10 +6,11 @@
 // 네트워크 실패를 감지해 "오프라인"으로 표시해야 오래된 상태를 정상 상태로 오인하지 않는다.
 
 const CACHE_PREFIX = "mch-remote-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v4`;
+const CACHE_NAME = `${CACHE_PREFIX}v5`;
 const APP_SHELL = [
   "/",
   "/upload-view.js",
+  "/usb-documents-view.js",
   "/manifest.webmanifest",
   "/icon.svg",
   "/icon-192.png",
@@ -67,7 +68,7 @@ self.addEventListener("fetch", (event) => {
   if (url.searchParams.has("__mch_sw_install")) return;
 
   // 제어·상태 데이터는 항상 장치에서 직접 받는다. 캐시된 API 응답은 안전상 허용하지 않는다.
-  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws/")) return;
+  if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/ws/") || url.pathname.startsWith("/usb-download/")) return;
 
   if (request.mode === "navigate") {
     event.respondWith((async () => {

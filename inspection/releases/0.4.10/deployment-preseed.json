@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "signingKeyId": "silentstream-ops-20261017",
+  "tokens": [
+    {
+      "label": "deployment operator",
+      "hash": "5df0386a26a73532692bbe9e6fb21609dccd1bbc1366a9ae1a894b2ce57f7671",
+      "role": "admin"
+    }
+  ],
+  "bundles": [
+    "preseed-bundles/startup-0.4.10.zip"
+  ],
+  "agentUpdates": []
+}

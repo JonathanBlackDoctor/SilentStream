@@ -19,5 +19,7 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services.AddWindowsService(options => options.ServiceName = "SilentStream Inspection Privileged Broker");
 builder.Services.AddSingleton<BrokerConfiguration>();
 builder.Services.AddSingleton<ISystemPowerSafetyProbe, WindowsSystemPowerSafetyProbe>();
+builder.Services.AddSingleton<UsbReadCollector>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<UsbReadCollector>());
 builder.Services.AddHostedService<BrokerWorker>();
 await builder.Build().RunAsync();

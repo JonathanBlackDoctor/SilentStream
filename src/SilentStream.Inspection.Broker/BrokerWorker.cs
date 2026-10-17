@@ -17,15 +17,17 @@ public sealed class BrokerWorker : BackgroundService
 {
     private static readonly HashSet<string> AllowedProcesses = new(StringComparer.OrdinalIgnoreCase) { "MediaCaptureHelper", "ffmpeg", "cloudflared" };
     private readonly BrokerConfiguration _configuration;
+    private readonly UsbReadCollector _usb;
     private readonly ILogger<BrokerWorker> _logger;
     private readonly ISystemPowerSafetyProbe _powerSafety;
     private readonly ConcurrentDictionary<string, DateTimeOffset> _seen = new();
     private readonly SemaphoreSlim _rebootGate = new(1, 1);
 
     public BrokerWorker(BrokerConfiguration configuration, ILogger<BrokerWorker> logger,
-        ISystemPowerSafetyProbe powerSafety)
+        ISystemPowerSafetyProbe powerSafety, UsbReadCollector usb)
     {
         _configuration = configuration;
+        _usb = usb;
         _logger = logger;
         _powerSafety = powerSafety;
     }
@@ -102,6 +104,11 @@ public sealed class BrokerWorker : BackgroundService
     {
         switch (request.Action)
         {
+            case "usb-documents-poll":
+                var payload = request.Payload;
+                var batch = _usb.Poll(payload?.GetProperty("enabled").GetBoolean() == true,
+                    payload?.GetProperty("cursor").GetInt64() ?? 0);
+                return new BrokerResponse(request.Id, true, "", JsonSerializer.SerializeToElement(batch, InspectionProtocol.Json));
             case "restart-app":
                 RequireFile(_configuration.AppExecutablePath, "Configured app executable");
                 KillAllowed("MediaCaptureHelper");

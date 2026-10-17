@@ -63,6 +63,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly RemoteUninstallService _appUninstall;
     private readonly RecoveryCoordinator _recovery;
     private readonly InspectionRemoteStore _inspection;
+    private readonly SilentStream.Core.UsbDocuments.UsbDocumentArchive _usbDocuments;
     private readonly IReadOnlyList<INotifier> _notifiers;
     private readonly ILogService _log;
 
@@ -115,6 +116,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         RemoteUninstallService appUninstall,
         RecoveryCoordinator recovery,
         InspectionRemoteStore inspection,
+        SilentStream.Core.UsbDocuments.UsbDocumentArchive usbDocuments,
         IEnumerable<INotifier> notifiers,
         ILogService log)
     {
@@ -140,6 +142,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _appUninstall = appUninstall;
         _recovery = recovery;
         _inspection = inspection;
+        _usbDocuments = usbDocuments;
         _notifiers = notifiers.ToArray();
         _log = log;
         _cloudflared = new CloudflaredManager(log);
@@ -471,6 +474,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private void MapEndpoints(WebApplication app)
     {
         app.MapGet("/", () => Results.Content(_html, "text/html; charset=utf-8"));
+        app.MapGet("/usb-documents-view.js", () => Results.Content(LoadEmbeddedText("usb-documents-view.js"), "text/javascript; charset=utf-8"));
         app.MapGet("/upload-view.js", () => Results.Content(_uploadView, "text/javascript; charset=utf-8"));
 
         // PWA 설치 자산(원격 컨트롤러 개선 Phase 3). /api·/ws 밖이라 무인증 서빙 — 페어링 전에도 브라우저가
@@ -519,6 +523,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             await ctx.Response.WriteAsJsonAsync(new { token }).ConfigureAwait(false);
         });
 
+        UsbDocumentEndpoints.Map(app, _usbDocuments, HasInspectionBridgeSecret,
+            () => BlockSettingsChange(RemoteSettingsSection.Other));
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
         app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
         app.MapGet("/api/recovery/status", () => Results.Json(_recovery.Status, Json));
@@ -1510,6 +1516,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         return new
         {
             updatedAtUtc = nowUtc,
+            usbDocumentsSupported = true,
             shutdownScheduleControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,
             windowsShutdownPending = _systemShutdown.WindowsShutdownPending,

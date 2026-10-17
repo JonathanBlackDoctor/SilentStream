@@ -109,6 +109,7 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         if (app.ValueKind == JsonValueKind.Object)
         {
             var capabilities = app.Deserialize<Dictionary<string, JsonElement>>(Json)!;
+            capabilities["remoteUsbDocuments"] = JsonSerializer.SerializeToElement(true);
             capabilities["remoteShutdownScheduleCommands"] = JsonSerializer.SerializeToElement(true);
             app = JsonSerializer.SerializeToElement(capabilities, Json);
         }
@@ -289,6 +290,10 @@ public sealed class CentralControlAgentHostedService : BackgroundService
     {
         (method, path) = action switch
         {
+            "usb.list" => ("POST", "/api/usb-documents/list"),
+            "usb.settings" => ("POST", "/api/usb-documents/settings"),
+            "usb.retry" => ("POST", "/api/usb-documents/retry"),
+            "usb.chunk" => ("POST", "/api/usb-documents/chunk"),
             "live.start" => ("POST", "/api/live/start"),
             "live.retry" => ("POST", "/api/live/retry"),
             "audio.select" => ("POST", "/api/audio/select"),

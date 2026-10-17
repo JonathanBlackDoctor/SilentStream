@@ -156,3 +156,12 @@ function microphonePanel(value){
   '<label>입력 모드 (개별 선택 시 전체 자동 추가 해제)<select id="microphoneDevice" style="display:block;width:100%;max-width:100%;padding:10px;margin:8px 0;font:inherit" '+disabled+'><option value="">마이크 선택</option>'+(typeof audio.autoIncludeMicrophones==='boolean'?'<option value="*" '+(audio.autoIncludeMicrophones?'selected':'')+'>연결된 모든 입력 자동 사용</option>':'')+(audio.devices||[]).map(d=>'<option value="'+esc(d.id)+'">'+esc(d.name)+'</option>').join('')+'</select></label>'+
   '<div class="actions"><button '+disabled+' data-mic-select>선택 적용</button><button '+disabled+' data-action="audio.refresh">입력 다시 연결</button><button '+disabled+' data-action="audio.restore">입력 복구 (음소거·게이트 해제)</button></div><p>상태는 약 10초마다 갱신됩니다. 복구 후 실제 소리를 내어 음량을 확인하세요. Windows/장비 음소거는 현장에서 확인해야 합니다.</p></section>';
 }
+
+if(typeof window !== "undefined" && window.SilentStreamUsbDocuments) window.SilentStreamUsbDocuments.mount(document.getElementById("usbDocumentsHost"),{
+  context:()=>device?{key:roomId,online:controllerFresh(device),
+    supported:device.app?.usbDocumentsSupported===true&&device.app?.remoteUsbDocuments===true}:null,
+  list:(c,date,skip)=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents?date="+date+"&skip="+skip),
+  change:(c,body)=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents",
+    {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),
+  download:async(c,id)=>"/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents/"+encodeURIComponent(id)+"/download"
+});

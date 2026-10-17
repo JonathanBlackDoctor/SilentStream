@@ -112,6 +112,9 @@ public sealed class ConfigStore : IConfigStore
         config.YouTube ??= new YouTubeConfig();
         config.Encoding ??= new EncodingConfig();
         config.Recording ??= new RecordingConfig();
+        config.UsbDocuments ??= new SilentStream.Core.UsbDocuments.UsbDocumentConfig();
+        if (string.IsNullOrWhiteSpace(config.UsbDocuments.Folder))
+            config.UsbDocuments.Folder = new SilentStream.Core.UsbDocuments.UsbDocumentConfig().Folder;
 
         if (string.IsNullOrWhiteSpace(config.Recording.Folder))
         {

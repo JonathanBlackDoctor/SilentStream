@@ -10,6 +10,22 @@ public class ConfigStoreTests : IDisposable
 
     private string ConfigPath => Path.Combine(_dir, "config.json");
 
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("{}", true)]
+    [InlineData("{\"usbDocuments\":null}", true)]
+    [InlineData("{\"usbDocuments\":{}}", true)]
+    [InlineData("{\"usbDocuments\":{\"enabled\":false}}", false)]
+    public void Usb_defaults_on_and_preserves_saved_opt_out(string? json, bool enabled)
+    {
+        if (json is not null) File.WriteAllText(ConfigPath, json);
+        var store = new ConfigStore(ConfigPath);
+        var config = store.Load();
+        Assert.Equal(enabled, config.UsbDocuments.Enabled);
+        store.Save(config);
+        Assert.Equal(enabled, new ConfigStore(ConfigPath).Load().UsbDocuments.Enabled);
+    }
+
     [Fact]
     public void Load_without_file_returns_defaults_with_recording_folder_resolved()
     {

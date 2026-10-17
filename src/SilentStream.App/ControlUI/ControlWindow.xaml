@@ -366,6 +366,7 @@
                             </Border>
                         </Grid>
                     </TabItem>
+                    <TabItem Header="USB 자료"><ContentControl x:Name="UsbDocumentsHost" /></TabItem>
                     <TabItem Header="폰 원격 제어">
                         <Grid Margin="0,16,0,0">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>

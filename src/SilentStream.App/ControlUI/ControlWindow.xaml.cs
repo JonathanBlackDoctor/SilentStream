@@ -10,10 +10,11 @@ namespace SilentStream.App.ControlUI;
 /// </summary>
 public partial class ControlWindow : Window
 {
-    public ControlWindow(MainViewModel viewModel)
+    public ControlWindow(MainViewModel viewModel, SilentStream.Core.UsbDocuments.UsbDocumentArchive archive)
     {
         InitializeComponent();
         DataContext = viewModel;
+        UsbDocumentsHost.Content = new UsbDocumentsPanel(archive);
 
         // Auto-scroll the log viewer to the newest line.
         viewModel.LogLines.CollectionChanged += OnLogChanged;

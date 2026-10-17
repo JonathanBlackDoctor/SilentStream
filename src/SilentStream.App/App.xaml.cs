@@ -59,6 +59,8 @@ public partial class App : Application
         collection.AddSingleton<RemoteSystemShutdownService>();
         collection.AddSingleton<RemoteUninstallService>();
         collection.AddSingleton<InspectionRemoteStore>();
+        collection.AddSingleton(sp => new SilentStream.Core.UsbDocuments.UsbDocumentArchive(
+            sp.GetRequiredService<IConfigStore>(), Path.Combine(AppPaths.AppDataDir, "usb-documents.json")));
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());
@@ -91,6 +93,11 @@ public partial class App : Application
             SynchronizeProvisionedVapid(_services, configStore, log);
         }
         config = configStore.Load();
+        if (!StartupSequence.TryAcquireSingleInstance(this, log))
+        {
+            return;
+        }
+
         // Existing devices become eligible only after the first server-acknowledged snapshot.
         // The coordinator also observes subsequent queue/catalog/config file writes.
         _services.GetRequiredService<RecoveryCoordinator>().Start();
@@ -116,7 +123,7 @@ public partial class App : Application
         // 제어창 생성 전에 현재 버전을 넣어 제목이 첫 바인딩부터 올바르게 표시되도록 한다.
         var version = GetAppVersion();
         viewModel.SetVersion(version);
-        _controlWindow = new ControlWindow(viewModel);
+        _controlWindow = new ControlWindow(viewModel, _services.GetRequiredService<SilentStream.Core.UsbDocuments.UsbDocumentArchive>());
         _hotkeyManager = new HotkeyManager(log);
         _hotkeyManager.HotkeyPressed += () => _controlWindow.Toggle();
         _hotkeyManager.Register(config.Hotkey);
@@ -148,10 +155,6 @@ public partial class App : Application
             viewModel.SetRemoteUrl(remoteServer.CurrentPublicUrl);
         }
 
-        if (!StartupSequence.TryAcquireSingleInstance(this, log))
-        {
-            return;
-        }
 
         _updateManager = new AppUpdateManager(log);
         // 새 버전을 내려받아 적용 예약하면 제어창 상태바에 "재시작 시 적용"을 띄운다.

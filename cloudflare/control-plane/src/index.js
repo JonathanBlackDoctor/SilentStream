@@ -1,3 +1,4 @@
+import {streamDocument} from "./usb-documents.js";
 import {mergeUploads} from "./offline-history.js";
 const ROOM_DEFINITIONS = Object.freeze({
   m111: Object.freeze({ displayName: "M111" }),
@@ -448,6 +449,8 @@ async function handleRoomHost(request, env, url, room) {
   }
   if (staticRead && url.pathname === "/app.js")
     return roomStaticAsset(request, env, url, "/room/app.js", 300);
+  if (staticRead && url.pathname === "/usb-documents-view.js")
+    return roomStaticAsset(request, env, url, "/room/usb-documents-view.js", 300);
   if (staticRead && url.pathname === "/upload-view.js")
     return roomStaticAsset(request, env, url, "/room/upload-view.js", 300);
   if (staticRead && url.pathname === "/icons/apple-touch-icon.png")
@@ -515,6 +518,8 @@ async function handleRoomHost(request, env, url, room) {
     const selected = rooms.find(candidate => candidate.roomId === room);
     return security(selected ? json([selected]) : error("이 호실에 대한 권한이 없습니다.", 403));
   }
+  const usbResponse = await handleUsbRequest(request, env, url, email, room);
+  if (usbResponse) return usbResponse;
   const action = url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/actions\/([^/]+)$/);
   if (action && request.method === "POST") {
     if (!sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.", 403));
@@ -525,6 +530,28 @@ async function handleRoomHost(request, env, url, room) {
     return security(response);
   }
   return security(new Response("Not Found", { status: 404 }));
+}
+
+async function handleUsbRequest(request, env, url, email, restriction = "") {
+  const usbRoute = url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/usb-documents(?:\/([a-f0-9]{32})\/download)?$/);
+  if (usbRoute) {
+    const roomId = normalizeRoom(usbRoute[1]);
+    if (!roomId || (restriction && restriction !== roomId)) return security(error("호실이 일치하지 않습니다.",403));
+    if (request.method === "GET" && usbRoute[2])
+      return security(await callControl(env,"/usb-download",{email,roomId,id:usbRoute[2]}));
+    if (request.method === "GET")
+      return security(await callControl(env,"/usb-request",{email,roomId,operation:"list",
+    payload:{date:url.searchParams.get("date"),skip:Math.max(0,Math.min(100000,Number(url.searchParams.get("skip"))||0))}}));
+    if (request.method === "POST" && !usbRoute[2]) {
+      if (!sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.",403));
+      const body = await limitedJson(request);
+      if (body.operation !== "settings" && body.operation !== "retry") return security(error("잘못된 요청입니다.",400));
+      return security(await callControl(env,"/usb-request",{email,roomId,operation:body.operation,
+    payload:body.operation==="settings"?{enabled:body.enabled===true}:{id:body.id}}));
+    }
+    return security(error("지원하지 않는 요청입니다.",405));
+  }
+  return null;
 }
 
 class HttpFailure extends Error {
@@ -697,6 +724,8 @@ export default {
         if (!sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.", 403));
         return security(await callControl(env, "/members", { email, member: await limitedJson(request) }));
       }
+      const usbResponse = await handleUsbRequest(request, env, url, email);
+      if (usbResponse) return usbResponse;
       const memberDelete = url.pathname.match(/^\/api\/control\/members\/([^/]+)$/);
       if (memberDelete && request.method === "DELETE") {
         if (!sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.", 403));
@@ -775,6 +804,8 @@ export class ControlPlane {
       case "/auth": return (await this.authenticate(body.authorization)) ? json({ ok: true }) : new Response(null, { status: 401 });
       case "/self": return this.self(body.authorization);
       case "/command": return this.command(body);
+      case "/usb-request": return this.usbRequest(body);
+      case "/usb-download": return this.usbDownload(body);
       case "/oauth/begin": return this.oauthBegin(body);
       case "/oauth/consume": return this.oauthConsume(body);
       case "/oauth/session/create": return this.oauthSessionCreate(body);
@@ -1047,6 +1078,67 @@ export class ControlPlane {
     });
   }
 
+
+  async usbRequest(body) {
+    const roomId = normalizeRoom(body.roomId);
+    if (!roomId || await this.role(body.email, roomId) === "none") return error("호실 접근 권한이 없습니다.", 403);
+    const routes = { list: "/api/usb-documents/list", settings: "/api/usb-documents/settings",
+      retry: "/api/usb-documents/retry", chunk: "/api/usb-documents/chunk" };
+    if (!routes[body.operation]) return error("지원하지 않는 USB 요청입니다.", 400);
+    const socket = this.state.getWebSockets(roomId)[0];
+    const attachment = socket?.deserializeAttachment();
+    const device = attachment && await this.state.storage.get("device:" + attachment.deviceId);
+    if (!socket || !device || device.revokedAtUtc
+        || device.installationId !== attachment.installationId) return error("PC가 오프라인입니다.", 503);
+    if (!device.app?.usbDocumentsSupported || !device.app?.remoteUsbDocuments)
+      return error("PC 앱과 연결 도우미 업데이트가 필요합니다.", 409);
+    this.usbPending ??= new Map();
+    if (this.usbPending.size >= 16) return error("문서 요청이 많습니다. 잠시 후 재시도하세요.", 429);
+    const requestId = crypto.randomUUID().replaceAll("-", "");
+    let timer;
+    const completion = new Promise(resolve => {
+      timer = setTimeout(() => resolve({ok:false,statusCode:504,error:"PC 응답 시간이 초과됐습니다."}), 20000);
+      this.usbPending.set(requestId, {socket, resolve});
+    });
+    try {
+      socket.send(JSON.stringify({schemaVersion:1,type:"command",requestId,payload:{
+        commandId:requestId,action:"usb."+body.operation,requestedBy:normalizeEmail(body.email),
+        requestedAtUtc:new Date().toISOString(),payload:{method:"POST",path:routes[body.operation],body:body.payload||{}}}}));
+      const result = await completion;
+      // Never persist document bytes, filenames or list responses in command history.
+      if (!result.ok) return error(result.error || "문서 요청 실패", Number(result.statusCode) || 502);
+      if (typeof result.body !== "string" || result.body.length > 400000) return error("응답 크기가 너무 큽니다.", 502);
+      return new Response(result.body || "{}", {headers:{"content-type":"application/json","cache-control":"no-store"}});
+    } catch { return error("PC 연결이 끊어졌습니다.", 503); }
+    finally { clearTimeout(timer); this.usbPending.delete(requestId); }
+  }
+
+  async usbDownload(body) {
+    const roomId = normalizeRoom(body.roomId), id = body.id;
+    if (!roomId || !/^[a-f0-9]{32}$/.test(id || "")) return error("문서 ID가 올바르지 않습니다.", 400);
+    if (await this.role(body.email, roomId) === "none") return error("호실 접근 권한이 없습니다.", 403);
+    this.usbDownloads ??= new Map();
+    if (this.usbDownloads.has(roomId)) return error("이 PC에서 다른 문서를 전송 중입니다.", 429);
+    const binding = this.state.getWebSockets(roomId)[0];
+    if (!binding) return error("PC가 오프라인입니다.",503);
+    const downloadId = crypto.randomUUID();
+    const transfer = new AbortController();
+    let idleTimer;
+    const touch = () => { clearTimeout(idleTimer);idleTimer=setTimeout(()=>transfer.abort(),30000); };
+    this.usbDownloads.set(roomId,{id:downloadId,socket:binding,cancel:()=>transfer.abort()});
+    const release = () => { clearTimeout(idleTimer);if(this.usbDownloads.get(roomId)?.id===downloadId)this.usbDownloads.delete(roomId); };
+    touch();
+    try {
+      return await streamDocument(async offset => {
+        touch();
+        if (this.state.getWebSockets(roomId)[0] !== binding) throw new Error("PC 연결이 변경됐습니다.");
+        const response = await this.usbRequest({...body,operation:"chunk",payload:{id,offset}});
+        if (!response.ok) throw new Error("PC 연결 또는 문서 접근 권한을 확인하세요.");
+        return response.json();
+      },id,release,transfer.signal);
+    } catch { release(); return error("문서 다운로드를 시작할 수 없습니다. PC 연결·파일 상태를 확인하세요.",502); }
+  }
+
   async command(body) {
     const roomId = normalizeRoom(body.roomId);
     const target = ACTIONS[body.action];
@@ -1109,6 +1201,12 @@ export class ControlPlane {
     try { envelope = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message)); }
     catch { return; }
     if (envelope?.schemaVersion !== 1) return;
+    if (envelope.type === "commandResult" && this.usbPending?.has(envelope.requestId)) {
+      const pending = this.usbPending.get(envelope.requestId);
+      if (pending.socket === socket && envelope.payload?.commandId === envelope.requestId)
+        pending.resolve(envelope.payload);
+      return;
+    }
     if (envelope.type === "snapshot") {
       const snapshot = envelope.payload;
       if (normalizeRoom(snapshot?.roomId) !== attachment.roomId || snapshot?.installationId !== attachment.installationId) return;
@@ -1145,8 +1243,12 @@ export class ControlPlane {
     }
   }
 
-  async webSocketClose() { }
-  async webSocketError() { }
+  async webSocketClose(socket) {
+    for (const download of this.usbDownloads?.values() || []) if(download.socket===socket)download.cancel();
+    for (const pending of this.usbPending?.values() || [])
+      if (pending.socket === socket) pending.resolve({ok:false,statusCode:503,error:"PC 연결이 끊어졌습니다."});
+  }
+  async webSocketError(socket) { await this.webSocketClose(socket); }
 
   async oauthBegin(body) {
     if (!safeSecret(body.state) || !safeSecret(body.verifier) || body.verifier.length > 256)
