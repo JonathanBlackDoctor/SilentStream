@@ -7,6 +7,7 @@ param(
   [string]$AppExecutablePath = (Join-Path $env:LOCALAPPDATA 'MediaCaptureHelper\current\MediaCaptureHelper.exe'),
   [string]$CachedInstallerPath = '',
   [string]$CentralEnrollmentFile = '',
+  [switch]$PreserveExistingRegistration,
   [string]$InstallRoot = (Join-Path $env:ProgramFiles 'MediaCaptureHelper\Inspection')
 )
 
@@ -105,10 +106,50 @@ function Set-InstallAcl([string]$Path,[string[]]$Rules) {
   $output = @(& (Join-Path $env:SystemRoot 'System32\icacls.exe') $Path @Rules 2>&1)
   if ($LASTEXITCODE -ne 0) { throw "설치 폴더 권한 설정 실패 (종료 코드 $LASTEXITCODE): $Path" }
 }
+function Start-AppAsInteractiveUser {
+  if (-not $PreserveExistingRegistration) {
+    Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden
+    return
+  }
+  # An elevated update must not restart USB document handling with administrator privileges.
+  $resumeTask = 'SilentStream Update Resume-' + [Guid]::NewGuid().ToString('N')
+  try {
+    $resumeAction = New-ScheduledTaskAction -Execute $AppExecutablePath
+    $resumePrincipal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+    Register-ScheduledTask -TaskName $resumeTask -Action $resumeAction -Principal $resumePrincipal -Force | Out-Null
+    $resumeStart = Get-Date
+    Start-ScheduledTask -TaskName $resumeTask
+    $resumeDeadline = $resumeStart.AddSeconds(10)
+    do {
+      $resumeInfo = Get-ScheduledTaskInfo -TaskName $resumeTask
+      if ($resumeInfo.LastRunTime -ge $resumeStart.AddSeconds(-1)) { break }
+      Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $resumeDeadline)
+    if ($resumeInfo.LastRunTime -lt $resumeStart.AddSeconds(-1)) { throw '일반 사용자 권한 앱 재시작을 확인하지 못했습니다.' }
+  } finally {
+    Unregister-ScheduledTask -TaskName $resumeTask -Confirm:$false -ErrorAction SilentlyContinue
+  }
+}
 function Stop-OwnedProcess([string]$Executable) {
   Get-Process -ErrorAction SilentlyContinue | Where-Object {
     try { $_.Path -and [string]::Equals($_.Path,$Executable,[StringComparison]::OrdinalIgnoreCase) } catch { $false }
   } | Stop-Process -Force -ErrorAction Stop
+}
+
+$previousRegistration = $null
+if ($PreserveExistingRegistration) {
+  if (-not [string]::IsNullOrWhiteSpace($CentralEnrollmentFile)) { throw '기존 등록 보존과 새 등록은 동시에 사용할 수 없습니다.' }
+  $existingPath = Join-Path $env:ProgramData 'MediaCaptureHelper\Inspection\coordinator.json'
+  if (-not (Test-Path -LiteralPath $existingPath)) { throw '기존 도우미 등록이 없습니다. 최초 설치는 호실 설치 페이지에서 진행하세요.' }
+  $previousRegistration = Get-Content -LiteralPath $existingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (-not $previousRegistration -or
+      -not [string]::Equals([IO.Path]::GetFullPath([string]$previousRegistration.appExecutablePath),[IO.Path]::GetFullPath($AppExecutablePath),[StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals([IO.Path]::GetFullPath([string]$previousRegistration.appConfigPath),[IO.Path]::GetFullPath($AppConfigPath),[StringComparison]::OrdinalIgnoreCase)) {
+    throw '기존 도우미와 현재 Windows 사용자의 앱 경로가 일치하지 않습니다.'
+  }
+  if ($previousRegistration.centralControlEnabled -and (
+      [string]::IsNullOrWhiteSpace([string]$previousRegistration.centralDeviceSecretMachineEnc) -or
+      [string]::IsNullOrWhiteSpace([string]$previousRegistration.centralDeviceId))) { throw '기존 중앙 등록이 불완전합니다. 기존 설치는 변경하지 않았습니다.' }
 }
 
 $central = $null
@@ -272,6 +313,11 @@ Copy-Item -LiteralPath $AppConfigPath -Destination (Join-Path $rollbackRoot 'app
 $hadCoordinatorConfig = Test-Path -LiteralPath $coordinatorConfigPath
 if ($hadCoordinatorConfig) { Copy-Item -LiteralPath $coordinatorConfigPath -Destination (Join-Path $rollbackRoot 'coordinator.json') }
 $replacedDirectories = @()
+if ($PreserveExistingRegistration) {
+  if ([string]::IsNullOrWhiteSpace($previousBridgeToken)) { throw '기존 앱 인증을 확인하지 못했습니다.' }
+  $liveStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/api/status' -Headers @{Authorization="Bearer $previousBridgeToken"} -TimeoutSec 5
+  if ($liveStatus.state -ne 'Idle') { throw '방송·녹음이 끝난 뒤 도우미 업데이트를 다시 눌러 주세요.' }
+}
 try {
 foreach ($name in $serviceNames) {
   if (Get-Service -Name $name -ErrorAction SilentlyContinue) { Stop-Service -Name $name -ErrorAction Stop }
@@ -375,6 +421,17 @@ $config = [ordered]@{
   centralDeviceSecretMachineEnc=$centralDeviceSecretMachineEnc
   appExecutablePath=$AppExecutablePath;appConfigPath=$AppConfigPath;cachedInstallerPath=$cachedPath;cachedInstallerSha256=$cachedHash
 }
+if ($PreserveExistingRegistration) {
+  # Preserve protected device identity, room membership, tokens and user policy without exporting credentials.
+  $preserved = [ordered]@{}
+  foreach ($property in $previousRegistration.PSObject.Properties) { $preserved[$property.Name] = $property.Value }
+  foreach ($name in @('publicKeys','brokerSecretMachineEnc','appApiTokenMachineEnc')) { $preserved[$name] = $config[$name] }
+  if (-not [string]::IsNullOrWhiteSpace($cachedPath)) {
+    $preserved['cachedInstallerPath'] = $cachedPath
+    $preserved['cachedInstallerSha256'] = $cachedHash
+  }
+  $config = $preserved
+}
 Write-JsonAtomic (Join-Path $dataRoot 'coordinator.json') $config
 $brokerPolicy = [ordered]@{
   schemaVersion=1;publicKeys=$publicKeys;appExecutablePath=$AppExecutablePath
@@ -441,7 +498,7 @@ foreach ($serviceName in @('SilentStreamInspectionBroker','SilentStreamInspectio
   try { $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,[TimeSpan]::FromSeconds(30)) }
   catch { throw "$serviceName 서비스가 30초 안에 실행 상태가 되지 않았습니다." }
 }
-if (Test-Path -LiteralPath $AppExecutablePath) { Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden }
+if (Test-Path -LiteralPath $AppExecutablePath) { Start-AppAsInteractiveUser }
 Write-Output "서비스 설치 완료 ($room): $resultPath"
 } catch {
   $installFailure = $_
@@ -476,7 +533,7 @@ Write-Output "서비스 설치 완료 ($room): $resultPath"
       Register-ScheduledTask -TaskName $taskName -Xml $previousTaskXml -Force | Out-Null
       if ($previousTask.State -eq 'Running') { Start-ScheduledTask -TaskName $taskName }
     } else { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue }
-    if ($appWasRunning -and (Test-Path -LiteralPath $AppExecutablePath)) { Start-Process -FilePath $AppExecutablePath -WindowStyle Hidden }
+    if ($appWasRunning -and (Test-Path -LiteralPath $AppExecutablePath)) { Start-AppAsInteractiveUser }
   } catch {
     throw "설치 및 기존 상태 자동 복구가 완료되지 않았습니다. 복구 자료는 $rollbackRoot 에 보존했습니다. 설치 오류: $($installFailure.Exception.Message) / 복구 오류: $($_.Exception.Message)"
   }

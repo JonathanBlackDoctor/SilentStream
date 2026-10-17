@@ -400,6 +400,7 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <TextBlock Text="{Binding UpdateStatusText}" Foreground="#5EE4A7" FontWeight="SemiBold" FontSize="11" Margin="0,0,16,0" VerticalAlignment="Center"
                                Visibility="{Binding UpdateAvailable, Converter={StaticResource B2V}}" />
+                    <ContentControl x:Name="HelperUpdateHost" Margin="0,0,12,0" />
                     <Button Content="변경사항 저장" Command="{Binding SaveSettingsCommand}" Width="136" />
                 </StackPanel>
             </DockPanel>

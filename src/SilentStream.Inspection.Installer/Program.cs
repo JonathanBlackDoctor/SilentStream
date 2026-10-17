@@ -36,6 +36,30 @@ try
     var tempDrive = new DriveInfo(Path.GetPathRoot(Path.GetTempPath())!);
     if (tempDrive.AvailableFreeSpace < 3L * 1024 * 1024 * 1024)
         throw new IOException("설치·압축 해제·복구용으로 임시 드라이브에 최소 3GB의 여유 공간이 필요합니다.");
+    if (args.Length == 1 && args[0] == "--update-existing") {
+        Progress("기존 도우미 업데이트 준비");
+        var version = OfficialRelease.Version;
+        var updateStaging = Path.Combine(Path.GetTempPath(), "SilentStreamExistingUpdate-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(updateStaging);
+        try {
+            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(20) };
+            var archive = Path.Combine(updateStaging, "package.zip");
+            Progress("공식 패키지 다운로드 및 해시 검증");
+            await OfficialRelease.DownloadAsync(client, version, true, archive);
+            var packageRoot = Path.Combine(updateStaging, "package");
+            ZipFile.ExtractToDirectory(archive, packageRoot);
+            packageRoot = FindPackageRoot(packageRoot);
+            Progress("기존 호실 등록 보존 및 도우미 갱신");
+            await RunPackageInstallAsync(packageRoot, null, installAppFirst: false, preserveExisting: true);
+            Progress("도우미 업데이트 완료");
+            MessageBox.Show("도우미 업데이트가 완료되었습니다. 기존 호실 등록과 앱 설정을 유지했습니다.", "SilentStream 업데이트");
+        } finally {
+            // Only this invocation's freshly generated staging directory is eligible for cleanup.
+            try { Directory.Delete(updateStaging, true); } catch { }
+        }
+        return;
+    }
+    if (args.Length != 0) throw new ArgumentException("지원하지 않는 설치 옵션입니다.");
     if (File.Exists(legacyPreseed))
     {
         var output = await RunPackageInstallAsync(root, null, installAppFirst: false);
@@ -94,6 +118,7 @@ try
 }
 catch (Exception ex)
 {
+    Environment.ExitCode = 1;
     var failedStage = stage;
     Progress($"실패: {ex.GetType().Name}, HRESULT=0x{ex.HResult:X8}");
     var safeDetail = System.Text.RegularExpressions.Regex.Replace(DescribeFailure(ex), @"https?://\S+", "[서버 주소 생략]");
@@ -191,7 +216,7 @@ static async Task DownloadPackageAsync(CentralEnrollmentResponse enrollment, str
     }
 }
 
-static async Task<string> RunPackageInstallAsync(string packageRoot, string? enrollmentFile, bool installAppFirst)
+static async Task<string> RunPackageInstallAsync(string packageRoot, string? enrollmentFile, bool installAppFirst, bool preserveExisting = false)
 {
     var script = Path.Combine(packageRoot, "Install-InspectionServices.ps1");
     var source = Path.Combine(packageRoot, "bin");
@@ -244,6 +269,7 @@ static async Task<string> RunPackageInstallAsync(string packageRoot, string? enr
     start.ArgumentList.Add("-PublicKeyFile"); start.ArgumentList.Add(publicKey);
     start.ArgumentList.Add("-SourceRoot"); start.ArgumentList.Add(source);
     start.ArgumentList.Add("-PreseedFile"); start.ArgumentList.Add(preseed);
+    if (preserveExisting) start.ArgumentList.Add("-PreserveExistingRegistration");
     if (setup is not null) { start.ArgumentList.Add("-CachedInstallerPath"); start.ArgumentList.Add(setup); }
     if (!string.IsNullOrWhiteSpace(enrollmentFile))
     {

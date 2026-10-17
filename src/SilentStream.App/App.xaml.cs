@@ -123,7 +123,7 @@ public partial class App : Application
         // 제어창 생성 전에 현재 버전을 넣어 제목이 첫 바인딩부터 올바르게 표시되도록 한다.
         var version = GetAppVersion();
         viewModel.SetVersion(version);
-        _controlWindow = new ControlWindow(viewModel, _services.GetRequiredService<SilentStream.Core.UsbDocuments.UsbDocumentArchive>());
+        _controlWindow = new ControlWindow(viewModel, _services.GetRequiredService<SilentStream.Core.UsbDocuments.UsbDocumentArchive>(), _services.GetRequiredService<IStreamOrchestrator>());
         _hotkeyManager = new HotkeyManager(log);
         _hotkeyManager.HotkeyPressed += () => _controlWindow.Toggle();
         _hotkeyManager.Register(config.Hotkey);

@@ -10,7 +10,7 @@ $start = $source.IndexOf('$productRoot = Split-Path $resolvedInstallRoot -Parent
 if ($start -lt 0) { throw 'Transaction entry point not found' }
 $transaction = [scriptblock]::Create($source.Substring($start).Replace("Join-Path `$env:ProgramData 'MediaCaptureHelper\Inspection'", '$testDataRoot'))
 # Load only pure helpers from the real installer.
-foreach ($name in @('Write-JsonAtomic','Get-TokenHash')) {
+foreach ($name in @('Write-JsonAtomic','Get-TokenHash','Start-AppAsInteractiveUser')) {
   $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
   . ([scriptblock]::Create($definition.Extent.Text))
 }
