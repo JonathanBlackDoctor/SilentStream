@@ -13,6 +13,9 @@ public interface IUploadQueue
     /// <summary>Current snapshot of all jobs (pending, uploading, completed, failed).</summary>
     IReadOnlyList<UploadJob> Snapshot();
 
+    /// <summary>Known quota pause, if any. Does not start or mutate the worker.</summary>
+    DateTimeOffset? PausedUntilUtc => null;
+
     /// <summary>Starts the background worker. Idempotent; stops on <paramref name="ct"/>.</summary>
     void Start(CancellationToken ct);
 }

@@ -270,26 +270,26 @@ test("central mobile portal links to the room-specific manager apps", async () =
   assert.match(script, /session\?\.roomApps/);
 });
 
-test("room manager app shows five recent playlist links and searches older dates separately", async () => {
+test("room manager app prioritizes today's link and explicitly browses earlier dates", async () => {
   const app = await readFile(new URL("../public/room/app.js", import.meta.url), "utf8");
   const document = await readFile(new URL("../public/room/index.html", import.meta.url), "utf8");
-  assert.match(app, /RECENT_PLAYLIST_COUNT=5/);
-  assert.match(app, /items\.slice\(0,RECENT_PLAYLIST_COUNT\)/);
-  assert.match(app, /이전 날짜 찾기/);
+  assert.match(app, /HISTORY_PAGE_SIZE=5/);
+  assert.match(app, /items\.slice\(start,start\+HISTORY_PAGE_SIZE\)/);
+  assert.match(app, /다른 날짜 찾기/);
   assert.match(app, /id="playlistDate" type="date"/);
   assert.match(app, /data-playlist-older/);
   assert.match(app, /data-playlist-newer/);
   assert.match(app, /data-copy-playlist/);
   assert.match(app, /data-copy-replay/);
-  assert.match(app, /일일 재생목록에 자동 추가하지 않습니다/);
+  assert.match(app, /교시별 영상과 별도로 저장되는 전체 방송/);
   assert.match(app, /endedAtUtc/);
-  assert.doesNotMatch(app, /uploadPanel/);
-  assert.doesNotMatch(app, /averageDurationSeconds/);
+  assert.match(app, /uploadPanel/);
+  assert.match(app, /UploadView\.render/);
   assert.match(app, /navigator\.clipboard\.writeText/);
   assert.match(app, /document\.execCommand\("copy"\)/);
   assert.match(document, /playlist-history-toggle/);
   assert.doesNotMatch(document, /app\.js\?v=3/);
-  assert.match(document, /app\.js\?v=10/);
+  assert.match(document, /app\.js\?v=12/);
 });
 
 test("room PWA assets include install guidance, a safe offline page, and valid PNG sizes", async () => {
@@ -298,7 +298,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
   assert.match(document, /rel="manifest"/);
   assert.match(document, /apple-touch-icon/);
-  assert.match(document, /\/app\.js\?v=10/);
+  assert.match(document, /\/app\.js\?v=12/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);
   assert.doesNotMatch(document, /id="installButton" hidden/);
   assert.match(app, /beforeinstallprompt/);

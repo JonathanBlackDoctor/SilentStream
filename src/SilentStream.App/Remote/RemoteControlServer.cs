@@ -71,6 +71,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly object _silentMicsGate = new();
     private readonly Dictionary<string, string> _silentMics = new();
     private readonly string _html;
+    private readonly string _uploadView;
     // PWA 자산(원격 컨트롤러 개선 Phase 3): index.html과 함께 어셈블리에 임베드, 무인증 서빙.
     private readonly string _manifest;
     private readonly string _serviceWorker;
@@ -143,6 +144,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _log = log;
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
+        _uploadView = LoadEmbeddedText("upload-view.js");
         _manifest = LoadEmbeddedText("manifest.webmanifest");
         _serviceWorker = LoadEmbeddedText("service-worker.js");
         _iconSvg = LoadEmbeddedText("icon.svg");
@@ -469,6 +471,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private void MapEndpoints(WebApplication app)
     {
         app.MapGet("/", () => Results.Content(_html, "text/html; charset=utf-8"));
+        app.MapGet("/upload-view.js", () => Results.Content(_uploadView, "text/javascript; charset=utf-8"));
 
         // PWA 설치 자산(원격 컨트롤러 개선 Phase 3). /api·/ws 밖이라 무인증 서빙 — 페어링 전에도 브라우저가
         // 매니페스트/서비스워커/아이콘을 로드할 수 있어야 한다. 서비스워커는 루트에서 서빙되어 스코프가 "/".
@@ -1503,10 +1506,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
         var metricsStale = metricsAgeSeconds is null or > 15;
         var microphone = BuildMicrophoneHealth();
         var liveReplay = _liveReplays.Latest;
-        var measuredUploads = jobs
-            .Where(job => job.Status == UploadJobStatus.Completed && job.UploadDurationSeconds is >= 0)
-            .TakeLast(20)
-            .ToArray();
 
         return new
         {
@@ -1579,32 +1578,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             },
             diagnostics = BuildDiagnostics(now),
-            queue = new
-            {
-                pending = jobs.Count(j => j.Status == UploadJobStatus.Pending),
-                uploading = jobs.Count(j => j.Status == UploadJobStatus.Uploading),
-                completed = jobs.Count(j => j.Status == UploadJobStatus.Completed),
-                failed = jobs.Count(j => j.Status == UploadJobStatus.Failed),
-                measuredCount = measuredUploads.Length,
-                averageDurationSeconds = measuredUploads.Length == 0
-                    ? null as double?
-                    : measuredUploads.Average(job => job.UploadDurationSeconds!.Value),
-                items = jobs.TakeLast(20).Select(j => new
-                {
-                    period = j.PeriodNumber,
-                    slotLabel = j.ResolvedSlotLabel,
-                    title = j.Title,
-                    status = j.Status,
-                    videoId = j.VideoId,
-                    fileSizeBytes = j.FileSizeBytes,
-                    uploadStartedAtUtc = j.UploadStartedAtUtc,
-                    uploadCompletedAtUtc = j.UploadCompletedAtUtc,
-                    uploadDurationSeconds = j.UploadDurationSeconds,
-                    uploadElapsedSeconds = j.Status == UploadJobStatus.Uploading && j.UploadStartedAtUtc is { } started
-                        ? Math.Max(0, (DateTimeOffset.UtcNow - started).TotalSeconds)
-                        : null as double?
-                })
-            }
+            queue = UploadQueueRemote.Build(jobs, DateTimeOffset.UtcNow, _uploadQueue.PausedUntilUtc)
         };
     }
 

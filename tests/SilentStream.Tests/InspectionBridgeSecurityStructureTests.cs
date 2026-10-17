@@ -61,13 +61,13 @@ public sealed class InspectionBridgeSecurityStructureTests
 
         var managerApp = File.ReadAllText(Path.Combine(repository, "cloudflare", "control-plane",
             "public", "room", "app.js"));
-        Assert.Contains("RECENT_PLAYLIST_COUNT=5", managerApp, StringComparison.Ordinal);
-        Assert.Contains("items.slice(0,RECENT_PLAYLIST_COUNT)", managerApp, StringComparison.Ordinal);
-        Assert.Contains("이전 날짜 찾기", managerApp, StringComparison.Ordinal);
+        Assert.Contains("HISTORY_PAGE_SIZE=5", managerApp, StringComparison.Ordinal);
+        Assert.Contains("items.slice(start,start+HISTORY_PAGE_SIZE)", managerApp, StringComparison.Ordinal);
+        Assert.Contains("다른 날짜 찾기", managerApp, StringComparison.Ordinal);
         Assert.Contains("data-playlist-older", managerApp, StringComparison.Ordinal);
         Assert.Contains("data-copy-playlist", managerApp, StringComparison.Ordinal);
         Assert.Contains("data-copy-replay", managerApp, StringComparison.Ordinal);
-        Assert.Contains("일일 재생목록에 자동 추가하지 않습니다", managerApp, StringComparison.Ordinal);
+        Assert.Contains("교시별 영상과 별도로 저장되는 전체 방송", managerApp, StringComparison.Ordinal);
         Assert.Contains("endedAtUtc", managerApp, StringComparison.Ordinal);
         Assert.Contains("navigator.clipboard.writeText", managerApp, StringComparison.Ordinal);
 

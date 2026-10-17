@@ -8,13 +8,23 @@ function shutdownTarget(value){
   return date.toISOString();
 }
 function shutdownPanel(value){
-  const app=value.app||{},state=app.shutdownSchedule,room=value.roomId;
-  if(value.role!=='admin')return '';
+  const app=value.app||{},state=app.shutdownSchedule,room=value.roomId,cloud=value.cloudShutdownRequest;
+  if(value.role!=="admin")return "";
   const supported=app.shutdownScheduleControl&&app.remoteShutdownScheduleCommands;
-  const active=state&&(['pending','executing'].includes(state.status)||state.status==='scheduled'&&new Date(state.targetUtc)>new Date());
-  const labels={pending:'예약됨',executing:'녹화 마감·안전 점검 중',scheduled:'Windows 종료 대기',cancelled:'취소됨',failed:'실패·확인 필요',missed:'예약 시각 지남'};
-  const disabled=value.online&&supported?'':'disabled';
-  return '<section style="margin-top:20px"><h3>PC 종료 예약</h3><p class="meta">한국 시간 · 1회 예약. 종료 2분 전부터 녹화·방송을 마감합니다. 휴대폰을 닫아도 PC에서 실행합니다.</p>'+(!supported?'<p>PC 앱과 연결 도우미 업데이트가 필요합니다.</p>':'')+(state?'<p role="status">'+esc(labels[state.status]||state.status)+' · '+esc(new Date(state.targetUtc).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'}))+'<br>'+esc(state.message)+'</p>':'<p>예약된 종료가 없습니다.</p>')+'<label for="shutdown-'+esc(room)+'">종료 날짜·시각 (한국 시간)</label><input style="display:block;max-width:100%;box-sizing:border-box;padding:10px;font:inherit;margin:8px 0" id="shutdown-'+esc(room)+'" data-shutdown-input="'+esc(room)+'" type="datetime-local" value="'+esc(shutdownDrafts[room]||'')+'" '+disabled+'><div class="actions"><button class="danger" '+disabled+' '+(active?'disabled':'')+' data-shutdown-create="'+esc(room)+'">종료 예약</button>'+(active?'<button '+disabled+' data-shutdown-cancel="'+esc(room)+'" data-schedule-id="'+esc(state.id)+'">예약 취소</button>':'')+'</div><p class="meta">PC와 앱이 켜져 있어야 합니다. 안전 점검 실패 시 종료하지 않습니다. 준비가 지연되면 최소 60초의 취소 시간을 확보하여 종료가 늦어질 수 있습니다.</p></section>';
+  const localActive=state&&(["pending","executing"].includes(state.status)||state.status==="scheduled"&&new Date(state.targetUtc)>new Date());
+  const cloudActive=cloud&&["queued","dispatching"].includes(cloud.state);
+  const labels={pending:"PC 예약됨",executing:"녹화 마감·안전 점검 중",scheduled:"Windows 종료 대기",cancelled:"취소됨",failed:"실패·확인 필요",missed:"예약 시각 지남"};
+  const cloudLabels={queued:"PC 연결 후 등록 대기",dispatching:"PC 전달 중 · 결과 확인 필요",applied:"PC 등록 요청 전달 완료",cancelled:"클라우드 요청 취소됨",expired:"등록 기한 만료",failed:"등록 실패 · 상태 확인 필요"};
+  const disabled=value.registered===false?"disabled":"",createDisabled=disabled||cloudActive||localActive||value.online&&!supported?"disabled":"";
+  const format=value=>new Date(value).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
+  const cloudInfo=cloud?'<p class="meta" role="status"><b>'+esc(cloudLabels[cloud.state]||cloud.state)+'</b> · '+esc(format(cloud.targetUtc))+'<br>'+esc(cloud.message)+'</p>':"";
+  return '<section class="section-card shutdown"><h2>PC 종료 예약</h2><p class="meta">한국 시간 · 1회 예약. PC가 꺼져 있어도 요청을 저장할 수 있습니다.</p>'+cloudInfo+
+    (state?'<p class="meta" role="status">마지막 PC 기록: '+esc(labels[state.status]||state.status)+' · '+esc(format(state.targetUtc))+'<br>'+esc(state.message)+'</p>':"")+
+    (!supported&&value.online?'<p class="meta">PC 앱과 연결 도우미 업데이트 후 PC 예약을 사용할 수 있습니다.</p>':"")+
+    '<label for="shutdown-'+esc(room)+'">종료 날짜·시각 (한국 시간)</label><input style="display:block;width:100%;margin:10px 0" id="shutdown-'+esc(room)+'" data-shutdown-input="'+esc(room)+'" type="datetime-local" value="'+esc(shutdownDrafts[room]||"")+'" '+disabled+'>'+
+    '<div class="actions"><button '+createDisabled+' data-shutdown-create="'+esc(room)+'">'+(value.online?"종료 예약":"연결 후 종료 예약 등록")+'</button>'+
+    (cloud?.state==="queued"?'<button '+disabled+' data-shutdown-cancel="'+esc(room)+'" data-schedule-id="'+esc(cloud.id)+'">연결 대기 요청 취소</button>':localActive?'<button '+(value.online&&supported?"":"disabled")+' data-shutdown-cancel="'+esc(room)+'" data-schedule-id="'+esc(state.id)+'">PC 예약 취소</button>':"")+
+    '</div><p class="meta">오프라인 요청은 아직 PC에 등록된 예약이 아닙니다. 종료 3분 전까지 연결되지 않으면 만료됩니다. PC 등록 후에는 휴대폰을 닫아도 실행하며, 종료 2분 전부터 녹화·방송을 마감합니다. 안전 점검 실패 시 종료하지 않습니다.</p></section>';
 }
 async function changeShutdown(room,id){
   try{

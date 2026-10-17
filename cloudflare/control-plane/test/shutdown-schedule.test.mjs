@@ -23,12 +23,13 @@ for(const [label,source] of [['room',roomSource],['central',centralSource]]) {
     for(const value of ['','2026-02-30T12:00','2026-10-17T09:01','2026-11-18T09:00'])
       assert.throws(()=>vm.runInContext(`shutdownTarget(${JSON.stringify(value)})`,context));
   });
-  test(label+': controls require admin, online PC, and upgraded coordinator; draft survives rendering',()=>{
+  test(label+': offline requests can be saved, while PC cancellation requires a capable online PC',()=>{
     const {context}=setup(source);
     const render=value=>{context.device=value;return vm.runInContext('shutdownPanel(device)',context)};
     const device={roomId:'m112',role:'admin',online:true,app:{shutdownScheduleControl:true,remoteShutdownScheduleCommands:true}};
     assert.equal(render({...device,role:'manager'}),'');
-    assert.match(render({...device,online:false}),/disabled[^>]*data-shutdown-create/);
+    assert.doesNotMatch(render({...device,online:false}),/disabled[^>]*data-shutdown-create/);
+    assert.match(render({...device,online:false}),/연결 후 종료 예약 등록/);
     assert.match(render({...device,app:{shutdownScheduleControl:true}}),/업데이트/);
     vm.runInContext('shutdownDrafts.m112="2026-10-17T18:30"',context);
     assert.match(render(device),/value="2026-10-17T18:30"/);
@@ -49,14 +50,14 @@ for(const [label,source] of [['room',roomSource],['central',centralSource]]) {
   });
 }
 
-test('server permission rejects managers; admin offline request fails without queued later execution',async()=>{
+test('server permission rejects managers and refuses scheduling without a registered PC',async()=>{
   const values=new Map([['ownerEmail','owner@example.com'],['member:manager@example.com',{role:'manager',rooms:['m112']}]]);
   const storage={get:async key=>values.get(key),put:async(key,value)=>values.set(key,value),
     list:async()=>new Map(),delete:async key=>values.delete(key)};
   const plane=new ControlPlane({storage,getWebSockets:()=>[]},{});
   for(const action of ['system.shutdown.schedule','system.shutdown.schedule.cancel']){
     assert.equal((await plane.command({roomId:'m112',email:'manager@example.com',action,body:{}})).status,403);
-    assert.equal((await plane.command({roomId:'m112',email:'owner@example.com',action,body:{}})).status,503);
+    assert.equal((await plane.command({roomId:'m112',email:'owner@example.com',action,body:{}})).status,action==='system.shutdown.schedule'?409:503);
   }
 });
 

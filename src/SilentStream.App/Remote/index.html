@@ -157,7 +157,7 @@
     .rmeta { font-size:12px; margin-top:3px; min-height:1.2em; }
     #noProblem { text-align:center; padding:20px 0; }
     #backBtn { margin:0 0 10px; }
-  </style>
+  .upload-overview{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:20px 0 10px;padding:12px;background:#f5f8f5;border-radius:10px}.upload-overview strong{font-size:12px;font-weight:650}.upload-overview>span{font-size:10px;color:var(--muted);text-align:right}.upload-row{display:flex;align-items:center;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ed}.upload-row:last-child{border-bottom:0}.upload-slot{min-width:52px;font-size:12px;font-weight:650}.upload-info{flex:1;min-width:0}.upload-state{font-size:11px;color:#77847c}.upload-state.completed{color:#2c7e5b}.upload-state.uploading{color:#3e6a9e}.upload-state.failed{color:#b84940}.upload-info small{display:block;font-size:10px;color:#7a8880;line-height:1.6;margin-top:4px}.video-link{display:inline-flex;align-items:center;min-height:36px;padding:4px;font-size:11px;white-space:nowrap;color:#4a6b59;text-decoration:none}.estimate-note{font-size:10px;line-height:1.7;color:#869188;margin:14px 0 0}.latest-upload{margin-top:10px}</style>
 </head>
 <body>
   <div class="app-top">
@@ -217,7 +217,7 @@
           <div><span>GPU</span><b id="gpu">-</b></div>
         </div>
       </div>
-      <div class="command-actions">
+      <details class="command-actions"><summary>방송 수동 제어</summary><p class="action-hint">방송은 PC 전원에 맞춰 자동으로 시작·종료됩니다.</p>
         <button id="startBtn">라이브 시작</button>
         <div class="btnrow">
         <button id="stopBroadcastBtn" class="stopHalf">방송 중지</button>
@@ -228,7 +228,7 @@
           <button id="retryBtn" class="ghost">↻ 송출 복구</button>
           <button id="snapshotBtn" class="ghost">▣ 스냅샷 저장</button>
         </div>
-      </div>
+      </details>
     </div>
 
     <div class="card">
@@ -294,10 +294,10 @@
       <button id="copyTodayPlaylistBtn" disabled>오늘 재생목록 링크 복사</button>
     </div>
 
-    <div class="card">
-      <h2>업로드 큐 <span id="qSummary" class="muted"></span></h2>
+    <details class="card"><summary>교시별 업로드</summary>
+      <div class="fold-body"><h2>교시별 업로드</h2><label for="directUploadDate">날짜</label><input id="directUploadDate" type="date"><p id="qSummary" class="muted"></p>
       <div id="qList"></div>
-    </div>
+      </div></details>
 
     <div class="card">
       <h2>교시 자료 <span class="muted">음성 · YouTube 자막</span></h2>
@@ -358,6 +358,7 @@
 
   <div id="toast"></div>
 
+  <script src="/upload-view.js?v=1"></script>
   <script>
     const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted",RecordingOnly:"--yellow"};
 
@@ -651,6 +652,7 @@
 
       $("offlineNotice").classList.toggle("hidden", online);
       if (online) return;
+      renderUploads();
 
       paintBadge($("badge"), null, "오프라인", "--red");
       $("stateTitle").textContent = "기기가 오프라인입니다";
@@ -1178,6 +1180,18 @@
       }catch(error){toast('예약 취소 결과를 확인하지 못했습니다. PC 상태를 다시 확인하세요.')}
     };
 
+    let lastUploadStatus=null, directUploadRoom=null;
+    function renderUploads(){
+      if(!lastUploadStatus)return;
+      const s=lastUploadStatus;
+      if(directUploadRoom!==cur){$("qList").innerHTML='<p class="muted">이 호실의 업로드 정보를 기다리고 있습니다.</p>';return}
+      const date=$("directUploadDate").value||UploadView.day();
+      $("directUploadDate").max=UploadView.day();
+      $("directUploadDate").value=date;
+      $("qSummary").textContent="한국 날짜 기준 · 업로드 완료 후에도 YouTube 처리 시간이 필요할 수 있습니다.";
+      $("qList").innerHTML=UploadView.render(s,{date,fresh:UploadView.fresh({online:cur&&stateOf(cur).online!==false,app:s})});
+    }
+    $("directUploadDate").onchange=renderUploads;
     function renderStatus(s){
       renderTodayPlaylist(s.dailyPlaylist || null);
       renderShutdownSchedule(s);
@@ -1215,13 +1229,10 @@
       $("stopBroadcastBtn").disabled = s.state!=="Live";           // 방송만 중지는 라이브 중에만 의미가 있다
       $("stopBtn").disabled = (s.state==="Idle"||s.state==="Stopping");
       $("retryBtn").disabled = !(s.state==="Live" || s.state==="Retrying");
-      const q=s.queue;
-      $("qSummary").textContent = `대기 ${q.pending} · 업로드중 ${q.uploading} · 완료 ${q.completed} · 실패 ${q.failed}`;
-      $("qList").innerHTML = q.items.length ? q.items.slice().reverse().map(i=>{
-        const cls = i.status==="completed"?"done":i.status==="failed"?"failed":"pending";
-        const link = i.videoId ? ` <a href="https://youtu.be/${encodeURIComponent(i.videoId)}" target="_blank" style="color:var(--accent)">열기</a>`:"";
-        return `<div class="qitem"><span>${esc(i.title)}</span><span class="pill ${cls}">${esc(i.status)}${link}</span></div>`;
-      }).join("") : '<div class="muted">큐가 비어 있습니다.</div>';
+      if(directUploadRoom!==cur)$("directUploadDate").value="";
+      directUploadRoom=cur;
+      lastUploadStatus=s;
+      renderUploads();
     }
 
     // ---- 진단: 시간표 카운트다운 + 헬스 신호등 + 최근 경고/오류 ----

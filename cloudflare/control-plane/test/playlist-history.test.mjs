@@ -14,26 +14,27 @@ function setup(items=[],online=false,clock='2026-10-16T15:00:00Z'){
  return {context,fields,run:code=>vm.runInContext(code,context),click:attr=>handlers.click({target:{closest:()=>({dataset:{},hasAttribute:name=>name===attr})}}),change:value=>handlers.change({target:{id:'playlistDate',value}})};
 }
 const row=date=>({date,status:'ready',url:'https://www.youtube.com/playlist?list=test'});
-test('opening history while offline with no snapshot initializes five calendar days ago',()=>{
- const app=setup(null);app.click('data-playlist-history');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-12');
+test('opening history starts at today even when offline and unsynchronized',()=>{
+ const app=setup(null);app.click('data-playlist-history');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-17');
  assert.match(app.run('playlistPanel(device)'),/동기화된 재생목록 정보가 없습니다/);
 });
-test('sparse offline history automatically searches from five days ago without a search click',()=>{
+test('sparse offline history starts at the latest available record',()=>{
  const app=setup(['2026-10-16','2026-10-12','2026-10-08'].map(row));app.click('data-playlist-history');
- assert.equal(app.run('historyPage(playlistItems()).rows[0].date'),'2026-10-12');
+ assert.equal(app.run('historyPage(playlistItems()).rows[0].date'),'2026-10-16');
  app.change('2026-10-09');assert.equal(app.run('historyPage(playlistItems()).rows[0].date'),'2026-10-08');
 });
 test('an empty older range can navigate back to available recent items',()=>{
  const app=setup(['2026-10-16','2026-10-15'].map(row));app.click('data-playlist-history');
+ app.change('2026-10-01');
  assert.equal(app.run('historyPage(playlistItems()).rows.length'),0);app.click('data-playlist-newer');
  assert.equal(app.run('historyPage(playlistItems()).rows[0].date'),'2026-10-16');
 });
-test('calendar subtraction handles Korean midnight, year boundary and leap year',()=>{
- for(const [clock,expected] of [['2026-10-16T14:59:59Z','2026-10-11'],['2026-10-16T15:00:00Z','2026-10-12'],['2026-01-01T00:00:00Z','2025-12-27'],['2024-03-02T00:00:00Z','2024-02-26']])assert.equal(setup([],false,clock).run('defaultHistoryDate()'),expected);
+test('initial history date follows Korean midnight, year boundary and leap year',()=>{
+ for(const [clock,expected] of [['2026-10-16T14:59:59Z','2026-10-16'],['2026-10-16T15:00:00Z','2026-10-17'],['2026-01-01T00:00:00Z','2026-01-01'],['2024-03-02T00:00:00Z','2024-03-02']])assert.equal(setup([],false,clock).run('defaultHistoryDate()'),expected);
 });
-test('reopening resets to five days ago; polling render preserves a chosen date',()=>{
+test('reopening and polling both preserve the chosen date',()=>{
  const app=setup();app.click('data-playlist-history');app.change('2026-10-01');app.run('playlistPanel(device)');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-01');
- app.click('data-playlist-history');app.click('data-playlist-history');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-12');
+ app.click('data-playlist-history');app.click('data-playlist-history');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-01');
 });
 test('future date clamps to today and missing snapshot differs from empty search',()=>{
  const app=setup();app.change('2026-12-01');assert.equal(app.run('playlistHistoryAnchor'),'2026-10-17');

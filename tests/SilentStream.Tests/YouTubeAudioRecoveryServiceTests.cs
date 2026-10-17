@@ -24,6 +24,46 @@ public sealed class YouTubeAudioRecoveryServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Committed_cache_does_not_publish_available_before_active_job_cleanup()
+    {
+        var catalog = CatalogWith(Asset("asset-1", "abcdefghijk"));
+        using var log = new CompletionGateLog();
+        using var service = new YouTubeAudioRecoveryService(new FakeRunner(),
+            new FakeExporter(_audioDirectory), catalog, log, _audioDirectory, _temporaryRoot,
+            "yt-dlp-test", TimeSpan.FromSeconds(5), () => _now);
+        service.Start("asset-1");
+        try
+        {
+            await log.Committed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.NotNull(catalog.Find("asset-1")!.AudioPath);
+            Assert.True(AudioRecoveryStatus.IsActive(service.GetStatus("asset-1").Status));
+            Assert.True(AudioRecoveryStatus.IsActive(service.Start("asset-1").Status));
+        }
+        finally
+        {
+            log.Continue.Set();
+        }
+        Assert.Equal(AudioRecoveryStatus.Available, (await WaitForTerminalAsync(service, "asset-1")).Status);
+        AssertNoTemporaryDirectories();
+    }
+
+    private sealed class CompletionGateLog : ILogService, IDisposable
+    {
+        public TaskCompletionSource<bool> Committed { get; } = NewBlocker();
+        public ManualResetEventSlim Continue { get; } = new(false);
+        public void Info(string message)
+        {
+            if (!message.StartsWith("YouTube 음성 복구 완료:", StringComparison.Ordinal)) return;
+            Committed.TrySetResult(true);
+            Continue.Wait(TimeSpan.FromSeconds(5));
+        }
+        public void Debug(string message) { }
+        public void Warn(string message) { }
+        public void Error(string message, Exception? exception = null) { }
+        public void Dispose() => Continue.Dispose();
+    }
+
+    [Fact]
     public async Task Successful_recovery_downloads_encodes_caches_and_updates_catalog()
     {
         var catalog = CatalogWith(Asset("asset-1", "abcdefghijk"));

@@ -97,6 +97,17 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             return Failed(normalizedAssetId, "교시 음성 자산 ID가 올바르지 않습니다.");
         }
 
+        // A committed audio path can be visible while the active job is still cleaning up.
+        // Preserve the job's lifecycle until RunRecoveryAsync publishes its terminal status.
+        lock (_jobsGate)
+        {
+            if (_disposed)
+                return Failed(normalizedAssetId, "앱이 종료 중이라 음성을 복구할 수 없습니다.");
+            if (_jobs.TryGetValue(normalizedAssetId, out var active) &&
+                AudioRecoveryStatus.IsActive(active.Snapshot.Status))
+                return active.Snapshot;
+        }
+
         PeriodAsset? asset;
         try
         {
@@ -149,6 +160,13 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
         if (!AssetIdPattern.IsMatch(normalizedAssetId))
         {
             return new AudioRecoverySnapshot(normalizedAssetId, AudioRecoveryStatus.Idle);
+        }
+
+        lock (_jobsGate)
+        {
+            if (_jobs.TryGetValue(normalizedAssetId, out var active) &&
+                AudioRecoveryStatus.IsActive(active.Snapshot.Status))
+                return active.Snapshot;
         }
 
         try

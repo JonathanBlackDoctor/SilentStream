@@ -133,6 +133,21 @@ public sealed class UploadQueue : IUploadQueue
         }
     }
 
+    public DateTimeOffset? PausedUntilUtc
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var state = LoadLocked();
+                var now = _now();
+                return state.QuotaPtDate == PacificDateString(now) && state.QuotaCount >= _maxPerDay
+                    ? new DateTimeOffset(NextResetLocal(now)).ToUniversalTime()
+                    : null;
+            }
+        }
+    }
+
     public void Start(CancellationToken ct)
     {
         lock (_gate)

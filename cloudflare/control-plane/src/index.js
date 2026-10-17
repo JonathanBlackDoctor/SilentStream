@@ -1,3 +1,4 @@
+import {mergeUploads} from "./offline-history.js";
 const ROOM_DEFINITIONS = Object.freeze({
   m111: Object.freeze({ displayName: "M111" }),
   m112: Object.freeze({ displayName: "M112" }),
@@ -447,6 +448,8 @@ async function handleRoomHost(request, env, url, room) {
   }
   if (staticRead && url.pathname === "/app.js")
     return roomStaticAsset(request, env, url, "/room/app.js", 300);
+  if (staticRead && url.pathname === "/upload-view.js")
+    return roomStaticAsset(request, env, url, "/room/upload-view.js", 300);
   if (staticRead && url.pathname === "/icons/apple-touch-icon.png")
     return roomStaticAsset(request, env, url, `/room/icons/${room}/apple-touch-icon.png`, 31536000);
   const icon = url.pathname.match(/^\/icons\/(icon-(?:192|512|maskable)\.png)$/);
@@ -850,6 +853,8 @@ export class ControlPlane {
         registeredAtUtc: device.registeredAtUtc, lastSeenAtUtc: device.lastSeenAtUtc || null,
         app: device.app || null, audio: device.audio || null, inspection: device.inspection || null, recovery: device.recovery || null,
         playlists: device.playlists || null,
+        uploads: mergeUploads(device.uploads, device.app, device.lastSeenAtUtc),
+        cloudShutdownRequest: await this.shutdownRequest(device),
         role: await this.role(email, roomId)
       } : { roomId, registered: false, online: false, deviceId: "", installationId: "", machineName: "", agentVersion: "", registeredAtUtc: null, lastSeenAtUtc: null, app: null, audio: null, inspection: null, recovery: null, playlists: null, role: await this.role(email, roomId) });
     }
@@ -958,13 +963,104 @@ export class ControlPlane {
     return new Response(null, { status: 101, webSocket: client });
   }
 
+  async shutdownRequest(device) {
+    if (!device?.deviceId) return null;
+    const request = await this.state.storage.get("shutdownRequest:" + device.roomId);
+    if (!request || request.deviceId !== device.deviceId || request.installationId !== device.installationId) return null;
+    if (request.state === "queued" && Date.parse(request.targetUtc) - Date.now() < 180000) {
+      return this.state.storage.transaction(async storage => {
+        const current = await storage.get("shutdownRequest:" + device.roomId);
+        if (current?.id !== request.id || current.state !== "queued") return current;
+        const expired = {...current,state:"expired",message:"PC 연결 전에 등록 기한이 지나 요청이 만료됐습니다. 뒤늦게 실행하지 않습니다."};
+        await storage.put("shutdownRequest:" + device.roomId, expired);
+        return expired;
+      });
+    }
+    return request;
+  }
+
+  async saveOfflineShutdown(body, roomId) {
+    const ids = await this.state.storage.get("roomDevices:" + roomId) || [];
+    const devices = (await Promise.all(ids.map(id=>this.state.storage.get("device:"+id))))
+      .filter(device=>device&&!device.revokedAtUtc).sort((a,b)=>String(b.lastSeenAtUtc||b.registeredAtUtc).localeCompare(String(a.lastSeenAtUtc||a.registeredAtUtc)));
+    const device=devices[0];
+    if (!device) return error("등록된 PC가 없습니다.",409);
+    const key="shutdownRequest:"+roomId, targetUtc=body.body?.targetUtc, remaining=Date.parse(targetUtc)-Date.now();
+    if (!Number.isFinite(remaining)||remaining<180000||remaining>30*86400000)
+      return error("현재부터 3분 이후, 30일 이내의 시각을 선택하세요.",400);
+    return this.state.storage.transaction(async storage=>{
+      const old=await storage.get(key);
+      if (old&&(old.state==="dispatching"||old.state==="queued"&&Date.parse(old.targetUtc)-Date.now()>=180000))
+        return error("기존 클라우드 요청을 취소한 뒤 새로 예약하세요.",409);
+      const local=device.app?.shutdownSchedule;
+      if (local&&(["pending","executing"].includes(local.status)||local.status==="scheduled"&&Date.parse(local.targetUtc)>Date.now()))
+        return error("마지막 PC 기록에 실행 중인 종료 예약이 있습니다. PC 연결 후 확인·취소하세요.",409);
+      const request={id:"cloud-"+crypto.randomUUID(),deviceId:device.deviceId,installationId:device.installationId,
+        roomId,targetUtc:new Date(targetUtc).toISOString(),requestedBy:normalizeEmail(body.email),
+        createdAtUtc:new Date().toISOString(),state:"queued",
+        message:"클라우드에 저장했습니다. PC가 종료 3분 전까지 연결되면 PC 예약으로 등록합니다. 아직 PC 등록은 완료되지 않았습니다."};
+      await storage.put(key,request);
+      return json({ok:true,body:JSON.stringify({ok:true,message:request.message})},202);
+    });
+  }
+
+  async cancelCloudShutdown(body,roomId) {
+    return this.state.storage.transaction(async storage=>{
+      const key="shutdownRequest:"+roomId,request=await storage.get(key);
+      if (!request||request.id!==body.body?.id) return error("클라우드 예약 요청이 변경됐습니다. 새로고침하세요.",409);
+      if (request.state!=="queued") return error("이미 전달됐거나 종료된 요청입니다. 최신 PC 예약 상태에서 취소하세요.",409);
+      await storage.put(key,{...request,state:"cancelled",message:"연결 대기 중인 종료 예약 요청을 취소했습니다."});
+      return json({ok:true,body:JSON.stringify({ok:true,message:"클라우드 예약 요청을 취소했습니다."})});
+    });
+  }
+
+  async deliverShutdownRequest(socket,device) {
+    const request=await this.shutdownRequest(device);
+    if (request?.state!=="queued"||!device.app?.shutdownScheduleControl||!device.app?.remoteShutdownScheduleCommands) return;
+    const authorized=await this.role(request.requestedBy,device.roomId)==="admin";
+    const claimed=await this.state.storage.transaction(async storage=>{
+      const key="shutdownRequest:"+device.roomId,current=await storage.get(key);
+      if (current?.id!==request.id||current.state!=="queued")return false;
+      if (!authorized||current.deviceId!==device.deviceId||current.installationId!==device.installationId) {
+        await storage.put(key,{...current,state:"failed",message:"예약 요청 권한 또는 대상 PC가 변경돼 전달하지 않았습니다."});return false;
+      }
+      if (Date.parse(current.targetUtc)-Date.now()<180000) {
+        await storage.put(key,{...current,state:"expired",message:"등록 기한이 지나 만료됐습니다."});return false;
+      }
+      await storage.put(key,{...current,state:"dispatching",message:"연결된 PC에 예약을 등록하고 있습니다."});return true;
+    });
+    if (!claimed)return;
+    // Claim once before sending. Never automatically retry an ambiguous delivery.
+    let success=false,message="PC 응답을 확인하지 못했습니다. 최신 PC 예약 상태를 확인하세요.";
+    try {
+      const response=await this.command({roomId:device.roomId,email:request.requestedBy,
+        action:"system.shutdown.schedule",body:{targetUtc:request.targetUtc},queuedDelivery:true,
+        queuedDeviceId:device.deviceId,queuedInstallationId:device.installationId});
+      const result=await response.json();let local={};try{local=JSON.parse(result.body||"{}")}catch{}
+      success=result.ok&&local.ok!==false;
+      message=local.message||local.error||result.error||(success?"PC에 종료 예약을 등록했습니다.":message);
+    }catch{}
+    await this.state.storage.transaction(async storage=>{
+      const key="shutdownRequest:"+device.roomId,current=await storage.get(key);
+      if(current?.id===request.id&&current.state==="dispatching")
+        await storage.put(key,{...current,state:success?"applied":"failed",message,completedAtUtc:new Date().toISOString()});
+    });
+  }
+
   async command(body) {
     const roomId = normalizeRoom(body.roomId);
     const target = ACTIONS[body.action];
     const role = await this.role(body.email, roomId);
     if (!roomId || !target) return error("지원하지 않는 명령입니다.", 404);
     if (role === "none" || target.role === "admin" && role !== "admin") return error("이 명령을 실행할 권한이 없습니다.", 403);
-    const socket = this.state.getWebSockets(roomId)[0];
+    if (body.action === "system.shutdown.schedule.cancel" && String(body.body?.id||"").startsWith("cloud-"))
+      return this.cancelCloudShutdown(body,roomId);
+    const socket = body.queuedDelivery ? this.state.getWebSockets(roomId).find(socket=>{
+      const attachment=socket.deserializeAttachment();
+      return attachment?.deviceId===body.queuedDeviceId&&attachment?.installationId===body.queuedInstallationId;
+    }) : this.state.getWebSockets(roomId)[0];
+    if (!socket && body.action === "system.shutdown.schedule" && !body.queuedDelivery)
+      return this.saveOfflineShutdown(body,roomId);
     const commandId = crypto.randomUUID().replaceAll("-", "");
     const now = new Date().toISOString();
     const payload = { method: target.method, path: target.path, body: body.body && Object.keys(body.body).length ? body.body : null };
@@ -1019,14 +1115,21 @@ export class ControlPlane {
       const key = `device:${attachment.deviceId}`;
       const device = await this.state.storage.get(key);
       if (!device || device.revokedAtUtc) return;
-      const playlists = normalizePlaylistHistory(snapshot.playlists, attachment.roomId)
+      const incomingPlaylists = normalizePlaylistHistory(snapshot.playlists, attachment.roomId)
         ?? normalizePlaylistHistory(snapshot.app?.playlists, attachment.roomId);
+      const retainedPlaylists=new Map((device.playlists?.items||[]).map(item=>[item.date,item]));
+      for(const item of incomingPlaylists?.items||[])
+        if(retainedPlaylists.get(item.date)?.status!=="ready"||item.status==="ready")retainedPlaylists.set(item.date,item);
+      const playlists = incomingPlaylists ? normalizePlaylistHistory({room:attachment.roomId,
+        items:[...retainedPlaylists.values()]}, attachment.roomId) : device.playlists;
       await this.state.storage.put(key, {
         ...device, machineName: String(snapshot.machineName || device.machineName).slice(0, 128), agentVersion: String(snapshot.agentVersion || "").slice(0, 64),
         lastSeenAtUtc: snapshot.capturedAtUtc || new Date().toISOString(), app: snapshot.app || null, audio: snapshot.audio || null,
         inspection: snapshot.inspection || null, recovery: snapshot.recovery || null,
-        playlists: playlists ?? device.playlists ?? null
+        playlists: playlists ?? device.playlists ?? null,
+        uploads: mergeUploads(mergeUploads(device.uploads,device.app,device.lastSeenAtUtc), snapshot.app, snapshot.capturedAtUtc)
       });
+      await this.deliverShutdownRequest(socket, {...device,app:snapshot.app});
     } else if (envelope.type === "hello") {
       const hello = envelope.payload;
       if (normalizeRoom(hello?.roomId) !== attachment.roomId || hello?.installationId !== attachment.installationId) return;

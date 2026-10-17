@@ -178,6 +178,10 @@ public class UploadQueueTests : IDisposable
             cts1.Cancel();
         }
         Assert.Equal(UploadJobStatus.Pending, run1.Snapshot()[0].Status);
+        Assert.NotNull(run1.PausedUntilUtc);
+        // The persisted quota pause remains visible after restart, without starting a worker.
+        Assert.Equal(run1.PausedUntilUtc,
+            CreateWith(new FakeUploader(), run1Clock).PausedUntilUtc);
 
         // Run 2: brand-new queue from the same file (simulating an app restart). Advancing clock so
         // it passes the next PT reset and uploads the persisted job.
