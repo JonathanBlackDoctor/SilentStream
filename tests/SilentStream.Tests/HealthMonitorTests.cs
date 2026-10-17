@@ -374,6 +374,19 @@ public class HealthMonitorTests : IDisposable
     // ---- ActiveEvents + room stamp ----
 
     [Fact]
+    public void Removed_auto_input_clears_old_warning_and_ignores_late_capture_notification()
+    {
+        using var hm = CreateStarted();
+        _mixer.ConfigureSources([new("mic:old", AudioSourceKind.Microphone, "old", "USB")]);
+        _mixer.RaiseMic("mic:old", present: false);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent);
+        _mixer.ConfigureSources([new("mic:new", AudioSourceKind.Microphone, "new", "USB")]);
+        hm.RunChecksOnce();
+        _mixer.RaiseMic("mic:old", present: false);
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent);
+    }
+
+    [Fact]
     public void Active_events_tracks_conditions_but_not_momentary_notifications()
     {
         using var hm = CreateStarted();

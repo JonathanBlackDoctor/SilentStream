@@ -10,8 +10,13 @@ namespace SilentStream.Core.Contracts;
 /// </summary>
 public interface IAudioMixer : IDisposable
 {
+    bool AutoIncludeMicrophones { get => false; set { } }
+
     /// <summary>Enumerates available microphone capture devices for the UI dropdown.</summary>
     IReadOnlyList<AudioDeviceInfo> GetMicrophoneDevices();
+
+    /// <summary>Reopens configured microphones only. False when capture is stopped/unsupported.</summary>
+    bool RefreshMicrophones() => false;
 
     /// <summary>
     /// Replaces the full set of sources (system + microphones). Safe to call before or while

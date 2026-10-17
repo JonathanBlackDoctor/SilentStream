@@ -8,6 +8,9 @@ const ROOMS = Object.freeze(Object.keys(ROOM_DEFINITIONS));
 const ACTIONS = Object.freeze({
   "live.start": { method: "POST", path: "/api/live/start", role: "manager" },
   "live.retry": { method: "POST", path: "/api/live/retry", role: "manager" },
+  "audio.select": { method: "POST", path: "/api/audio/select", role: "manager" },
+  "audio.refresh": { method: "POST", path: "/api/audio/refresh", role: "manager" },
+  "audio.restore": { method: "POST", path: "/api/audio/restore", role: "manager" },
   "live.stopBroadcast": { method: "POST", path: "/api/live/stop-broadcast", role: "manager" },
   "live.stopAll": { method: "POST", path: "/api/live/stop", role: "admin" },
   "app.restart": { method: "POST", path: "/api/app/restart", role: "manager" },

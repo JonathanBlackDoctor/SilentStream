@@ -155,6 +155,9 @@ public sealed class AdaptiveConfig
 
 public sealed class AudioConfig
 {
+    /// <summary>Continuously include connected capture inputs, excluding system loopback monitors.</summary>
+    public bool AutoIncludeMicrophones { get; set; } = true;
+
     // ---- Legacy v1/v2 fields (kept for backward compatibility + migration into Sources) ----
 
     /// <summary>System (loopback) volume, 0.0-1.0. Legacy; migrated into <see cref="Sources"/>.</summary>

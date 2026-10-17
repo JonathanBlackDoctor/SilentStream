@@ -228,7 +228,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 // Apply the configured multi-source mixer layout (system + N mics, per-source
                 // gain/mute/gate) before capture so headless auto-start matches the UI (plan §3.4).
-                _audioMixer.ConfigureSources(AudioConfigMapper.ToSourceSettings(_configStore.Load().Audio));
+                var audioConfig = _configStore.Load().Audio;
+                _audioMixer.AutoIncludeMicrophones = audioConfig.AutoIncludeMicrophones;
+                _audioMixer.ConfigureSources(AudioConfigMapper.ToSourceSettings(audioConfig));
                 await _audioMixer.StartAsync(token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
@@ -28,7 +29,6 @@ public sealed class WasapiAudioMixer : IAudioMixer
     private const int LevelEmitIntervalMs = 60;                       // ~16 Hz meter updates
     private const double SilenceThresholdDb = -60;                    // below this a mic reads "no signal"
     private static readonly TimeSpan SilenceGrace = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan MissingSourceRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan CapturePacketGrace = TimeSpan.FromSeconds(5);
 
     private readonly ILogService _log;
@@ -42,11 +42,39 @@ public sealed class WasapiAudioMixer : IAudioMixer
     private Task? _pumpTask;
     private CancellationTokenSource? _cts;
     private Timer? _levelsTimer;
+    private Timer? _deviceTimer;
+    private int _deviceScanBusy;
+    private string? _lastDiscoveryError;
+    private readonly ConcurrentQueue<MicSignalStatus> _signalNotifications = new();
+    private int _signalDispatchBusy;
+    private readonly Dictionary<string, AudioSourceSettings> _knownInputs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Func<IReadOnlyList<AudioDeviceInfo>>? _deviceProvider;
+    private readonly Func<AudioSourceSettings, IWaveIn>? _captureFactory;
+    private bool _autoIncludeMicrophones = true;
+    private readonly TimeProvider _timeProvider = TimeProvider.System;
+    private readonly bool _enableTimers = true;
+    private DateTime UtcNow => _timeProvider.GetUtcNow().UtcDateTime;
     private bool _running;
 
     private volatile AudioLevels _currentLevels = AudioLevels.Empty;
 
     public WasapiAudioMixer(ILogService log) => _log = log;
+
+    internal WasapiAudioMixer(ILogService log, Func<IReadOnlyList<AudioDeviceInfo>> devices,
+        Func<AudioSourceSettings, IWaveIn> captureFactory, TimeProvider? timeProvider = null, bool enableTimers = true)
+    {
+        _log = log;
+        _deviceProvider = devices;
+        _captureFactory = captureFactory;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _enableTimers = enableTimers;
+    }
+
+    public bool AutoIncludeMicrophones
+    {
+        get { lock (_gate) return _autoIncludeMicrophones; }
+        set { lock (_gate) _autoIncludeMicrophones = value; }
+    }
 
     public event EventHandler<AudioLevels>? LevelsUpdated;
     public event EventHandler<MicSignalStatus>? MicSignalChanged;
@@ -71,7 +99,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         {
             lock (_gate)
             {
-                var now = DateTime.UtcNow;
+                var now = UtcNow;
                 return _chains.Select(chain =>
                 {
                     var active = _running && IsCaptureHealthy(chain, now);
@@ -88,13 +116,17 @@ public sealed class WasapiAudioMixer : IAudioMixer
 
     public IReadOnlyList<AudioDeviceInfo> GetMicrophoneDevices()
     {
+        if (_deviceProvider is not null) return _deviceProvider();
         using var enumerator = new MMDeviceEnumerator();
         // Real microphones first, loopback monitors (Stereo Mix) last and flagged, so the UI never
         // surfaces a loopback as the obvious default and the mic leg can't silently duplicate system audio.
-        return enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
-            .Select(d => new AudioDeviceInfo(d.ID, d.FriendlyName, AudioDeviceClassifier.IsLoopbackName(d.FriendlyName)))
-            .OrderBy(d => d.IsLoopback)
-            .ToList();
+        var result = new List<AudioDeviceInfo>();
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        {
+            using (device) result.Add(new(device.ID, device.FriendlyName,
+                AudioDeviceClassifier.IsLoopbackName(device.FriendlyName)));
+        }
+        return result.OrderBy(d => d.IsLoopback).ToList();
     }
 
     /// <summary>
@@ -146,6 +178,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         var incoming = Normalize(sources);
         lock (_gate)
         {
+            foreach (var source in incoming) _knownInputs[source.Id] = source;
             if (!_running)
             {
                 // Not capturing yet: just remember the layout; StartAsync builds the captures.
@@ -156,14 +189,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
 
             if (IsStructuralChange(incoming))
             {
-                // Source set / devices changed: rebuild every capture (brief glitch — rare, setup-time).
-                ReleaseCaptures();
-                _chains = incoming.Select(BuildChain).ToList();
-                foreach (var chain in _chains)
-                {
-                    StartCapture(chain);
-                }
-                BuildMixer();
+                ApplySourceLayout(incoming);
                 _log.Info($"오디오 소스 재구성: {_chains.Count}개 (시스템 + 마이크 {_chains.Count(c => c.Settings.Kind == AudioSourceKind.Microphone)})");
             }
             else
@@ -195,6 +221,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 return;
             }
             chain.Settings = chain.Settings with { Gain = gain };
+            _knownInputs[chain.Settings.Id] = chain.Settings;
             chain.ApplyVolume();
         }
     }
@@ -209,6 +236,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 return;
             }
             chain.Settings = chain.Settings with { Muted = muted };
+            _knownInputs[chain.Settings.Id] = chain.Settings;
             chain.ApplyVolume();
         }
     }
@@ -228,6 +256,17 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 _chains = Normalize(Array.Empty<AudioSourceSettings>()).Select(BuildChain).ToList();
             }
 
+            if (_autoIncludeMicrophones)
+            {
+                try
+                {
+                    foreach (var chain in _chains) _knownInputs[chain.Settings.Id] = chain.Settings;
+                    var layout = Normalize(MicrophoneRecoveryPolicy.ConnectedSources(_knownInputs.Values.ToArray(), GetMicrophoneDevices()));
+                    _chains = layout.Select(BuildChain).ToList();
+                }
+                catch (Exception ex) { _log.Warn($"마이크 목록 조회 실패 — 기존 입력 유지: {ex.Message}"); }
+            }
+
             foreach (var chain in _chains)
             {
                 StartCapture(chain);
@@ -239,7 +278,11 @@ public sealed class WasapiAudioMixer : IAudioMixer
             _pumpTask = Task.Factory.StartNew(
                 () => PumpLoop(_cts.Token), _cts.Token,
                 TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            _levelsTimer = new Timer(OnLevelsTick, null, LevelEmitIntervalMs, LevelEmitIntervalMs);
+            if (_enableTimers)
+            {
+                _levelsTimer = new Timer(OnLevelsTick, null, LevelEmitIntervalMs, LevelEmitIntervalMs);
+                _deviceTimer = new Timer(_ => ScanConnectedInputs(), null, 2000, 2000);
+            }
         }
         _log.Info($"오디오 믹서 시작 (소스 {_chains.Count}개)");
         return Task.CompletedTask;
@@ -256,6 +299,8 @@ public sealed class WasapiAudioMixer : IAudioMixer
             _pumpTask = null;
             _levelsTimer?.Dispose();
             _levelsTimer = null;
+            _deviceTimer?.Dispose();
+            _deviceTimer = null;
         }
         if (pump is not null)
         {
@@ -278,6 +323,57 @@ public sealed class WasapiAudioMixer : IAudioMixer
 
     // ---- capture graph ----
 
+    internal void ScanConnectedInputs()
+    {
+        if (Interlocked.Exchange(ref _deviceScanBusy, 1) != 0) return;
+        try
+        {
+            lock (_gate) { if (!_running || !_autoIncludeMicrophones) return; }
+            var devices = GetMicrophoneDevices();
+            _lastDiscoveryError = null;
+            lock (_gate)
+            {
+                if (!_running || !_autoIncludeMicrophones) return;
+                foreach (var chain in _chains) _knownInputs[chain.Settings.Id] = chain.Settings;
+                var incoming = Normalize(MicrophoneRecoveryPolicy.ConnectedSources(_knownInputs.Values.ToArray(), devices));
+                if (IsStructuralChange(incoming)) ApplySourceLayout(incoming);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (_lastDiscoveryError != ex.Message)
+                _log.Warn($"마이크 자동 검색 실패 — 기존 입력 유지: {ex.Message}");
+            _lastDiscoveryError = ex.Message;
+        }
+        finally { Volatile.Write(ref _deviceScanBusy, 0); }
+    }
+
+    // Keep every unchanged capture alive, including system audio, while adding/removing inputs.
+    private void ApplySourceLayout(IReadOnlyList<AudioSourceSettings> incoming)
+    {
+        var next = new List<SourceChain>();
+        foreach (var settings in incoming)
+        {
+            var chain = _chains.FirstOrDefault(c => c.Settings.Id == settings.Id
+                && c.Settings.Kind == settings.Kind && c.Settings.DeviceId == settings.DeviceId);
+            if (chain is null)
+            {
+                chain = BuildChain(settings);
+                StartCapture(chain);
+                _log.Info($"오디오 입력 추가: {settings.Name}");
+            }
+            chain.Settings = settings;
+            chain.Gate.Enabled = settings.Kind == AudioSourceKind.Microphone && settings.GateEnabled;
+            chain.Gate.ThresholdDb = settings.GateThresholdDb;
+            chain.ApplyVolume();
+            next.Add(chain);
+        }
+        var removed = _chains.Except(next).ToArray();
+        _chains = next;
+        BuildMixer();
+        foreach (var chain in removed) chain.ReleaseCapture();
+    }
+
     private SourceChain BuildChain(AudioSourceSettings settings)
     {
         var slot = new SwappableSampleProvider(MixFormat);
@@ -289,7 +385,10 @@ public sealed class WasapiAudioMixer : IAudioMixer
             ThresholdDb = settings.GateThresholdDb
         };
         var volume = new VolumeSampleProvider(gate);
-        var chain = new SourceChain(settings, slot, gate, volume);
+        var chain = new SourceChain(settings, slot, gate, volume)
+        {
+            Recovery = new(UtcNow), LastSignalUtc = UtcNow, StatusUpdatedUtc = UtcNow
+        };
         chain.ApplyVolume();
         return chain;
     }
@@ -305,7 +404,11 @@ public sealed class WasapiAudioMixer : IAudioMixer
         try
         {
             IWaveIn capture;
-            if (chain.Settings.Kind == AudioSourceKind.System)
+            if (_captureFactory is not null)
+            {
+                capture = _captureFactory(chain.Settings);
+            }
+            else if (chain.Settings.Kind == AudioSourceKind.System)
             {
                 capture = new WasapiLoopbackCapture();
             }
@@ -337,8 +440,11 @@ public sealed class WasapiAudioMixer : IAudioMixer
             {
                 buffer.AddSamples(e.Buffer, 0, e.BytesRecorded);
                 chain.Level.Accumulate(e.Buffer, e.BytesRecorded, format);
-                chain.LastPacketUtc = DateTime.UtcNow;
-                Interlocked.Add(ref chain.BytesReceived, e.BytesRecorded);
+                if (e.BytesRecorded > 0)
+                {
+                    chain.LastPacketUtc = UtcNow;
+                    Interlocked.Add(ref chain.BytesReceived, e.BytesRecorded);
+                }
             };
             capture.RecordingStopped += (_, e) =>
             {
@@ -356,22 +462,20 @@ public sealed class WasapiAudioMixer : IAudioMixer
             };
 
             var provider = Resampled(buffer);
-            capture.StartRecording();
-
             chain.Capture = capture;
-            pendingCapture = null; // ownership transferred to the source chain
             chain.CaptureFormat = format;
             chain.ResolvedDeviceId = resolvedDeviceId;
             chain.ResolvedDeviceName = resolvedDeviceName;
             chain.IsLoopbackCapture = resolvedLoopback;
             chain.Slot.Set(provider);
-            chain.LastSignalUtc = DateTime.UtcNow;
             chain.LastError = null;
-            chain.StatusUpdatedUtc = DateTime.UtcNow;
+            chain.StatusUpdatedUtc = UtcNow;
             chain.LastPacketUtc = null;
             Interlocked.Exchange(ref chain.BytesReceived, 0);
             chain.Restarting = false;
             chain.Started = true;
+            capture.StartRecording();
+            pendingCapture = null; // ownership transferred to the source chain
             if (wasUnavailable)
             {
                 _log.Info($"오디오 입력 장치 다시 연결됨(신호 확인 중): {chain.Settings.Name}");
@@ -379,6 +483,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         }
         catch (Exception ex)
         {
+            chain.Capture = null;
             try { pendingCapture?.Dispose(); } catch { }
             // A missing/failed source feeds silence so recording can continue, but it remains an
             // explicit alarm and is retried. Otherwise an unplugged M113 microphone looks healthy.
@@ -388,29 +493,48 @@ public sealed class WasapiAudioMixer : IAudioMixer
             chain.ResolvedDeviceName = resolvedDeviceName;
             chain.IsLoopbackCapture = resolvedLoopback;
             chain.LastError = ex.Message;
-            chain.StatusUpdatedUtc = DateTime.UtcNow;
+            chain.StatusUpdatedUtc = UtcNow;
             chain.Restarting = false;
             if (chain.Settings.Kind == AudioSourceKind.Microphone
                 && !chain.IsLoopbackCapture
                 && chain.SignalPresent)
             {
                 chain.SignalPresent = false;
-                MicSignalChanged?.Invoke(this, new MicSignalStatus(chain.Settings.Id, false, DateTime.UtcNow));
+                QueueSignal(new MicSignalStatus(chain.Settings.Id, false, UtcNow));
             }
             chain.Started = false;
         }
     }
 
-    private void TryRestartSource(SourceChain chain)
+    public bool RefreshMicrophones()
     {
         lock (_gate)
         {
-            if (chain.Started || chain.Restarting || !_running || !_chains.Contains(chain))
+            if (!_running) return false;
+            var microphones = _chains.Where(c => c.Settings.Kind == AudioSourceKind.Microphone).ToArray();
+            foreach (var chain in microphones)
+            {
+                chain.ReleaseCapture();
+                chain.LastRestartAttemptUtc = UtcNow;
+                StartCapture(chain);
+            }
+            return microphones.Length > 0;
+        }
+    }
+
+    private void TryRestartSource(SourceChain chain, bool silent = false)
+    {
+        lock (_gate)
+        {
+            if ((chain.Started && !silent) || chain.Restarting || !_running || !_chains.Contains(chain)
+                || !chain.Recovery.CanRetryFailure(UtcNow))
             {
                 return;
             }
             chain.Restarting = true;
-            chain.LastRestartAttemptUtc = DateTime.UtcNow;
+            chain.LastRestartAttemptUtc = UtcNow;
+            chain.Recovery.Attempt(chain.LastRestartAttemptUtc, silent);
+            _log.Warn($"오디오 입력 재연결 시도 ({(silent ? "무음 지속" : "연결/데이터 중단")}): {chain.Settings.Name}");
         }
         Task.Run(() =>
         {
@@ -434,14 +558,14 @@ public sealed class WasapiAudioMixer : IAudioMixer
         {
             if (!_running || !_chains.Contains(chain) || !ReferenceEquals(chain.Capture, capture)) return;
             chain.LastError = error.Message;
-            chain.StatusUpdatedUtc = DateTime.UtcNow;
+            chain.StatusUpdatedUtc = UtcNow;
             notifySignalLoss = chain.Settings.Kind == AudioSourceKind.Microphone
                 && !chain.IsLoopbackCapture && chain.SignalPresent;
             if (notifySignalLoss) chain.SignalPresent = false;
             chain.Started = false;
         }
         if (notifySignalLoss)
-            MicSignalChanged?.Invoke(this, new MicSignalStatus(chain.Settings.Id, false, DateTime.UtcNow));
+            QueueSignal(new MicSignalStatus(chain.Settings.Id, false, UtcNow));
         TryRestartSource(chain);
     }
 
@@ -503,22 +627,56 @@ public sealed class WasapiAudioMixer : IAudioMixer
             _masterLevel.AccumulateFloat(floatBuffer, SamplesPerChunk);
             emittedFrames += FramesPerChunk;
             SamplesAvailable?.Invoke(this, new AudioBuffer(
-                OutputSampleRate, OutputChannels, DateTime.UtcNow,
+                OutputSampleRate, OutputChannels, UtcNow,
                 new ReadOnlyMemory<byte>(pcmBuffer, 0, byteCount)));
         }
     }
 
     // ---- level snapshot + silence detection ----
 
-    private void OnLevelsTick(object? state)
+    // Health/UI listeners may take their own locks and read Sources. Dispatch in order without
+    // holding the capture lifecycle lock, so recovery cannot deadlock against those listeners.
+    private void QueueSignal(MicSignalStatus signal)
     {
-        List<SourceChain> chains;
-        lock (_gate)
-        {
-            chains = _chains.ToList();
-        }
+        _signalNotifications.Enqueue(signal);
+        DispatchSignals();
+    }
 
-        var now = DateTime.UtcNow;
+    private void DispatchSignals()
+    {
+        if (Interlocked.CompareExchange(ref _signalDispatchBusy, 1, 0) != 0) return;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                while (_signalNotifications.TryDequeue(out var signal))
+                {
+                    try { MicSignalChanged?.Invoke(this, signal); }
+                    catch (Exception ex) { _log.Error("마이크 상태 알림 처리 실패", ex); }
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _signalDispatchBusy, 0);
+                if (!_signalNotifications.IsEmpty) DispatchSignals();
+            }
+        });
+    }
+
+    private void OnLevelsTick(object? state)
+        => TickLevels();
+
+    internal void TickLevels()
+    {
+        AudioLevels? published = null;
+        // Timer callbacks may overlap. Never race topology changes or capture restarts.
+        if (!Monitor.TryEnter(_gate)) return;
+        try
+        {
+        if (!_running) return;
+        var chains = _chains.ToList();
+
+        var now = UtcNow;
         var sourceLevels = new List<AudioSourceLevel>(chains.Count);
         foreach (var chain in chains)
         {
@@ -531,21 +689,27 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 if (chain.Settings.Kind == AudioSourceKind.Microphone && chain.SignalPresent)
                 {
                     chain.SignalPresent = false;
-                    MicSignalChanged?.Invoke(this, new MicSignalStatus(chain.Settings.Id, false, now));
+                    QueueSignal(new MicSignalStatus(chain.Settings.Id, false, now));
                 }
                 chain.Started = false;
             }
-            if (!chain.Started && !chain.Restarting && now - chain.LastRestartAttemptUtc >= MissingSourceRetryInterval)
+            if (!chain.Started && !chain.Restarting)
             {
                 TryRestartSource(chain);
             }
             DetectSilence(chain, rmsDb, now);
+            if (chain.Settings.Kind == AudioSourceKind.Microphone && chain.Started
+                && chain.Recovery.CanRetrySilence(now, chain.Settings, chain.IsLoopbackCapture))
+                TryRestartSource(chain, silent: true);
         }
 
         var (masterPeak, masterRms) = _masterLevel.SnapshotReset();
         var levels = new AudioLevels(sourceLevels, masterPeak, masterRms, now);
         _currentLevels = levels;
-        LevelsUpdated?.Invoke(this, levels);
+        published = levels;
+        }
+        finally { Monitor.Exit(_gate); }
+        if (published is not null) LevelsUpdated?.Invoke(this, published);
     }
 
     private static bool IsCaptureHealthy(SourceChain chain, DateTime now)
@@ -572,18 +736,19 @@ public sealed class WasapiAudioMixer : IAudioMixer
 
         if (rmsDb > SilenceThresholdDb)
         {
+            chain.Recovery.ObserveSignal(now);
             chain.LastSignalUtc = now;
             if (!chain.SignalPresent)
             {
                 chain.SignalPresent = true;
-                MicSignalChanged?.Invoke(this, new MicSignalStatus(chain.Settings.Id, true, now));
+                QueueSignal(new MicSignalStatus(chain.Settings.Id, true, now));
                 _log.Info($"마이크 신호 정상 복구: {chain.Settings.Name}");
             }
         }
         else if (chain.SignalPresent && now - chain.LastSignalUtc > SilenceGrace)
         {
             chain.SignalPresent = false;
-            MicSignalChanged?.Invoke(this, new MicSignalStatus(chain.Settings.Id, false, now));
+            QueueSignal(new MicSignalStatus(chain.Settings.Id, false, now));
             _log.Warn($"마이크 신호 없음(무음 {SilenceGrace.TotalSeconds:F0}초 이상): {chain.Settings.Name} — 연결/음소거 확인 필요");
         }
     }
@@ -596,6 +761,8 @@ public sealed class WasapiAudioMixer : IAudioMixer
             _cts?.Cancel();
             _levelsTimer?.Dispose();
             _levelsTimer = null;
+            _deviceTimer?.Dispose();
+            _deviceTimer = null;
             ReleaseCaptures();
             _mixer = null;
         }
@@ -678,7 +845,8 @@ public sealed class WasapiAudioMixer : IAudioMixer
         public WaveFormat? CaptureFormat { get; set; }
         public volatile bool Started;
         public volatile bool SignalPresent = true;
-        public DateTime LastSignalUtc { get; set; }
+        public DateTime LastSignalUtc { get; set; } = DateTime.UtcNow;
+        public MicrophoneRecoveryPolicy Recovery { get; set; } = new(DateTime.UtcNow);
         public DateTime LastRestartAttemptUtc { get; set; } = DateTime.UnixEpoch;
         public DateTime StatusUpdatedUtc { get; set; } = DateTime.UtcNow;
         private long _lastPacketUtcTicks;

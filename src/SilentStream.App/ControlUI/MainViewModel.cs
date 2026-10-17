@@ -42,6 +42,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     // Coalesces config writes from gain-slider drags (which fire dozens of ticks) so we don't
     // do a synchronous load+save per tick on the UI thread.
+    private readonly DispatcherTimer _audioSyncTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _persistDebounce = new() { Interval = TimeSpan.FromMilliseconds(600) };
 
     // Guards LogLines so it can be fed from background logging threads while WPF's
@@ -151,6 +152,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         RefreshDevices();
         LoadAudioSources(config);
+        _audioSyncTimer.Tick += (_, _) => SyncAudioSources();
+        _audioSyncTimer.Start();
         LoadMonitors(config);
         RefreshRecordingStatus();
         ApplyState(_orchestrator.State);
@@ -472,6 +475,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void LoadAudioSources(AppConfig config)
     {
+        _audioMixer.AutoIncludeMicrophones = config.Audio.AutoIncludeMicrophones;
         _loadingAudio = true;
         AudioSources.Clear();
         foreach (var settings in AudioConfigMapper.ToSourceSettings(config.Audio))
@@ -533,6 +537,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             return;
         }
+        AutoIncludeMicrophones = false;
         _audioMixer.ConfigureSources(BuildSourceSettings());
         ReconcileSilentMics();
         PersistAudioSources();
@@ -566,8 +571,47 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _log.Info("오디오 마스터 필터 변경 — 다음 세션부터 적용됩니다.");
     }
 
+    private void SyncAudioSources()
+    {
+        Raise(nameof(AutoIncludeMicrophones));
+        // Remote changes must not be overwritten by stale desktop rows or a pending slider save.
+        var current = _audioMixer.Sources;
+        if (current.Count == 0) return; // The mixer may not be configured until the first start.
+        if (!_loadingAudio && !AudioSources.Select(s => s.ToSettings()).SequenceEqual(current))
+        {
+            _persistDebounce.Stop();
+            _loadingAudio = true;
+            try
+            {
+                AudioSources.Clear();
+                foreach (var settings in current) AudioSources.Add(CreateSourceVm(settings));
+            }
+            finally { _loadingAudio = false; }
+            ReconcileSilentMics();
+        }
+    }
+
+    public bool AutoIncludeMicrophones
+    {
+        get => _audioMixer.AutoIncludeMicrophones;
+        set
+        {
+            if (_audioMixer.AutoIncludeMicrophones == value) return;
+            var sources = _audioMixer.Sources;
+            _configStore.Update(c =>
+            {
+                c.Audio.AutoIncludeMicrophones = value;
+                if (!value && sources.Count > 0)
+                    c.Audio.Sources = sources.Select(AudioConfigMapper.ToConfig).ToList();
+            });
+            _audioMixer.AutoIncludeMicrophones = value;
+            Raise(nameof(AutoIncludeMicrophones));
+        }
+    }
+
     private void ApplyLevels(AudioLevels levels)
     {
+        SyncAudioSources();
         foreach (var level in levels.Sources)
         {
             // small list (system + a few mics): linear scan is fine.

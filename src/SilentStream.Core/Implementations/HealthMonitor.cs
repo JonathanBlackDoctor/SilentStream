@@ -265,6 +265,8 @@ public sealed class HealthMonitor : IHealthMonitor
 
     private void OnMicSignalChanged(object? sender, MicSignalStatus status)
     {
+        var source = _mixer.Sources.FirstOrDefault(s => s.Id == status.SourceId);
+        if (source is null) return; // A queued notification from an input removed by auto-discovery.
         var buffer = new List<HealthEvent>();
         lock (_gate)
         {
@@ -275,14 +277,14 @@ public sealed class HealthMonitor : IHealthMonitor
                     // A silent mic during a live broadcast is more urgent than while idle.
                     var severity = _liveSessionActive ? HealthSeverity.Critical : HealthSeverity.Warn;
                     SetCondition(buffer, HealthEventKind.MicSilent, severity, active: true,
-                        $"마이크 신호가 없습니다: {ResolveMicName(status.SourceId)} — 연결/음소거를 확인하세요.",
+                          $"마이크 신호가 없습니다: {source.Name} — 연결/음소거를 확인하세요.",
                         status.SourceId);
                 }
             }
             else if (_silentMics.Remove(status.SourceId))
             {
                 SetCondition(buffer, HealthEventKind.MicSilent, HealthSeverity.Info, active: false,
-                    $"마이크 신호가 복구되었습니다: {ResolveMicName(status.SourceId)}", status.SourceId);
+                      $"마이크 신호가 복구되었습니다: {source.Name}", status.SourceId);
             }
         }
         RaiseAll(buffer);
@@ -344,6 +346,7 @@ public sealed class HealthMonitor : IHealthMonitor
 
         // Gather external inputs OUTSIDE the lock so disk I/O never blocks the event handlers.
         var state = _orchestrator.State;
+        var currentInputs = _mixer.Sources.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
 
         long? freeBytes = null;
         var recordingEnabled = false;
@@ -386,6 +389,12 @@ public sealed class HealthMonitor : IHealthMonitor
 
         lock (_gate)
         {
+            foreach (var removed in _silentMics.Where(id => !currentInputs.Contains(id)).ToArray())
+            {
+                _silentMics.Remove(removed);
+                SetCondition(buffer, HealthEventKind.MicSilent, HealthSeverity.Info, active: false,
+                    "입력 목록에서 제외된 마이크의 이전 경고를 해제했습니다.", removed);
+            }
             if (roomKnown)
             {
                 _room = room;

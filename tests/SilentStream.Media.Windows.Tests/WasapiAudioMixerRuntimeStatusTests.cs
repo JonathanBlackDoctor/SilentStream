@@ -8,9 +8,18 @@ namespace SilentStream.Media.Windows.Tests;
 public sealed class WasapiAudioMixerRuntimeStatusTests
 {
     [Fact]
+    public void Refresh_does_not_start_stopped_capture()
+    {
+        using var mixer = new WasapiAudioMixer(new NullLog()) { AutoIncludeMicrophones = false };
+        mixer.ConfigureSources([new("mic:missing", AudioSourceKind.Microphone, "missing", "Mic")]);
+        Assert.False(mixer.RefreshMicrophones());
+        Assert.All(mixer.SourceStatuses, s => Assert.False(s.CaptureActive));
+    }
+
+    [Fact]
     public async Task Missing_configured_microphone_remains_visible_and_raises_unavailable_signal()
     {
-        using var mixer = new WasapiAudioMixer(new NullLog());
+        using var mixer = new WasapiAudioMixer(new NullLog()) { AutoIncludeMicrophones = false };
         var id = "mic:missing-" + Guid.NewGuid().ToString("N");
         var endpoint = "missing-endpoint-" + Guid.NewGuid().ToString("N");
         const string name = "M113 classroom microphone";
@@ -18,14 +27,16 @@ public sealed class WasapiAudioMixerRuntimeStatusTests
             new AudioSourceSettings(id, AudioSourceKind.Microphone, endpoint, name)
         ]);
         MicSignalStatus? signal = null;
+        var signalReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         mixer.MicSignalChanged += (_, status) =>
         {
-            if (status.SourceId == id) signal = status;
+            if (status.SourceId == id) { signal = status; signalReceived.TrySetResult(); }
         };
 
         await mixer.StartAsync(CancellationToken.None);
         try
         {
+            await signalReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
             var runtime = Assert.Single(mixer.SourceStatuses, status => status.Id == id);
             Assert.False(runtime.CaptureActive);
             Assert.False(string.IsNullOrWhiteSpace(runtime.Error));
@@ -37,6 +48,10 @@ public sealed class WasapiAudioMixerRuntimeStatusTests
             Assert.Contains(mixer.Sources, source => source.Id == id);
             Assert.NotNull(signal);
             Assert.False(signal!.SignalPresent);
+            Assert.True(mixer.RefreshMicrophones());
+            var refreshed = Assert.Single(mixer.SourceStatuses, s => s.Id == id);
+            Assert.False(refreshed.CaptureActive);
+            Assert.NotNull(refreshed.Error);
         }
         finally
         {
@@ -47,7 +62,7 @@ public sealed class WasapiAudioMixerRuntimeStatusTests
     [Fact]
     public async Task Loopback_microphone_status_is_identified_and_never_raises_a_physical_mic_signal_alarm()
     {
-        using var mixer = new WasapiAudioMixer(new NullLog());
+        using var mixer = new WasapiAudioMixer(new NullLog()) { AutoIncludeMicrophones = false };
         var id = "mic:loopback-" + Guid.NewGuid().ToString("N");
         var endpoint = "missing-loopback-" + Guid.NewGuid().ToString("N");
         const string name = "Stereo Mix (Realtek Audio)";

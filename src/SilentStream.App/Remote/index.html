@@ -1394,7 +1394,7 @@
     }
     function applySettingsLockUi(){
       const otherLocked = !settingsLock.otherSettingsEditable;
-      setSettingsDisabled("#qualPills button, #srcList button, #srcList input, #pushToggle, #automationToggleBtn", otherLocked);
+      setSettingsDisabled("#qualPills button, #srcList button, #srcList input, #srcList select, #pushToggle, #automationToggleBtn", otherLocked);
     }
     function renderSettingsLock(payload){
       const mode = ["unlocked", "locked"].includes(payload && payload.mode)
@@ -1536,7 +1536,15 @@
       else el.classList.add("hidden");
     }
     function renderAudio(d){
-      $("srcList").innerHTML = d.sources.map(s=>`
+      $("srcList").innerHTML = (d.microphoneControl ? `<div class="src">
+        <label>입력 모드 (개별 선택 시 전체 자동 추가 해제)
+        <select id="remoteMicDevice" style="display:block;width:100%;max-width:100%;margin:8px 0"><option value="">마이크 선택</option>${typeof d.autoIncludeMicrophones === "boolean" ? `<option value="*" ${d.autoIncludeMicrophones ? "selected" : ""}>연결된 모든 입력 자동 사용</option>` : ""}${(d.devices||[]).map(v=>`<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")}</select></label>
+        <button id="remoteMicSelect">선택 적용</button>
+        <button id="remoteMicReload">목록 새로고침</button>
+        <button id="remoteMicRefresh">입력 다시 연결</button>
+        <button id="remoteMicRestore">입력 복구 (음소거·게이트 해제)</button>
+        <p id="remoteMicResult" role="status">재연결 뒤 실제 소리를 내어 음량 막대를 확인하세요.</p>
+      </div>` : "") + d.sources.map(s=>`
         <div class="src" data-id="${esc(s.id)}">
           <div class="top">
             <span class="name">${esc(s.name)} ${s.available===false&&s.captureError?'<span class="pill failed">연결 안 됨</span>':''}</span>
@@ -1555,6 +1563,24 @@
         try{ const r=await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("gain"); }catch(e){}
       });
       updateMicWarn(d.micWarning, d.silent, d.unavailable);
+      if(d.microphoneControl){
+        $("remoteMicReload").onclick=()=>loadAudio().catch(()=>{$("remoteMicResult").textContent="목록을 불러오지 못했습니다.";});
+        const command=async(path,body={})=>{
+          const room=cur;
+          try{
+            const r=await api(room,path,{method:"POST",body:JSON.stringify(body)});
+            if(await handleSettingsLockError(r))return;
+            const result=await r.json();
+            if(cur!==room)return;
+            if(!r.ok)throw Error(result.error||"입력 제어 실패");
+            await loadAudio();
+            if(cur===room)$("remoteMicResult").textContent=result.message;
+          }catch(e){if(cur===room&&$("remoteMicResult"))$("remoteMicResult").textContent=e.message;}
+        };
+        $("remoteMicSelect").onclick=()=>command("/api/audio/select",{deviceId:$("remoteMicDevice").value});
+        $("remoteMicRefresh").onclick=()=>command("/api/audio/refresh");
+        $("remoteMicRestore").onclick=()=>command("/api/audio/restore");
+      }
       renderedSrcKey = d.sources.map(s=>s.id).join("|");
       applySettingsLockUi();
     }

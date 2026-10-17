@@ -767,6 +767,48 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
         // ---- audio mixer (다중 채널 + 증폭 + 실시간 미터) ----
         app.MapGet("/api/audio", () => Results.Json(BuildAudio(), Json));
+        app.MapPost("/api/audio/select", async Task<IResult> (HttpContext ctx) =>
+        {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked) return blocked;
+            var body = await ReadJsonAsync<MicrophoneSelectRequest>(ctx).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(body?.DeviceId))
+                return Results.BadRequest(new { error = "마이크를 선택하세요." });
+            try
+            {
+                var sources = MicrophoneRemote.Select(_audioMixer.Sources, _audioMixer.GetMicrophoneDevices(), body.DeviceId);
+                var automatic = body.DeviceId == MicrophoneRemote.AllConnectedDeviceId;
+                _configStore.Update(c =>
+                {
+                    c.Audio.AutoIncludeMicrophones = automatic;
+                    c.Audio.Sources = sources.Select(AudioConfigMapper.ToConfig).ToList();
+                });
+                _audioMixer.AutoIncludeMicrophones = automatic;
+                _audioMixer.ConfigureSources(sources);
+                return Results.Json(new { ok = true, message = automatic
+                    ? "연결된 입력을 모두 사용하며 새 입력도 자동 추가합니다. 실제 소리를 확인하세요."
+                    : "마이크를 선택했습니다. 전체 입력 자동 추가는 꺼졌습니다. 입력 신호를 확인하세요." }, Json);
+            }
+            catch (ArgumentException ex) { return Results.BadRequest(new { error = ex.Message }); }
+        });
+        app.MapPost("/api/audio/refresh", () =>
+        {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked) return blocked;
+            if (!_audioMixer.RefreshMicrophones())
+                return Results.Json(new { ok = false, error = "캡처 중인 마이크가 없습니다. 마이크를 선택하고 송출을 시작하세요." },
+                    Json, statusCode: StatusCodes.Status409Conflict);
+            return Results.Json(new { ok = true, message = "입력을 다시 열었습니다. 실제 소리를 내어 신호를 확인하세요." }, Json);
+        });
+        app.MapPost("/api/audio/restore", () =>
+        {
+            if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked) return blocked;
+            if (!_audioMixer.RefreshMicrophones())
+                return Results.Json(new { ok = false, error = "캡처 중인 마이크가 없습니다. 마이크를 선택하고 송출을 시작하세요." },
+                    Json, statusCode: StatusCodes.Status409Conflict);
+            var sources = MicrophoneRemote.RestoreInput(_audioMixer.Sources);
+            _configStore.Update(c => c.Audio.Sources = sources.Select(AudioConfigMapper.ToConfig).ToList());
+            _audioMixer.ConfigureSources(sources);
+            return Results.Json(new { ok = true, message = "앱 음소거·노이즈 게이트를 해제하고 입력을 다시 열었습니다. 실제 신호를 확인하세요." }, Json);
+        });
         app.MapPost("/api/audio/mute", async Task<IResult> (HttpContext ctx) =>
         {
             if (BlockSettingsChange(RemoteSettingsSection.Other) is { } blocked)
@@ -1137,6 +1179,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
         lock (_silentMicsGate) silentIds = _silentMics.Keys.ToHashSet(StringComparer.Ordinal);
         return new
         {
+            microphoneControl = true,
+            autoIncludeMicrophones = _configStore.Load().Audio.AutoIncludeMicrophones,
+            devices = GetRemoteMicrophoneDevices(),
             micWarning = microphone.Warning,
             silent = microphone.Attention,
             unavailable = microphone.Unavailable,
@@ -1169,16 +1214,32 @@ public sealed class RemoteControlServer : IRemoteControlServer
         };
     }
 
-    private void PersistSourceChange(string id, Action<AudioSourceConfig> mutate) =>
+    private IReadOnlyList<AudioDeviceInfo> GetRemoteMicrophoneDevices()
+    {
+        try { return _audioMixer.GetMicrophoneDevices().Where(d => !d.IsLoopback).ToArray(); }
+        catch { return Array.Empty<AudioDeviceInfo>(); }
+    }
+
+    private sealed record MicrophoneSelectRequest(string DeviceId);
+
+    private void PersistSourceChange(string id, Action<AudioSourceConfig> mutate)
+    {
+        var runtime = _audioMixer.Sources.FirstOrDefault(s => s.Id == id);
         _configStore.Update(config =>
         {
             var source = config.Audio.Sources.FirstOrDefault(
                 s => AudioConfigMapper.SourceId(s.Kind, s.DeviceId) == id);
+            if (source is null && runtime is not null)
+            {
+                source = AudioConfigMapper.ToConfig(runtime);
+                config.Audio.Sources.Add(source);
+            }
             if (source is not null)
             {
                 mutate(source);
             }
         });
+    }
 
     private static double ToFraction(double db)
     {

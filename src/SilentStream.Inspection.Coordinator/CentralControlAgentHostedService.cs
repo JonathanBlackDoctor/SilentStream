@@ -107,6 +107,12 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         client.Timeout = TimeSpan.FromSeconds(5);
         var app = await GetLocalJsonAsync(client, "/api/status", appToken, token).ConfigureAwait(false);
         var audio = await GetLocalJsonAsync(client, "/api/audio", appToken, token).ConfigureAwait(false);
+        if (audio.ValueKind == JsonValueKind.Object)
+        {
+            var capabilities = audio.Deserialize<Dictionary<string, JsonElement>>(Json)!;
+            capabilities["remoteMicrophoneCommands"] = JsonSerializer.SerializeToElement(true);
+            audio = JsonSerializer.SerializeToElement(capabilities, Json);
+        }
         var recovery = await GetLocalJsonAsync(client, "/api/recovery/status", appToken, token).ConfigureAwait(false);
         var playlists = await GetLocalJsonAsync(client, "/api/inspection/playlists?knownOnly=true", appToken,
             token, inspectionBridge: true).ConfigureAwait(false);
@@ -279,6 +285,9 @@ public sealed class CentralControlAgentHostedService : BackgroundService
         {
             "live.start" => ("POST", "/api/live/start"),
             "live.retry" => ("POST", "/api/live/retry"),
+            "audio.select" => ("POST", "/api/audio/select"),
+            "audio.refresh" => ("POST", "/api/audio/refresh"),
+            "audio.restore" => ("POST", "/api/audio/restore"),
             "live.stopBroadcast" => ("POST", "/api/live/stop-broadcast"),
             "live.stopAll" => ("POST", "/api/live/stop"),
             "app.restart" => ("POST", "/api/app/restart"),
