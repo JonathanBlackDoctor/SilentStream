@@ -30,13 +30,13 @@ USB의 PPT·PPTX·PDF를 프로그램이 읽으면 해당 문서를 같은 PC에
 - 중앙 /api/control/rooms/{room}/usb-documents 및 /{id}/download : 호실 인증·원격 중계.
 
 ## 패키징과 현장 확인
-앱, Broker, Coordinator를 함께 업데이트해야 한다. Broker publish 폴더의 TraceEvent 및 native DLL을 포함해 기존 도우미 패키징 절차를 적용한다. 기존 서명·설치 권한 절차는 유지한다. 이번 작업은 로컬 publish 검증까지만 수행하며 배포·서비스 설치·운영 설정 변경은 하지 않는다.
+앱, Broker, Coordinator를 함께 업데이트해야 한다. Broker publish 폴더의 TraceEvent 및 native DLL을 포함해 기존 도우미 패키징 절차를 적용한다. 기존 서명·설치 권한 절차는 유지한다. 0.4.10 앱·도우미 통합 설치본과 운영 웹이 게시됐다. 기존 구버전 신뢰키를 사용하는 PC는 공식 호실 설치 페이지에서 관리자 권한으로 통합 설치본을 실행한다. 배포 기록은 docs/usb-release-0.4.10.md를 참조한다.
 
 현장 관리자로 도우미 설치 후 기능을 켜고 PowerPoint, Edge/Chrome PDF, Adobe Reader, 탐색기 복사/이동/미리보기를 확인한다. USB 연결·폴더 조회만으로 수집하지 않는지, 분리/재연결, 문서 변경, 동명 파일, 다운로드 해시, 녹음 동시 수행을 확인한다.
 
 ETW는 클릭 의도가 아닌 파일 읽기를 관찰한다. 모든 앱에서 무손실 감지를 보장하지 않으며, 이동 중 원본이 먼저 삭제되거나 USB가 먼저 빠지면 실패할 수 있다. 관리자 권한이 없는 환경에서는 ETW 실측·2초 이내 시작·실제 녹음 동시 성능을 검증했다고 주장하지 않는다.
 
-## 2026-10-17 검증 결과
+## 2026-10-17 최초 로컬 구현 검증 결과
 - 자동 테스트704개 통과(Core/API523, Windows점검74, 오디오10, 중앙웹83, 직접웹14).
 - 앱·Broker·Coordinator Release win-x64 publish 성공. ETW 관리/네이티브 DLL 포함.
 - 연결된 USB볼륨1개 판별 확인. 실제 사용자 USB 문서는 열거나 쓰지 않음.
