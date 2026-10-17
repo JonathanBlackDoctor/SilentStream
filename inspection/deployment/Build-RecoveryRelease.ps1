@@ -38,7 +38,11 @@ $verified = Join-Path $repo 'verified-recovery-startup'
 & $cli bundle verify-startup $bundle $publicKey $verified
 if ($LASTEXITCODE -ne 0) { throw 'Signed startup safety verification failed.' }
 $expectedPlan = Join-Path $repo "inspection/bundles/startup-v$Version/plan.json"
-if ((Get-FileHash -LiteralPath (Join-Path $verified 'plan.json')).Hash -ne (Get-FileHash -LiteralPath $expectedPlan).Hash) { throw 'Signed plan differs from reviewed source.' }
+$verifiedPlans = @(Get-ChildItem -LiteralPath $verified -Filter 'plan.json' -Recurse -File)
+if ($verifiedPlans.Count -ne 1) { throw 'Verified plan must be unique inside its bundle directory.' }
+$signedPlanJson = Get-Content -LiteralPath $verifiedPlans[0].FullName -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 40 -Compress
+$sourcePlanJson = Get-Content -LiteralPath $expectedPlan -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 40 -Compress
+if (-not [string]::Equals($signedPlanJson,$sourcePlanJson,[StringComparison]::Ordinal)) { throw 'Signed plan differs from reviewed source.' }
 $setup = @(Get-ChildItem -LiteralPath 'Releases' -Filter '*Setup*.exe')
 if ($setup.Count -ne 1) { throw 'Expected exactly one app Setup.' }
 Copy-Item -LiteralPath $setup[0].FullName -Destination $package

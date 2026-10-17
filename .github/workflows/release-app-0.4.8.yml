@@ -1,7 +1,6 @@
 name: release app 0.4.8
 
-# This app-only release preserves the signed inspection services already deployed.
-# The full v* workflow requires a new, separately signed inspection bundle.
+# App updates and administrator recovery installation with separately signed trust material.
 on:
   push:
     branches: ["claude/relaxed-davinci-qmmjwl"]
