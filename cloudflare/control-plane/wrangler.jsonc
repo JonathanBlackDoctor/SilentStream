@@ -9,22 +9,54 @@
     "enabled": true
   },
   "routes": [
-    { "pattern": "silentstream.win/*", "zone_name": "silentstream.win" },
-    { "pattern": "www.silentstream.win/*", "zone_name": "silentstream.win" },
-    { "pattern": "admin.silentstream.win", "custom_domain": true },
-    { "pattern": "agent.silentstream.win", "custom_domain": true },
-    { "pattern": "m111.silentstream.win", "custom_domain": true },
-    { "pattern": "m112.silentstream.win", "custom_domain": true },
-    { "pattern": "m113.silentstream.win", "custom_domain": true },
-    { "pattern": "baek202.silentstream.win", "custom_domain": true }
+    {
+      "pattern": "silentstream.win/*",
+      "zone_name": "silentstream.win"
+    },
+    {
+      "pattern": "www.silentstream.win/*",
+      "zone_name": "silentstream.win"
+    },
+    {
+      "pattern": "admin.silentstream.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "agent.silentstream.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "m111.silentstream.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "m112.silentstream.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "m113.silentstream.win",
+      "custom_domain": true
+    },
+    {
+      "pattern": "baek202.silentstream.win",
+      "custom_domain": true
+    }
   ],
   "durable_objects": {
     "bindings": [
-      { "name": "CONTROL", "class_name": "ControlPlane" }
+      {
+        "name": "CONTROL",
+        "class_name": "ControlPlane"
+      }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ControlPlane"] }
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ControlPlane"
+      ]
+    }
   ],
   "assets": {
     "directory": "./public",
@@ -35,14 +67,14 @@
   "vars": {
     "PUBLIC_BASE_URI": "https://admin.silentstream.win",
     "DEVICE_BASE_URI": "https://agent.silentstream.win",
-    "PACKAGE_KEY": "releases/v0.4.1-hotfix3/SilentStream-prepared-package.zip",
-    "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/silentstream-control-v0.4.1/SilentStream-prepared-package-v0.4.1-hotfix3.zip",
-    "PACKAGE_SHA256": "78508203ab751f22b394082fd381e5927430e575cfc8f06b3bb7005c01d4d198",
-    "PACKAGE_LENGTH": "514388119",
-    "INSTALLER_KEY": "releases/v0.4.1-hotfix3/SilentStream-Central-Installer.exe",
-    "INSTALLER_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/silentstream-control-v0.4.1/SilentStream-Central-Installer-v0.4.1-hotfix3.exe",
-    "INSTALLER_SHA256": "496963496d21f179c4a568c44b8d2bcd602f8fa7a8c69091b217b458981149b7",
-    "INSTALLER_LENGTH": "161714473",
+    "PACKAGE_KEY": "releases/v0.4.8/SilentStream-prepared-package-v0.4.8.zip",
+    "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.8/SilentStream-prepared-package-v0.4.8.zip",
+    "PACKAGE_SHA256": "aedfca6e69f165f0a3ad5d3315b86225731d2448e1e29ea2333f556ef461f75c",
+    "PACKAGE_LENGTH": "598230846",
+    "INSTALLER_KEY": "releases/v0.4.8/SilentStream-Central-Installer-v0.4.8.exe",
+    "INSTALLER_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.8/SilentStream-Central-Installer-v0.4.8.exe",
+    "INSTALLER_SHA256": "1203fdec8b9a0bf8aa5a7d37dc1495331c53c59036a604eb12187029a7e1be8d",
+    "INSTALLER_LENGTH": "161746770",
     "GOOGLE_CLIENT_ID": "909291792658-um7mnfcnu8po4d36hs6n09q6inssc654.apps.googleusercontent.com",
     "BOOTSTRAP_OWNER_EMAIL": "alpaomegastartend@gmail.com",
     "ACCESS_TEAM_DOMAIN": "",
