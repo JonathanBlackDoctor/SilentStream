@@ -38,5 +38,7 @@ export function mergeUploads(previous, app, capturedAtUtc) {
   // Stay below the configured SQLite value limit even with maximum-length Unicode labels.
   while(new TextEncoder().encode(JSON.stringify(result)).length>900000&&result.items.length)
     result.items.splice(Math.max(0,result.items.length-100),100);
+  while(new TextEncoder().encode(JSON.stringify(result)).length>900000&&Object.keys(result.days).length)
+    delete result.days[Object.keys(result.days).at(-1)];
   return result;
 }

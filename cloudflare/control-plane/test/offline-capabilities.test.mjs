@@ -84,3 +84,10 @@ test('empty and partial playlist snapshots retain known ready links',async()=>{
  const stored=app.values.get('device:dev1').playlists;
  assert.equal(stored.items.length,2);assert.equal(stored.items.find(i=>i.date==='2026-10-16').status,'ready');
 });
+test('maximum Unicode timetable histories also stay within the storage payload bound',()=>{
+ const days={};
+ for(let i=0;i<90;i++){const date=new Date(Date.UTC(2026,0,1+i)).toISOString().slice(0,10);
+   days[date]=Array.from({length:30},(_,no)=>({no,slotId:"교".repeat(100),slotLabel:"시".repeat(100),start:"08:00:00",end:"09:00:00"}));}
+ const result=mergeUploads({items:[],days},null);
+ assert.ok(new TextEncoder().encode(JSON.stringify(result)).length<=900000);
+});
