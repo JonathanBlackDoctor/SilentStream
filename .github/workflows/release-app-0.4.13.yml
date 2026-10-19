@@ -1,6 +1,6 @@
 name: release app 0.4.13
 
-# App updates and administrator recovery installation with separately signed trust material.
+# App 0.4.13 and installer use reviewed helper/startup 0.4.12 without changing trust.
 on:
   push:
     branches: ["claude/relaxed-davinci-qmmjwl"]

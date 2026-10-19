@@ -17,7 +17,8 @@ $projects = [ordered]@{
 }
 foreach ($name in $projects.Keys) {
   $single = if ($name -in @('broker','installer')) { 'true' } else { 'false' }
-  dotnet publish $projects[$name] -c Release -r win-x64 --self-contained true "-p:Version=$Version" "-p:PublishSingleFile=$single" -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o "recovery-package/bin/$name"
+  $componentVersion = if ($name -eq 'installer') { $Version } else { $SigningMaterialVersion }
+  dotnet publish $projects[$name] -c Release -r win-x64 --self-contained true "-p:Version=$componentVersion" "-p:PublishSingleFile=$single" -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o "recovery-package/bin/$name"
   if ($LASTEXITCODE -ne 0) { throw "Inspection publish failed: $name" }
 }
 Copy-Item -LiteralPath 'publish/cloudflared' -Destination (Join-Path $package 'bin/cloudflared') -Recurse
@@ -57,6 +58,6 @@ $assets = foreach ($file in @($archiveName,$installerName)) {
   $item = Get-Item -LiteralPath $file
   [ordered]@{name=$item.Name;length=$item.Length;sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 }
-[ordered]@{version=$Version;signingMaterialVersion=$SigningMaterialVersion;signingKeyId=$preseed.signingKeyId;startupSignatureVerified=$true;assets=@($assets)} |
+[ordered]@{version=$Version;helperVersion=$SigningMaterialVersion;signingMaterialVersion=$SigningMaterialVersion;signingKeyId=$preseed.signingKeyId;startupSignatureVerified=$true;assets=@($assets)} |
   ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "recovery-metadata-$Version.json" -Encoding utf8
 Write-Output "Prepared and verified recovery package $archiveName"
