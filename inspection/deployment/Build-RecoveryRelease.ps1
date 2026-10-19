@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param([string]$Version='0.4.8')
 $ErrorActionPreference='Stop'
-if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11')) { throw 'Use matching reviewed signing material for each immutable release.' }
+if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12')) { throw 'Use matching reviewed signing material for each immutable release.' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Set-Location -LiteralPath $repo
 $package = Join-Path $repo 'recovery-package'

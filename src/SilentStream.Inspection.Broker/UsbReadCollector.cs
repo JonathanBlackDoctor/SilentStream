@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Microsoft.Diagnostics.Tracing;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Session;
@@ -19,6 +20,7 @@ public sealed class UsbReadCollector : BackgroundService
     private string _status = "꺼짐";
     private bool _failed;
     private TraceEventSession? _session;
+    private ETWTraceEventSource? _source;
     private Task? _consumer;
     private static readonly HashSet<string> Excluded = new(StringComparer.OrdinalIgnoreCase)
     { "MediaCaptureHelper", "SilentStreamInspectionBroker", "SilentStreamInspectionCoordinator",
@@ -34,7 +36,7 @@ public sealed class UsbReadCollector : BackgroundService
             while (_events.TryPeek(out var old) && old.Sequence <= cursor) _events.Dequeue();
             var batch = _events.Where(e => e.Sequence > cursor).Take(64).ToArray();
             return new(_status, batch.Length == 0 ? _sequence : batch[^1].Sequence,
-                _dropped + (_session?.Source.EventsLost ?? 0), batch.Select(e => e.Notice).ToArray());
+                _dropped + (_source?.EventsLost ?? 0), batch.Select(e => e.Notice).ToArray());
         }
     }
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -66,7 +68,13 @@ public sealed class UsbReadCollector : BackgroundService
             var session = new TraceEventSession("SilentStream-UsbDocuments-" + Environment.ProcessId);
             _session = session;
             session.StopOnDispose = true;
-            session.Source.Kernel.FileIORead += data =>
+            // Source starts a normal session lazily. Kernel enablement must happen first.
+            session.EnableKernelProvider(KernelTraceEventParser.Keywords.FileIO
+                | KernelTraceEventParser.Keywords.FileIOInit | KernelTraceEventParser.Keywords.DiskFileIO | KernelTraceEventParser.Keywords.Process
+                | KernelTraceEventParser.Keywords.Thread);
+            var source = session.Source;
+            lock (_gate) _source = source;
+            source.Kernel.FileIORead += data =>
             {
                 if (data.IoSize <= 0 || string.IsNullOrEmpty(data.FileName) || !UsbDocumentArchive.IsDocument(data.FileName)) return;
                 var resolved = _volumes.Resolve(data.FileName);
@@ -86,20 +94,18 @@ public sealed class UsbReadCollector : BackgroundService
                     _events.Enqueue((++_sequence, new(key, resolved.Value.Connection, data.ProcessID, now)));
                 }
             };
-            session.EnableKernelProvider(KernelTraceEventParser.Keywords.FileIO
-                | KernelTraceEventParser.Keywords.FileIOInit | KernelTraceEventParser.Keywords.DiskFileIO | KernelTraceEventParser.Keywords.Process
-                | KernelTraceEventParser.Keywords.Thread);
             _consumer = Task.Run(() =>
             {
-                try { session.Source.Process(); }
+                try { source.Process(); }
                 catch { lock (_gate) { if (ReferenceEquals(_session, session)) { _failed = true; _status = "파일 읽기 감지가 중단됐습니다."; } } }
 
             });
             lock (_gate) _status = "USB 문서 읽기 감지 중 · 미리보기 포함";
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            lock (_gate) { _failed = true; _status = "ETW 시작 실패: 관리자 서비스·권한을 확인하고 껐다 켜세요."; }
+            // Do not expose exception text, which may contain local paths or filenames.
+            lock (_gate) { _failed = true; _status = $"ETW 시작 실패 ({ex.GetType().Name}, 0x{ex.HResult:X8}): 감지 서비스를 확인하세요."; }
             Stop();
         }
     }
@@ -116,7 +122,13 @@ public sealed class UsbReadCollector : BackgroundService
     private void Stop()
     {
         TraceEventSession? session;
-        lock (_gate) { session = _session; if (session is not null) _dropped += session.Source.EventsLost; _session = null; }
+        lock (_gate)
+        {
+            session = _session;
+            _dropped += _source?.EventsLost ?? 0;
+            _source = null;
+            _session = null;
+        }
         _consumer = null;
         try { session?.Dispose(); } catch { }
         if (!_failed) { lock (_gate) _status = "꺼짐"; }
