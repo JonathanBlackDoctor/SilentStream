@@ -21,13 +21,15 @@ public sealed class PowerTransitionSafetyStructureTests
             "_safety.InspectAsync",
             "_orchestrator.StopAsync",
             "WriteState(reservedState)",
-            "CreateShutdownCommand(\"/s\"");
+            "new QuietShutdownCountdown");
         Assert.Contains("ConfirmationDelay", service, StringComparison.Ordinal);
         Assert.Contains("RequestCooldown", service, StringComparison.Ordinal);
         Assert.Contains("BootSessionStartedAtUtc", service, StringComparison.Ordinal);
         Assert.Contains("_durableStateAvailable", service, StringComparison.Ordinal);
         Assert.Contains("CreateShutdownCommand(\"/a\")", service, StringComparison.Ordinal);
-        Assert.Contains("TimeSpan.FromSeconds(60)", service, StringComparison.Ordinal);
+        Assert.Contains("TimeSpan.FromSeconds(2)", service, StringComparison.Ordinal);
+        Assert.Contains("ApplicationCountdown", service, StringComparison.Ordinal);
+        Assert.DoesNotContain("SilentStream 예약 종료 -", service, StringComparison.Ordinal);
     }
 
     [Fact]

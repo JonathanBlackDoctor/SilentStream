@@ -116,6 +116,17 @@ public sealed class ShutdownScheduleManager
         finally { _gate.Release(); }
     }
 
+    public async Task ReportFailureAsync(DateTimeOffset targetUtc, string message)
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_state is { Status: "scheduled" } state && state.TargetUtc == targetUtc)
+                Save(state with { Status = "failed", Message = message });
+        }
+        finally { _gate.Release(); }
+    }
+
     private void Save(ShutdownScheduleState state)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);

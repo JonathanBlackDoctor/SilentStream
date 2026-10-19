@@ -1166,7 +1166,7 @@ export class ControlPlane {
     const envelope = { schemaVersion: 1, type: "command", requestId: commandId, payload: dispatch };
     let timer;
     const completion = new Promise(resolve => {
-      timer = setTimeout(() => resolve({ commandId, ok: false, statusCode: 504, contentType: "application/json", body: "", error: "강의실 PC 응답 시간이 초과되었습니다.", completedAtUtc: new Date().toISOString() }), body.action === "system.shutdown.schedule.cancel" ? 90000 : 20000);
+      timer = setTimeout(() => resolve({ commandId, ok: false, statusCode: 504, contentType: "application/json", body: "", error: "강의실 PC 응답 시간이 초과되었습니다.", completedAtUtc: new Date().toISOString() }), body.action === "system.shutdown.schedule.cancel" ? 90000 : body.action === "system.shutdown" ? 65000 : 20000);
       this.pending.set(commandId, result => { clearTimeout(timer); resolve(result); });
     });
     try { socket.send(JSON.stringify(envelope)); }

@@ -9,7 +9,7 @@ const centralSource = await readFile(new URL('../public/control/app.js', import.
 function setup(source=roomSource) {
   const nodes={},calls=[],messages=[];
   const context=vm.createContext({Date,esc: value=>String(value).replaceAll('<','&lt;'),
-    $: id=>nodes[id]??={value:'2026-10-17T18:30'},confirm:()=>true,
+    $: id=>nodes[id]??={value:'2026-10-17T18:30'},confirm:()=>true,actionPending:false,
     api:async(path,request)=>{calls.push({path,body:JSON.parse(request.body)});return {ok:true,body:'{"ok":true,"message":"예약됨"}'}},
     show:message=>messages.push(message),load:async()=>{}});
   vm.runInContext(source.slice(0,source.indexOf('const $=')),context);
@@ -47,6 +47,18 @@ for(const [label,source] of [['room',roomSource],['central',centralSource]]) {
     assert.match(app.calls[1].path,/m112\/actions\/system.shutdown.schedule.cancel$/);
     assert.equal(app.calls[1].body.id,'reservation');
     assert.equal(app.messages.at(-1),'예약됨');
+  });
+  test(label+': immediate shutdown requires an admin, online updated app and no active schedule',()=>{
+    const {context}=setup(source);
+    const render=value=>{context.device=value;return vm.runInContext('shutdownPanel(device)',context)};
+    const value={roomId:'m112',role:'admin',online:true,app:{quietShutdownControl:true}};
+    assert.match(render(value),/class="danger"  data-action="system.shutdown"/);
+    for(const blocked of [{...value,online:false},{...value,app:{}},
+      {...value,app:{...value.app,windowsShutdownPending:true}},
+      {...value,cloudShutdownRequest:{state:'queued',targetUtc:new Date().toISOString()}},
+      {...value,app:{...value.app,shutdownSchedule:{status:'executing',targetUtc:new Date().toISOString()}}}])
+      assert.match(render(blocked),/disabled data-action="system.shutdown"/);
+    assert.equal(render({...value,role:'manager'}),'');
   });
 }
 

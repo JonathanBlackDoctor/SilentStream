@@ -1518,6 +1518,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             updatedAtUtc = nowUtc,
             usbDocumentsSupported = true,
             shutdownScheduleControl = true,
+            quietShutdownControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,
             windowsShutdownPending = _systemShutdown.WindowsShutdownPending,
             state = state.ToString(),

@@ -11,14 +11,14 @@ namespace SilentStream.App.Remote;
 /// <summary>
 /// Coordinates a fail-closed two-phase Windows shutdown. A paired client must first pass the
 /// read-only boot safety probe, then confirm a short-lived nonce from the same device. The actual
-/// OS command has a visible, cancellable delay and is issued only after recording finalisation.
+/// OS command is issued without a Windows countdown, only after recording finalisation.
 /// </summary>
 public sealed class RemoteSystemShutdownService : IDisposable
 {
     private static readonly TimeSpan ConfirmationDelay = TimeSpan.FromSeconds(3);
     private static readonly TimeSpan ConfirmationLifetime = TimeSpan.FromSeconds(90);
     private static readonly TimeSpan RequestCooldown = TimeSpan.FromMinutes(10);
-    private static readonly TimeSpan ShutdownDelay = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan ShutdownDelay = TimeSpan.FromSeconds(2);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
     private readonly IStreamOrchestrator _orchestrator;
@@ -29,6 +29,8 @@ public sealed class RemoteSystemShutdownService : IDisposable
     private PowerActionState _state;
     private bool _durableStateAvailable;
     private bool _shutdownScheduled;
+    private QuietShutdownCountdown? _countdown;
+    private bool _disposed;
     private readonly ShutdownScheduleManager _schedule;
     private readonly Timer _scheduleTimer;
     private readonly CancellationTokenSource _scheduleLifetime = new();
@@ -61,6 +63,14 @@ public sealed class RemoteSystemShutdownService : IDisposable
                 _durableStateAvailable &= WriteState(_state);
                 AppendAudit("boot-observed", _state.LastActorId ?? "system",
                     "예약된 전원 전환 뒤 애플리케이션 시작을 확인했습니다.");
+            }
+            else if (_state.ApplicationCountdown)
+            {
+                // An app-owned timer cannot survive a crash. Never replay it on startup.
+                _state = _state with { AwaitingBootConfirmation = false };
+                _durableStateAvailable &= WriteState(_state);
+                AppendAudit("countdown-interrupted", _state.LastActorId ?? "system",
+                    "앱이 다시 시작되어 이전 종료 대기를 취소했습니다. 자동으로 재실행하지 않습니다.");
             }
             else if (_state.LastActionAtUtc is { } requestedAt
                      && DateTimeOffset.UtcNow > (_state.ShutdownAtUtc ?? requestedAt.Add(ShutdownDelay)).AddSeconds(30))
@@ -121,6 +131,11 @@ public sealed class RemoteSystemShutdownService : IDisposable
 
     public void Dispose()
     {
+        lock (_gate)
+        {
+            _disposed = true;
+            _countdown?.Dispose();
+        }
         _scheduleLifetime.Cancel();
         _scheduleTimer.Dispose();
         _scheduleLifetime.Dispose();
@@ -275,16 +290,20 @@ public sealed class RemoteSystemShutdownService : IDisposable
 
         var requestedAt = DateTimeOffset.UtcNow;
         var previousState = _state;
-        var shutdownSeconds = Math.Max((int)ShutdownDelay.TotalSeconds,
-            targetUtc.HasValue ? (int)Math.Ceiling((targetUtc.Value - DateTimeOffset.UtcNow).TotalSeconds) : 60);
-        var shutdownAt = DateTimeOffset.UtcNow.AddSeconds(shutdownSeconds);
+        var shutdownAt = targetUtc ?? requestedAt.Add(ShutdownDelay);
+        if (shutdownAt <= requestedAt)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            return new(false, "예약 시각을 놓쳐 PC를 종료하지 않았습니다.", null);
+        }
         var reservedState = _state with
         {
             LastActionAtUtc = requestedAt,
             LastActorId = actorId,
             AwaitingBootConfirmation = true,
             BootSessionStartedAtUtc = CurrentBootStartedAtUtc(),
-            ShutdownAtUtc = shutdownAt
+            ShutdownAtUtc = shutdownAt,
+            ApplicationCountdown = true
         };
         if (!WriteState(reservedState))
         {
@@ -300,15 +319,17 @@ public sealed class RemoteSystemShutdownService : IDisposable
 
         try
         {
-            var command = CreateShutdownCommand("/s", "/t", shutdownSeconds.ToString(),
-                "/d", "p:4:1", "/c", "SilentStream 예약 종료 - 종료 전까지 원격 화면에서 취소할 수 있습니다.");
-            using var process = Process.Start(command);
-            if (process is null) throw new InvalidOperationException("Windows 종료 명령을 시작하지 못했습니다.");
-            await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
-                .ConfigureAwait(false);
-            if (process.ExitCode != 0) throw new InvalidOperationException($"Windows 종료 명령이 {process.ExitCode}로 종료되었습니다.");
-
-            var message = $"PC 종료를 {shutdownSeconds}초 뒤로 예약했습니다. 종료 전까지 취소할 수 있습니다.";
+            QuietShutdownCountdown countdown;
+            lock (_gate)
+            {
+                if (_disposed || cancellationToken.IsCancellationRequested)
+                    throw new InvalidOperationException("앱 종료로 PC 종료 대기를 만들지 않았습니다.");
+                _countdown = countdown = new QuietShutdownCountdown(shutdownAt, RunShutdownCommandAsync);
+            }
+            _ = ObserveCountdownAsync(countdown, actorId, shutdownAt, finalAssessment);
+            var message = targetUtc.HasValue
+                ? "녹화와 방송을 마감했습니다. 예약 시각에 별도 안내 없이 PC를 종료합니다. 그 전까지 취소할 수 있습니다."
+                : "녹화와 방송을 마감했습니다. 지금 PC를 종료합니다.";
             AppendAudit("scheduled", actorId, message, finalAssessment);
             _log.Warn(message);
             _ = ClearExpiredScheduleIfStillRunningAsync(requestedAt, shutdownAt);
@@ -317,7 +338,6 @@ public sealed class RemoteSystemShutdownService : IDisposable
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException
                                             or TimeoutException)
         {
-            await TryAbortWindowsShutdownAsync().ConfigureAwait(false);
             _state = previousState;
             _durableStateAvailable = WriteState(previousState);
             lock (_gate) _shutdownScheduled = false;
@@ -342,12 +362,26 @@ public sealed class RemoteSystemShutdownService : IDisposable
 
         try
         {
-            using var process = Process.Start(CreateShutdownCommand("/a"));
-            if (process is null) throw new InvalidOperationException("Windows 종료 취소 명령을 시작하지 못했습니다.");
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-            if (process.ExitCode != 0)
-                return new(false, "취소할 Windows 종료 예약이 없습니다.", null);
-
+            lock (_gate)
+            {
+                if (_countdown is { } countdown)
+                {
+                    if (!countdown.TryCancel())
+                        return new(false, "이미 Windows 종료가 시작되어 취소할 수 없습니다.", null);
+                    countdown.Dispose();
+                    _countdown = null;
+                }
+                else if (_state.ApplicationCountdown)
+                    return new(false, "종료 준비 중입니다. 잠시 뒤 취소를 다시 요청하세요.", null);
+            }
+            // Compatibility: old releases may already have registered a native Windows timer.
+            if (!_state.ApplicationCountdown)
+            {
+                using var process = Process.Start(CreateShutdownCommand("/a"));
+                if (process is null) throw new InvalidOperationException("Windows 종료 취소 명령을 시작하지 못했습니다.");
+                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                if (process.ExitCode != 0) return new(false, "취소할 Windows 종료 예약이 없습니다.", null);
+            }
             lock (_gate)
             {
                 _shutdownScheduled = false;
@@ -378,19 +412,40 @@ public sealed class RemoteSystemShutdownService : IDisposable
         return start;
     }
 
-    private static async Task TryAbortWindowsShutdownAsync()
+    private static async Task RunShutdownCommandAsync(ProcessStartInfo command)
     {
-        try
+        using var process = Process.Start(command);
+        if (process is null) throw new InvalidOperationException("Windows 종료 명령을 시작하지 못했습니다.");
+        await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
+            .ConfigureAwait(false);
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"Windows 종료 명령이 {process.ExitCode}로 종료되었습니다.");
+    }
+
+    private async Task ObserveCountdownAsync(QuietShutdownCountdown countdown, string actorId,
+        DateTimeOffset targetUtc, SystemPowerSafetyAssessment assessment)
+    {
+        try { await countdown.Completion.ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex)
         {
-            using var process = Process.Start(CreateShutdownCommand("/a"));
-            if (process is not null)
-                await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10))
-                    .ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_countdown, countdown)) return;
+                _shutdownScheduled = false;
+                _state = _state with { AwaitingBootConfirmation = false };
+                _durableStateAvailable = WriteState(_state);
+            }
+            AppendAudit("shutdown-failed", actorId, ex.GetType().Name, assessment);
+            _log.Error("PC 종료를 실행하지 못했습니다. 원격 상태를 확인하세요.", ex);
+            try
+            {
+                await _schedule.ReportFailureAsync(targetUtc,
+                    "PC 종료를 실행하지 못했습니다. PC 상태를 확인하고 다시 예약하세요.").ConfigureAwait(false);
+            }
+            catch (Exception saveError) { _log.Error("종료 예약 실패 상태를 저장하지 못했습니다.", saveError); }
         }
-        catch
-        {
-            // Best effort only: this runs after scheduling failed or became indeterminate.
-        }
+        finally { countdown.Dispose(); }
     }
 
     private static SystemShutdownPreparation FailedPreparation(string message) =>
@@ -483,7 +538,8 @@ public sealed class RemoteSystemShutdownService : IDisposable
         bool AwaitingBootConfirmation = false,
         DateTimeOffset? LastBootObservedAtUtc = null,
         DateTimeOffset? BootSessionStartedAtUtc = null,
-        DateTimeOffset? ShutdownAtUtc = null);
+        DateTimeOffset? ShutdownAtUtc = null,
+        bool ApplicationCountdown = false);
 }
 
 public sealed record SystemShutdownPreparation(

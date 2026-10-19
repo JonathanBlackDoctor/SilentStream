@@ -13,18 +13,19 @@ function shutdownPanel(value){
   const supported=app.shutdownScheduleControl&&app.remoteShutdownScheduleCommands;
   const localActive=state&&(["pending","executing"].includes(state.status)||state.status==="scheduled"&&new Date(state.targetUtc)>new Date());
   const cloudActive=cloud&&["queued","dispatching"].includes(cloud.state);
-  const labels={pending:"PC 예약됨",executing:"녹화 마감·안전 점검 중",scheduled:"Windows 종료 대기",cancelled:"취소됨",failed:"실패·확인 필요",missed:"예약 시각 지남"};
+  const labels={pending:"PC 예약됨",executing:"녹화 마감·안전 점검 중",scheduled:"예약 시각까지 종료 대기",cancelled:"취소됨",failed:"실패·확인 필요",missed:"예약 시각 지남"};
   const cloudLabels={queued:"PC 연결 후 등록 대기",dispatching:"PC 전달 중 · 결과 확인 필요",applied:"PC 등록 요청 전달 완료",cancelled:"클라우드 요청 취소됨",expired:"등록 기한 만료",failed:"등록 실패 · 상태 확인 필요"};
   const disabled=value.registered===false?"disabled":"",createDisabled=disabled||cloudActive||localActive||value.online&&!supported?"disabled":"";
   const format=value=>new Date(value).toLocaleString("ko-KR",{timeZone:"Asia/Seoul"});
   const cloudInfo=cloud?'<p class="meta" role="status"><b>'+esc(cloudLabels[cloud.state]||cloud.state)+'</b> · '+esc(format(cloud.targetUtc))+'<br>'+esc(cloud.message)+'</p>':"";
-  return '<section class="section-card shutdown"><h2>PC 종료 예약</h2><p class="meta">한국 시간 · 1회 예약. PC가 꺼져 있어도 요청을 저장할 수 있습니다.</p>'+cloudInfo+
+  return '<section class="section-card shutdown"><h2>PC 전원</h2><p class="meta">한국 시간 · 1회 예약. PC가 꺼져 있어도 요청을 저장할 수 있습니다.</p>'+cloudInfo+
     (state?'<p class="meta" role="status">마지막 PC 기록: '+esc(labels[state.status]||state.status)+' · '+esc(format(state.targetUtc))+'<br>'+esc(state.message)+'</p>':"")+
     (!supported&&value.online?'<p class="meta">PC 앱과 연결 도우미 업데이트 후 PC 예약을 사용할 수 있습니다.</p>':"")+
+    '<div class="actions"><button class="danger" '+(value.online&&app.quietShutdownControl&&!localActive&&!cloudActive&&!app.windowsShutdownPending&&!actionPending?"":"disabled")+' data-action="system.shutdown" data-room="'+esc(room)+'">지금 PC 종료</button></div>'+
     '<label for="shutdown-'+esc(room)+'">종료 날짜·시각 (한국 시간)</label><input style="display:block;width:100%;margin:10px 0" id="shutdown-'+esc(room)+'" data-shutdown-input="'+esc(room)+'" type="datetime-local" value="'+esc(shutdownDrafts[room]||"")+'" '+disabled+'>'+
     '<div class="actions"><button '+createDisabled+' data-shutdown-create="'+esc(room)+'">'+(value.online?"종료 예약":"연결 후 종료 예약 등록")+'</button>'+
     (cloud?.state==="queued"?'<button '+disabled+' data-shutdown-cancel="'+esc(room)+'" data-schedule-id="'+esc(cloud.id)+'">연결 대기 요청 취소</button>':localActive?'<button '+(value.online&&supported?"":"disabled")+' data-shutdown-cancel="'+esc(room)+'" data-schedule-id="'+esc(state.id)+'">PC 예약 취소</button>':"")+
-    '</div><p class="meta">오프라인 요청은 아직 PC에 등록된 예약이 아닙니다. 종료 3분 전까지 연결되지 않으면 만료됩니다. PC 등록 후에는 휴대폰을 닫아도 실행하며, 종료 2분 전부터 녹화·방송을 마감합니다. 안전 점검 실패 시 종료하지 않습니다.</p></section>';
+    '</div><p class="meta">오프라인 요청은 아직 PC에 등록된 예약이 아닙니다. 종료 3분 전까지 연결되지 않으면 만료됩니다. PC 등록 후에는 휴대폰을 닫아도 실행하며, 종료 2분 전부터 녹화·방송을 마감합니다. 예약 시각에 별도 대기 안내 없이 종료합니다. 안전 점검 실패 시 종료하지 않습니다.</p></section>';
 }
 async function changeShutdown(room,id){
   try{
@@ -107,8 +108,17 @@ function render(){
 }
 async function api(path,options){const response=await fetch(path,options);if(response.status===401){location.replace("/");throw Error("AUTH_REQUIRED")}let data=null;try{data=await response.json()}catch{}if(!response.ok){let local;try{local=JSON.parse(data?.body||"{}")}catch{}throw Error(local?.message||data?.message||data?.error||`HTTP ${response.status}`);}return data}
 async function load(){try{session=await api("/api/control/session");document.title=`SilentStream ${roomName()}`;$("roomHeading").textContent=roomName();document.querySelector('meta[name="apple-mobile-web-app-title"]').content=roomName();$("installTitle").textContent=`${roomName()} 담당자 앱 설치`;$("who").textContent=`${session.email} · ${session.admin?"관리자":"호실 담당자"}`;$("centralLink").href=session.centralUrl;document.body.classList.remove("auth-pending");const devices=await api("/api/control/rooms");device=devices[0]||null;render()}catch(error){if(error.message!=="AUTH_REQUIRED"){document.body.classList.remove("auth-pending");if(device){device={...device,online:false};render();show("연결 상태를 갱신하지 못했습니다. 마지막 기록을 표시합니다.",true)}else roomEl.innerHTML=`<div class="empty">${esc(error.message)}</div>`}}}
+const dangerousActions={
+  "system.shutdown":"지금 PC를 종료할까요? 녹화와 방송을 저장·마감하고 안전 점검 후 종료합니다. 실행 후에는 취소할 수 없으며, 다른 프로그램의 저장하지 않은 내용은 사라질 수 있습니다.",
+  "app.restart":"PC 앱을 재시작할까요? 진행 중인 방송과 녹화가 잠시 중단될 수 있습니다.",
+  "live.stopBroadcast":"방송만 중지할까요? 백업 녹화는 계속됩니다.",
+  "live.stopAll":"방송과 녹화를 모두 중지할까요?",
+  "live.retry":"방송을 재연결할까요? 송출이 잠시 중단될 수 있습니다.",
+  "inspection.rerun":"자동 점검을 다시 실행할까요? PC 상태에 따라 복구 작업이 실행될 수 있습니다."
+};
 async function act(action,confirmation,body={}){
   if(!controllerFresh(device)){show("PC의 최신 상태를 받은 뒤 다시 시도해 주세요.",true);return}
+  confirmation=dangerousActions[action]||confirmation;
   if(confirmation&&!confirm(roomName()+": "+confirmation))return;
   actionPending=true;render();
   try{

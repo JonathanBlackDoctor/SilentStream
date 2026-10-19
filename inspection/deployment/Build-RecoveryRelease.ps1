@@ -1,7 +1,8 @@
 [CmdletBinding()]
-param([string]$Version='0.4.8')
+param([string]$Version='0.4.8', [string]$SigningMaterialVersion=$Version)
 $ErrorActionPreference='Stop'
-if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12')) { throw 'Use matching reviewed signing material for each immutable release.' }
+if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13')) { throw 'Use reviewed signing material for each immutable release.' }
+if ($SigningMaterialVersion -ne $Version -and -not ($Version -eq '0.4.13' -and $SigningMaterialVersion -eq '0.4.12')) { throw 'Unreviewed signing material reuse.' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Set-Location -LiteralPath $repo
 $package = Join-Path $repo 'recovery-package'
@@ -23,7 +24,7 @@ Copy-Item -LiteralPath 'publish/cloudflared' -Destination (Join-Path $package 'b
 foreach ($script in @('Install-InspectionServices.ps1','Uninstall-InspectionServices.ps1')) {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $script) -Destination $package
 }
-$materials = Join-Path $repo "inspection/releases/$Version"
+$materials = Join-Path $repo "inspection/releases/$SigningMaterialVersion"
 $preseedFile = Join-Path $materials 'deployment-preseed.json'
 $preseed = Get-Content -LiteralPath $preseedFile -Raw | ConvertFrom-Json
 if ($preseed.schemaVersion -ne 1 -or $preseed.signingKeyId -ne 'silentstream-ops-20261017' -or @($preseed.agentUpdates).Count -ne 0) { throw 'Unexpected recovery trust material.' }
@@ -31,13 +32,13 @@ $publicKey = Join-Path $materials ($preseed.signingKeyId+'.public-key.json')
 Copy-Item -LiteralPath $publicKey -Destination $package
 Copy-Item -LiteralPath $preseedFile -Destination $package
 New-Item -ItemType Directory -Path (Join-Path $package 'preseed-bundles') | Out-Null
-$bundle = Join-Path $package "preseed-bundles/startup-$Version.zip"
+$bundle = Join-Path $package "preseed-bundles/startup-$SigningMaterialVersion.zip"
 [IO.File]::WriteAllBytes($bundle,[Convert]::FromBase64String([IO.File]::ReadAllText((Join-Path $materials 'startup.zip.b64')).Trim()))
 $cli = Join-Path $package 'bin/cli/SilentStreamInspectionCli.exe'
 $verified = Join-Path $repo 'verified-recovery-startup'
 & $cli bundle verify-startup $bundle $publicKey $verified
 if ($LASTEXITCODE -ne 0) { throw 'Signed startup safety verification failed.' }
-$expectedPlan = Join-Path $repo "inspection/bundles/startup-v$Version/plan.json"
+$expectedPlan = Join-Path $repo "inspection/bundles/startup-v$SigningMaterialVersion/plan.json"
 $verifiedPlans = @(Get-ChildItem -LiteralPath $verified -Filter 'plan.json' -Recurse -File)
 if ($verifiedPlans.Count -ne 1) { throw 'Verified plan must be unique inside its bundle directory.' }
 $signedPlanJson = Get-Content -LiteralPath $verifiedPlans[0].FullName -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 40 -Compress
@@ -56,6 +57,6 @@ $assets = foreach ($file in @($archiveName,$installerName)) {
   $item = Get-Item -LiteralPath $file
   [ordered]@{name=$item.Name;length=$item.Length;sha256=(Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
 }
-[ordered]@{version=$Version;signingKeyId=$preseed.signingKeyId;startupSignatureVerified=$true;assets=@($assets)} |
+[ordered]@{version=$Version;signingMaterialVersion=$SigningMaterialVersion;signingKeyId=$preseed.signingKeyId;startupSignatureVerified=$true;assets=@($assets)} |
   ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "recovery-metadata-$Version.json" -Encoding utf8
 Write-Output "Prepared and verified recovery package $archiveName"

@@ -9,7 +9,7 @@ function setup(){
  const $=id=>nodes[id]??={value:'2026-10-17T18:30',classList:{toggle(){}},style:{}};
  const context=vm.createContext({$,Date,cur:{label:'M112'},confirmAsk:async()=>true,
   api:async(room,path,request)=>{calls.push({room,path,body:JSON.parse(request.body)});return {json:async()=>({ok:true,message:'PC 예약됨'})}},
-  toast:message=>messages.push(message),timeoutSignal:()=>undefined});
+  toast:message=>messages.push(message),immediateShutdownInFlight:false,timeoutSignal:()=>undefined});
  vm.runInContext(code,context);
  vm.runInContext('Date = class extends Date { static now(){return new Date("2026-10-17T00:00:00Z").getTime()} }',context);
  return {context,nodes,calls,messages,$};

@@ -322,9 +322,9 @@
           <button id="shutdownScheduleBtn" class="stop" style="margin-top:8px">선택 시각에 PC 종료</button>
           <p id="shutdownScheduleStatus" class="muted" role="status"></p>
           <button id="shutdownScheduleCancelBtn" class="ghost hidden">종료 예약 취소</button>
-          <small class="muted">1회 예약 · 종료 2분 전부터 녹화·방송 마감. PC와 앱이 켜져 있으면 휴대폰을 닫아도 실행합니다. 준비 지연 시 최소 60초의 취소 시간을 확보하여 종료가 늦어질 수 있습니다.</small>
+          <small class="muted">1회 예약 · 종료 2분 전부터 녹화·방송 마감. PC와 앱이 켜져 있으면 휴대폰을 닫아도 실행합니다. 예약 시각 전까지 취소할 수 있습니다. 시각을 놓치면 뒤늦게 종료하지 않습니다.</small>
         </div>
-        <button id="systemShutdownBtn" class="stop" style="margin-top:14px">PC 종료</button>
+        <button id="systemShutdownBtn" class="stop" style="margin-top:14px">지금 PC 종료</button>
         <button id="systemShutdownCancelBtn" class="ghost" style="margin-top:8px;display:none">예약된 종료 취소</button>
         <small class="muted">PC 종료는 녹화와 방송을 안전하게 종료한 뒤 진행됩니다.</small>
       </div>
@@ -892,7 +892,7 @@
         toast("스냅샷을 저장했습니다.");
       } catch(e){ toast("스냅샷 저장에 실패했습니다."); }
     };
-    // 안전장치: 어떤 중지든 2초간 꾹 누른 뒤 확인 모달을 통과해야 실행된다(실수 방지).
+    // Retained for automation toggles; destructive actions use click followed by confirmation.
     function makeHoldable(btnId, holdTimeMs, onTrigger, holdHint="작업하려면 버튼을 길게 누르세요.") {
       const btn = $(btnId);
       if (!btn) return;
@@ -951,7 +951,7 @@
       btn.addEventListener('touchcancel', cancelHold);
     }
 
-    makeHoldable("stopBroadcastBtn", 2000, async () => {
+    $("stopBroadcastBtn").onclick = async () => {
       const room = cur;
       if (!await confirmAsk("방송만 중지할까요?",
         "유튜브 송출만 끝나고 로컬 녹화는 계속됩니다.\n녹화 파일은 이 시점부터 새 파일로 이어집니다.\n다시 방송하려면 라이브 시작을 누르세요.",
@@ -963,9 +963,9 @@
                    : "지금은 방송을 중지할 수 없습니다(재연결 중) — 잠시 후 다시 시도하세요.");
       }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
-    });
+    };
 
-    makeHoldable("stopBtn", 2000, async () => {
+    $("stopBtn").onclick = async () => {
       const room = cur;
       if (!await confirmAsk("방송과 녹화를 모두 중지할까요?",
         "유튜브 송출과 로컬 백업 녹화가 모두 끝납니다.",
@@ -973,9 +973,9 @@
       if (cur !== room) return;
       try { await api(cur, "/api/live/stop", {method:"POST"}); toast("전체 중지 요청"); }
       catch(e){ toast("요청 실패 — 연결을 확인하세요."); }
-    });
+    };
 
-    makeHoldable("restartAppBtn", 2000, async () => {
+    $("restartAppBtn").onclick = async () => {
       const room = cur;
       if (!await confirmAsk("앱을 다시 시작할까요?",
         "현재 송출과 녹화를 안전하게 마감한 뒤 앱을 다시 시작합니다. 약 30초의 준비 시간이 지난 뒤 자동 송출이 다시 시작됩니다.",
@@ -986,42 +986,47 @@
         const d = await r.json();
         toast(d.ok ? "앱을 안전하게 다시 시작합니다." : (d.message || "재시작이 이미 진행 중입니다."));
       } catch(e){ toast("앱 재시작 요청에 실패했습니다."); }
-    });
+    };
 
     makeHoldable("automationToggleBtn", 2000, () => changeAutomation(!automation.enabled),
       "자동 운행을 바꾸려면 버튼을 2초간 길게 누르세요.");
-    makeHoldable("systemShutdownBtn", 3000, async () => {
+    let immediateShutdownInFlight=false;
+    $("systemShutdownBtn").onclick = async () => {
+      if(immediateShutdownInFlight)return;
+      immediateShutdownInFlight=true;
       const room = cur;
-      if (!await confirmAsk("PC를 종료할까요?",
-        "먼저 SSD·부팅 파티션·Windows Boot Manager를 읽기 전용으로 점검합니다. 이상이 있으면 종료하지 않습니다.",
-        "안전 점검")) return;
-      if (cur !== room) return;
+      let preparedId=null,submitted=false,accepted=false;
+      $("systemShutdownBtn").disabled=true;
       try {
         const preparedResponse = await api(room, "/api/system/shutdown/prepare",
           {method:"POST",body:"{}",signal:timeoutSignal(15000)});
         const prepared = await preparedResponse.json();
         if (!preparedResponse.ok || !prepared.ok){ toast(prepared.message || "부팅 안전 점검을 통과하지 못했습니다."); return; }
+        preparedId=prepared.confirmationId;
         const warnings = (prepared.checks||[]).filter(check=>check.severity===1).map(check=>check.message);
-        const detail = "부팅 안전 점검을 통과했습니다. 녹화와 방송을 정상 마감한 뒤 60초 후 종료합니다. 그동안 취소할 수 있습니다." +
+        const detail = "녹화와 방송을 저장·마감한 뒤 별도 대기 안내 없이 지금 PC를 종료합니다. 실행 후에는 취소할 수 없습니다. 다른 프로그램의 저장하지 않은 내용은 사라질 수 있습니다." +
           (warnings.length ? "\n\n주의: " + warnings.join(" ") : "");
-        if (!await confirmAsk("안전 점검을 통과했습니다", detail, "60초 후 종료")) {
-          await api(room, "/api/system/shutdown/cancel", {method:"POST",body:"{}"});
+        if (!await confirmAsk("지금 PC를 종료할까요?", detail, "지금 종료")) {
           return;
         }
         if (cur !== room) return;
         const notBefore = new Date(prepared.notBeforeUtc).getTime();
         if (Number.isFinite(notBefore) && notBefore > Date.now())
           await new Promise(resolve=>setTimeout(resolve,notBefore-Date.now()+100));
+        if(cur!==room)return;
+        submitted=true;
         const response = await api(room, "/api/system/shutdown", {method:"POST",
           body:JSON.stringify({confirmationId:prepared.confirmationId}),signal:timeoutSignal(45000)});
         const data = await response.json();
-        if (data.ok) {
-          $("systemShutdownCancelBtn").style.display = "block";
-
-        }
-        toast(data.message || (data.ok ? "PC 종료를 예약했습니다." : "PC 종료를 예약하지 못했습니다."));
-      } catch(e){ toast("PC 종료 요청에 실패했습니다. 연결을 확인하세요."); }
-    }, "PC를 종료하려면 버튼을 3초간 길게 누르세요.");
+        accepted=!!data.ok;
+        toast(data.message || (data.ok ? "지금 PC를 종료합니다." : "PC 종료 요청에 실패했습니다."));
+      } catch(e){ toast("PC 종료 결과를 확인하지 못했습니다. 연결과 PC 상태를 확인하세요."); }
+      finally{
+        if(preparedId&&!submitted){try{await api(room,"/api/system/shutdown/cancel",{method:"POST",body:"{}"})}catch{}}
+        immediateShutdownInFlight=false;
+        if(cur===room)$("systemShutdownBtn").disabled=accepted;
+      }
+    };
 
     $("systemShutdownCancelBtn").onclick = async () => {
       const room = cur;
@@ -1097,7 +1102,7 @@
       state.textContent = recovery && recovery.message ? recovery.message : "복구 백업 상태를 확인할 수 없습니다.";
       button.disabled = !(recovery && recovery.ready);
     }
-    makeHoldable("uninstallAppBtn", 3000, async () => {
+    $("uninstallAppBtn").onclick = async () => {
       const room = cur;
       const expected = room && (room.label || $("roomName").textContent);
       if (!room || $("removeRoomConfirm").value.trim() !== expected){
@@ -1113,7 +1118,7 @@
         $("removeAdminToken").value = "";
         toast(data.message || "원격 제거를 시작했습니다.");
       } catch(e){ toast("원격 제거 요청에 실패했습니다."); }
-    });
+    };
 
     // ---- Today's persisted playlist: no YouTube API call or creation on a copy click. ----
     let todayPlaylist = null, todayPlaylistRoom = null;
@@ -1177,11 +1182,11 @@
       currentShutdownSchedule=state||null;
       $('shutdownScheduleCard').classList.toggle('hidden',!status.shutdownScheduleControl);
       const active=state&&(['pending','executing'].includes(state.status)||state.status==='scheduled'&&new Date(state.targetUtc)>new Date());
-      const labels={pending:'예약됨',executing:'녹화 마감·안전 점검 중',scheduled:'Windows 종료 대기',cancelled:'취소됨',failed:'실패·확인 필요',missed:'예약 시각 지남'};
+      const labels={pending:'예약됨',executing:'녹화 마감·안전 점검 중',scheduled:'예약 시각까지 종료 대기',cancelled:'취소됨',failed:'실패·확인 필요',missed:'예약 시각 지남'};
       $('shutdownScheduleStatus').textContent=state?(labels[state.status]||state.status)+' · '+new Date(state.targetUtc).toLocaleString('ko-KR',{timeZone:'Asia/Seoul'})+' (한국 시간) · '+state.message:'예약된 종료가 없습니다.';
       $('shutdownScheduleCancelBtn').classList.toggle('hidden',!active);
       $('shutdownScheduleBtn').disabled=!!active;
-      $('systemShutdownBtn').disabled=!!active;
+      $('systemShutdownBtn').disabled=!!active||immediateShutdownInFlight||!!status.windowsShutdownPending;
       $('systemShutdownCancelBtn').style.display=status.windowsShutdownPending&&!active?'block':'none';
     }
     $('shutdownScheduleBtn').onclick=async()=>{

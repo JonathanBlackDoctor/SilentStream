@@ -185,6 +185,24 @@ public sealed class ShutdownScheduleTests : IDisposable
         Assert.False(blocked.Schedule(_clock.Now.AddMinutes(5), "phone").Ok);
     }
 
+    [Fact]
+    public async Task Countdown_failure_is_visible_without_overwriting_a_different_or_cancelled_reservation()
+    {
+        var manager = Create();
+        var target = _clock.Now.AddMinutes(5);
+        manager.Schedule(target, "phone");
+        _clock.Now = target.AddMinutes(-2);
+        await manager.PollAsync(_ => Task.FromResult(new ShutdownScheduleResult(true, "앱 대기", target)));
+        await manager.ReportFailureAsync(target.AddMinutes(1), "다른 예약");
+        Assert.Equal("scheduled", manager.State!.Status);
+        await manager.ReportFailureAsync(target, "실행 실패");
+        Assert.Equal("failed", Create().State!.Status);
+        Assert.False(manager.Active);
+        await manager.CancelAsync(manager.State!.Id, () => Task.FromResult(new ShutdownScheduleResult(true, "취소됨")));
+        await manager.ReportFailureAsync(target, "늦은 실패 응답");
+        Assert.Equal("cancelled", manager.State!.Status);
+    }
+
     private sealed class Clock : TimeProvider
     {
         public DateTimeOffset Now = new(2026, 10, 17, 0, 0, 0, TimeSpan.Zero);
