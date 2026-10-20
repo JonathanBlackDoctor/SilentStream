@@ -70,6 +70,7 @@ addEventListener("pagehide",()=>document.body.classList.add("auth-pending"));
 addEventListener("pageshow",event=>{if(event.persisted)location.reload()});
 async function loadDriveFolders(){
   $("driveSettings")?.classList.add("show");const host=$("driveFolders");if(!host||host.querySelector(":focus"))return;
+  await loadCentralDrive();
   const values=await Promise.all(roomIds.map(room=>api("/api/control/rooms/"+room+"/usb-drive")));
   if(host.querySelector(":focus"))return;
   host.replaceChildren();
@@ -87,13 +88,34 @@ async function loadDriveFolders(){
       event.preventDefault();save.disabled=true;
       try{await api("/api/control/rooms/"+value.roomId+"/usb-drive",{method:"PUT",headers:{"content-type":"application/json"},
         body:JSON.stringify({account:account.value,folderId:folder.value,readerEmail:reader.value})});
-        show("자료 담당자를 저장했습니다. PC에서 Google 권한 확인 후 바로가기가 활성화됩니다.");
+        show("자료 담당자를 저장했습니다. 중앙에서 Google 권한 확인 후 바로가기가 활성화됩니다.");
         save.disabled=false;save.focus();save.blur();await loadDriveFolders();
       }catch(error){show(error.message,true);save.disabled=false;}
     };
     host.append(form);
   }
 }
+
+async function loadCentralDrive(){
+  const value=await api("/api/control/document-drive");
+  $("centralDriveStatus").textContent=(value.account?value.account+" · ":"")+(value.error||value.message);
+  $("centralDriveConnect").disabled=!value.configured;
+  $("centralDriveRetry").disabled=!value.connected||!!value.error;
+}
+$("centralDriveConnect").addEventListener("click",async()=>{
+  const button=$("centralDriveConnect");button.disabled=true;
+  try{
+    const value=await api("/api/control/document-drive/connect",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+    const target=new URL(value.url);
+    if(target.origin!=="https://accounts.google.com")throw Error("Google 연결 주소를 확인할 수 없습니다.");
+    location.assign(target.href);
+  }catch(error){show(error.message,true);button.disabled=false;}
+});
+$("centralDriveRetry").addEventListener("click",async()=>{
+  const button=$("centralDriveRetry");button.disabled=true;
+  try{await api("/api/control/document-drive/retry",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});show("중앙 Drive 실패 작업을 다시 확인합니다.");}
+  catch(error){show(error.message,true);}finally{button.disabled=false;}
+});
 
 load();setInterval(()=>{if(!document.activeElement?.dataset?.shutdownInput)load()},10000);
 

@@ -37,6 +37,9 @@ public sealed class UsbDocumentsPanel : UserControl
             var snapshot = archive.Snapshot();
             account.Text = driveUpload.Settings.Account;
             driveFolder.Text = driveUpload.Settings.FolderId;
+            driveEnabled.IsEnabled = !driveUpload.Settings.Central;
+            if (driveUpload.Settings.Central) driveEnabled.IsChecked = false;
+            connect.Visibility = retryDrive.Visibility = driveUpload.Settings.Central ? Visibility.Collapsed : Visibility.Visible;
             status.Text = snapshot.DetectorStatus + (snapshot.Dropped > 0 ? $" · 감지 누락 {snapshot.Dropped}건" : "");
             if (connect.IsEnabled) driveStatus.Text = connectionError ?? ("자료 담당자: " + (driveUpload.Settings.ReaderEmail.Length > 0 ? driveUpload.Settings.ReaderEmail : "미정") + "\n" + driveUpload.Status);
             var selected = (list.SelectedItem as Row)?.Id;

@@ -180,6 +180,26 @@ public sealed class DocumentDriveUploadTests : IDisposable
         Assert.Equal(2, requests);
     }
     [Fact]
+    public async Task CentralModeDisablesLocalCredentialsAndPermissionWorkAcrossRestart()
+    {
+        await Add();
+        using (var worker = Worker())
+        {
+            await worker.ApplyPolicyAsync(new("m112", "class@example.test", "test-folder-12345", "reader@example.test", new string('c',32), Central:true), default);
+            await worker.RunOnceAsync();
+            Assert.False(worker.Settings.Enabled); Assert.True(worker.PolicyStatus.Central);
+            await Assert.ThrowsAsync<ArgumentException>(()=>worker.ConfigureAsync(true,"class@example.test","test-folder-12345",default));
+        }
+        using (var worker = Worker()) await worker.RunOnceAsync();
+        Assert.Equal(0,_client.Connections); Assert.Equal(0,_client.Restrictions); Assert.Equal(0,_client.Uploads);
+    }
+    [Fact]
+    public async Task SameRevisionCannotSilentlySwitchBetweenCentralAndLocalAuthentication()
+    {
+        using var worker=Worker();
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ApplyPolicyAsync(new("m112","class@example.test","test-folder-12345","reader@example.test",new string('a',32),Central:true),default));
+    }
+    [Fact]
     public async Task LegacyFolderCannotUploadWithoutCentralDevicePolicy()
     {
         await Add(); _config.Value.UsbDocuments.Drive.PolicyRevision = "";

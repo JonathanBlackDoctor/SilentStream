@@ -16,10 +16,11 @@ public sealed class DocumentDriveConfig
     public string AppliedRevision { get; set; } = "";
     public string AttemptedRevision { get; set; } = "";
     public string PolicyError { get; set; } = "";
+    public bool Central { get; set; }
 }
 
-public sealed record DocumentDrivePolicy(string RoomId, string Account, string FolderId, string ReaderEmail, string Revision);
-public sealed record DocumentDrivePolicyStatus(string Revision, string AppliedRevision, string FolderId, string ReaderEmail, string Error);
+public sealed record DocumentDrivePolicy(string RoomId, string Account, string FolderId, string ReaderEmail, string Revision, bool Central = false);
+public sealed record DocumentDrivePolicyStatus(string Revision, string AppliedRevision, string FolderId, string ReaderEmail, string Error, bool Central = false);
 
 public interface IDocumentDriveClient
 {
@@ -56,7 +57,7 @@ public sealed class DocumentDriveUpload : IDisposable
     private int _cursor;
     public string Status { get { lock (_gate) return _status; } }
     public DocumentDriveConfig Settings => _config.Load().UsbDocuments.Drive;
-    public DocumentDrivePolicyStatus PolicyStatus { get { var s = Settings; return new(s.PolicyRevision, s.AppliedRevision, s.FolderId, s.ReaderEmail, s.PolicyError); } }
+    public DocumentDrivePolicyStatus PolicyStatus { get { var s = Settings; return new(s.PolicyRevision, s.AppliedRevision, s.FolderId, s.ReaderEmail, s.PolicyError, s.Central); } }
 
     // Only the authenticated coordinator bridge may call this with server-derived policy.
     public async Task ApplyPolicyAsync(DocumentDrivePolicy policy, CancellationToken ct)
@@ -72,15 +73,15 @@ public sealed class DocumentDriveUpload : IDisposable
             var old = Settings;
             if (old.PolicyRevision == policy.Revision)
             {
-                if (old.FolderId != folder || old.Account != policy.Account || old.ReaderEmail != policy.ReaderEmail || old.RoomId != policy.RoomId)
+                if (old.FolderId != folder || old.Account != policy.Account || old.ReaderEmail != policy.ReaderEmail || old.RoomId != policy.RoomId || old.Central != policy.Central)
                     throw new ArgumentException("Drive 설정 버전이 일치하지 않습니다.");
                 return;
             }
             if (old.PolicyRevision.Length > 0 && (old.FolderId != folder || old.Account != policy.Account))
                 throw new ArgumentException("기존 기기 보관 폴더와 소유 계정은 변경할 수 없습니다.");
-            _config.Update(c => c.UsbDocuments.Drive = new() { Enabled = old.Enabled && policy.ReaderEmail.Length > 0,
+            _config.Update(c => c.UsbDocuments.Drive = new() { Enabled = !policy.Central && old.Enabled && policy.ReaderEmail.Length > 0,
                 Account = policy.Account, FolderId = folder, RoomId = policy.RoomId,
-                ReaderEmail = policy.ReaderEmail, PolicyRevision = policy.Revision });
+                ReaderEmail = policy.ReaderEmail, PolicyRevision = policy.Revision, Central = policy.Central });
             lock (_gate) _status = "Drive 담당자 권한 확인 대기";
         }
         finally { _run.Release(); }
@@ -151,6 +152,7 @@ public sealed class DocumentDriveUpload : IDisposable
         try
         {
             var settings = Settings;
+            if (settings.Central) throw new ArgumentException("중앙 공용 계정 연결을 사용합니다. 이 PC에서는 Google 로그인이 필요하지 않습니다.");
             if (!HasPolicy(settings)) throw new ArgumentException("중앙 관리에서 기기별 Drive 폴더와 담당자를 먼저 지정하세요.");
             if (!string.Equals(account.Trim(), settings.Account, StringComparison.OrdinalIgnoreCase) || FolderId(folder) != settings.FolderId)
                 throw new ArgumentException("중앙 관리에서 지정한 공용 계정과 기기 폴더만 사용할 수 있습니다.");
@@ -202,6 +204,7 @@ public sealed class DocumentDriveUpload : IDisposable
         {
             var settings = Settings;
             lock (_gate) { if (_stateBroken) return; }
+            if (settings.Central) { lock (_gate) _status = "중앙 공용 계정으로 자동 업로드 · 이 PC의 Google 로그인 불필요"; return; }
             if (!HasPolicy(settings)) { lock (_gate) _status = "중앙 관리에서 기기별 Drive 폴더·담당자를 지정하세요."; return; }
             if (!await ApplyPermissionsAsync(settings, ct).ConfigureAwait(false) || !settings.Enabled || settings.ReaderEmail.Length == 0) return;
             if (!_archive.Settings.Enabled) return;

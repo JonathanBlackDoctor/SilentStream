@@ -1521,6 +1521,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             updatedAtUtc = nowUtc,
             usbDocumentsSupported = true,
             documentDriveSupported = true,
+            centralDocumentDrive = true,
             documentDrive = _documentDrive.PolicyStatus,
             shutdownScheduleControl = true,
             quietShutdownControl = true,
