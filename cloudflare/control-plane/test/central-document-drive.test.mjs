@@ -48,7 +48,10 @@ async function fixture(size=C*9+17){
     {id:"owner",type:"user",role:"owner",emailAddress:owner},{id:"reader",type:"user",role:"reader",emailAddress:reader}]};
   const send=async(url,options={})=>{
     const u=new URL(url),method=options.method||"GET";log.push({url,method});
-    if(u.hostname==="oauth2.googleapis.com")return Response.json({access_token:"access-secret",refresh_token:"refresh-secret",scope,expires_in:3600});
+    if(u.hostname==="oauth2.googleapis.com"){
+      assert.equal(options.redirect,"manual");
+      return Response.json({access_token:"access-secret",refresh_token:"refresh-secret",scope,expires_in:3600});
+    }
     if(u.pathname.endsWith("/about"))return Response.json({user:{emailAddress:remote.account}});
     if(u.pathname.includes("/permissions")){
       if(method==="GET")return Response.json({permissions:remote.permissions});

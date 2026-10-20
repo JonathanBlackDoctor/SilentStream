@@ -48,7 +48,7 @@ export class CentralDocumentDrive {
     const key="centralDriveOAuth:"+await hash(state),saved=await this.storage.get(key);
     await this.storage.delete(key);
     if(!saved||saved.expires<=Date.now()||await this.plane.role(saved.admin)!=="admin")throw new DriveFailure("Drive 연결 요청이 만료됐습니다.");
-    const r=await this.send("https://oauth2.googleapis.com/token",{method:"POST",redirect:"error",body:new URLSearchParams({
+    const r=await this.send("https://oauth2.googleapis.com/token",{method:"POST",redirect:"manual",signal:AbortSignal.timeout(30000),body:new URLSearchParams({
       code,client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,
       redirect_uri:this.env.PUBLIC_BASE_URI.replace(/\/$/,"")+"/auth/callback",grant_type:"authorization_code",code_verifier:saved.verifier})});
     if(!r.ok)throw new DriveFailure("Google 승인 코드를 교환하지 못했습니다. 중앙에서 다시 연결하세요.");
@@ -74,7 +74,7 @@ export class CentralDocumentDrive {
     if(state.error)throw new DriveFailure(state.error);
     try{
       const stored=await this.open(state.credentials,"centralDrive");
-      const response=await this.send("https://oauth2.googleapis.com/token",{method:"POST",redirect:"error",body:new URLSearchParams({
+      const response=await this.send("https://oauth2.googleapis.com/token",{method:"POST",redirect:"manual",signal:AbortSignal.timeout(30000),body:new URLSearchParams({
         client_id:this.env.GOOGLE_CLIENT_ID,client_secret:this.env.GOOGLE_CLIENT_SECRET,refresh_token:stored.refreshToken,grant_type:"refresh_token"})});
       if(!response.ok)throw new DriveFailure("공용 Google 연결이 만료되거나 취소됐습니다. 중앙에서 다시 연결하세요.");
       const value=await response.json();if(!value.access_token)throw new DriveFailure("공용 Google 연결을 다시 확인하세요.");
