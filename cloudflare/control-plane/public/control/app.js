@@ -71,6 +71,7 @@ addEventListener("pageshow",event=>{if(event.persisted)location.reload()});
 async function loadDriveFolders(){
   $("driveSettings")?.classList.add("show");const host=$("driveFolders");if(!host||host.querySelector(":focus"))return;
   const values=await Promise.all(roomIds.map(room=>api("/api/control/rooms/"+room+"/usb-drive")));
+  if(host.querySelector(":focus"))return;
   host.replaceChildren();
   for(const value of values){
     const form=document.createElement("form");form.className="drive-form";form.dataset.driveRoom=value.roomId;
