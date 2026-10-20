@@ -1,6 +1,6 @@
 const SITE_CONFIG = {
-  brandName: "Media Capture Helper",
-  version: "0.3.0",
+  brandName: "SilentStream",
+  version: "최신 릴리스",
   repoUrl: "https://github.com/JonathanBlackDoctor/SilentStream",
   releasesPageUrl: "https://github.com/JonathanBlackDoctor/SilentStream/releases",
   downloadSetupUrl: "https://github.com/JonathanBlackDoctor/SilentStream/releases/latest/download/MediaCaptureHelper-win-Setup.exe",

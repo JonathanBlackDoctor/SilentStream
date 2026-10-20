@@ -41,7 +41,7 @@ h3 { font-size: 1.05rem; }
 ul, ol { padding-left: 1.2rem; }
 li + li { margin-top: .45rem; }
 code, pre { font-family: "Cascadia Code", "D2Coding", Consolas, monospace; }
-code { padding: .08rem .32rem; border-radius: 5px; background: #edf1f6; color: #25354a; font-size: .9em; }
+code { padding: .08rem .32rem; border-radius: 5px; background: #edf1f6; color: #25354a; font-size: .9em; overflow-wrap: anywhere; }
 kbd { padding: .08rem .34rem; border: 1px solid #cbd5e1; border-bottom-width: 2px; border-radius: 5px; background: #fff; color: #304158; font: .83em "Cascadia Code", "D2Coding", Consolas, monospace; white-space: nowrap; }
 pre { margin: 0; overflow: auto; padding: 1rem; border-radius: 12px; background: #192536; color: #e9f2ff; font-size: .82rem; line-height: 1.65; }
 pre code { padding: 0; background: transparent; color: inherit; font-size: inherit; }

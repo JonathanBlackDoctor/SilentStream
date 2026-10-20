@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "sync:site": "node scripts/sync-public-site.mjs",
+    "predev": "node scripts/sync-public-site.mjs",
+    "predeploy": "node scripts/sync-public-site.mjs",
     "check": "node --check src/index.js && node --check public/control/app.js && node --check public/room/app.js && node --check public/room/service-worker.js && node --test test/*.test.mjs",
     "smoke": "node test/local-smoke.mjs",
     "dev": "wrangler dev",

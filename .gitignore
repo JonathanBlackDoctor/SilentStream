@@ -71,6 +71,7 @@ cloudflare/control-plane/node_modules/
 cloudflare/control-plane/.wrangler/
 cloudflare/control-plane/.deploy/
 cloudflare/control-plane/.local-config/
+cloudflare/control-plane/public/site/
 
 # 로컬 중앙서버 publish 및 현장 팩 산출물(소스/스크립트가 아님)
 inspection/deployment/control-plane/
