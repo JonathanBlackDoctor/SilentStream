@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Channels;
@@ -10,6 +11,7 @@ namespace SilentStream.Core.UsbDocuments;
 public sealed class UsbDocumentArchive : IDisposable
 {
     public const int ChunkSize = 256 * 1024;
+    public const int RetentionDays = 7;
     private readonly IConfigStore _config;
     private readonly string _catalog;
     private readonly object _gate = new();
@@ -17,6 +19,10 @@ public sealed class UsbDocumentArchive : IDisposable
     private readonly Channel<string> _queue = Channel.CreateBounded<string>(128);
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _worker;
+    private readonly Task _retentionWorker;
+    private readonly Func<DateTimeOffset> _utcNow;
+    private readonly Dictionary<string, int> _readers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTimeOffset> _chunkReads = new();
     private readonly long _bytesPerSecond;
     private readonly Func<string, long> _freeSpace;
     private string _detector = "관리자 서비스 연결 대기";
@@ -24,9 +30,11 @@ public sealed class UsbDocumentArchive : IDisposable
     private long _dropped;
     private string? _storageError;
 
-    public UsbDocumentArchive(IConfigStore config, string catalog, long bytesPerSecond = 4 * 1024 * 1024, Func<string, long>? freeSpace = null)
+    public UsbDocumentArchive(IConfigStore config, string catalog, long bytesPerSecond = 4 * 1024 * 1024, Func<string, long>? freeSpace = null,
+        Func<DateTimeOffset>? utcNow = null, bool startRetentionWorker = true)
     {
         _config = config; _catalog = catalog; _bytesPerSecond = Math.Max(1, bytesPerSecond);
+        _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _freeSpace = freeSpace ?? (directory => new DriveInfo(Path.GetPathRoot(directory)!).AvailableFreeSpace);
         try
         {
@@ -43,6 +51,7 @@ public sealed class UsbDocumentArchive : IDisposable
         { entry.Status = "failed"; entry.Error = "앱 종료로 복사가 중단됐습니다. 재시도하세요."; CleanupTemporary(entry); }
         if (_entries.Count > 0 && _storageError is null) Save();
         _worker = Task.Run(RunAsync);
+        _retentionWorker = startRetentionWorker ? Task.Run(RetentionLoopAsync) : Task.CompletedTask;
     }
 
     public UsbDocumentConfig Settings => _config.Load().UsbDocuments;
@@ -208,6 +217,7 @@ public sealed class UsbDocumentArchive : IDisposable
                     entry.Status = "ready";
                 }
                 entry.DestinationWriteTimeUtc = File.GetLastWriteTimeUtc(entry.Destination);
+                entry.ArchivedAtUtc = _utcNow();
                 entry.Error = null; Save();
             }
         }
@@ -221,10 +231,21 @@ public sealed class UsbDocumentArchive : IDisposable
             var entry = _entries.FirstOrDefault(e => e.Id == id && e.Status is "ready" or "duplicate");
             if (entry is null || !Guid.TryParseExact(id, "N", out _)) return null;
             EnsureNoReparsePoints(entry.Destination);
-            var stream = new FileStream(entry.Destination, FileMode.Open, FileAccess.Read, FileShare.Read,
-                ChunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            if (stream.Length != entry.Size || File.GetLastWriteTimeUtc(entry.Destination) != entry.DestinationWriteTimeUtc) { stream.Dispose(); throw new IOException("Archived file changed."); }
-            return (stream, entry.Public());
+            var path = Path.GetFullPath(entry.Destination);
+            _readers[path] = _readers.GetValueOrDefault(path) + 1;
+            ArchiveReadStream? stream = null;
+            try
+            {
+                stream = new ArchiveReadStream(path, () => ReleaseReader(path));
+                if (stream.Length != entry.Size || File.GetLastWriteTimeUtc(path) != entry.DestinationWriteTimeUtc)
+                    throw new IOException("Archived file changed.");
+                return (stream, entry.Public());
+            }
+            catch
+            {
+                if (stream is null) ReleaseReader(path); else stream.Dispose();
+                throw;
+            }
         }
     }
 
@@ -232,6 +253,8 @@ public sealed class UsbDocumentArchive : IDisposable
     {
         var opened = OpenDownload(id);
         if (opened is null) return null;
+        // Central downloads open each chunk separately. Keep the file between chunks, too.
+        lock (_gate) _chunkReads[id] = _utcNow();
         await using var stream = opened.Value.Stream;
         if (offset < 0 || offset > stream.Length || offset % ChunkSize != 0) throw new ArgumentException("Invalid offset.");
         stream.Position = offset;
@@ -239,6 +262,99 @@ public sealed class UsbDocumentArchive : IDisposable
         await stream.ReadExactlyAsync(buffer, token).ConfigureAwait(false);
         var info = opened.Value.Info;
         return new(id, info.Name, info.Size, offset, info.Sha256!, Convert.ToBase64String(buffer), stream.Position == stream.Length);
+    }
+
+    private async Task RetentionLoopAsync()
+    {
+        try
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                var pruned = PruneExpired();
+                await Task.Delay(pruned == 128 ? TimeSpan.FromSeconds(1) : TimeSpan.FromMinutes(15), _stop.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    /// <summary>Remove only catalog-owned, unchanged files under the current archive root. Never scans a tree.</summary>
+    public int PruneExpired()
+    {
+        lock (_gate)
+        {
+            if (_storageError is not null) return 0;
+            var now = _utcNow(); var cutoff = now.AddDays(-RetentionDays); var pruned = 0;
+            var groups = _entries.Where(e => e.Status is "ready" or "duplicate")
+                .GroupBy(e => e.Destination, StringComparer.OrdinalIgnoreCase).ToArray();
+            foreach (var group in groups)
+            {
+                if (_stop.IsCancellationRequested || pruned == 128) break;
+                if (group.Any(e => (e.ArchivedAtUtc ?? e.DetectedAtUtc) == default
+                    || (e.ArchivedAtUtc ?? e.DetectedAtUtc) > cutoff
+                    || _chunkReads.TryGetValue(e.Id, out var read) && now - read < TimeSpan.FromMinutes(2))) continue;
+                var owner = group.FirstOrDefault(e => e.Status == "ready");
+                if (owner is null || !ManagedDestination(owner, out var path) || _readers.GetValueOrDefault(path) > 0) continue;
+                try
+                {
+                    EnsureNoReparsePoints(path);
+                    var file = new FileInfo(path);
+                    if (file.Exists)
+                    {
+                        if (file.Length != owner.Size || file.LastWriteTimeUtc != owner.DestinationWriteTimeUtc) continue;
+                        // Path was checked against the exact archive root/date/generated-name before deletion.
+                        File.Delete(path);
+                    }
+                    foreach (var entry in group) { _entries.Remove(entry); _chunkReads.Remove(entry.Id); }
+                    Save(); pruned++;
+                    if (_storageError is not null) break;
+                    var directory = Path.GetDirectoryName(path)!;
+                    if (Directory.Exists(directory) && !Directory.EnumerateFileSystemEntries(directory).Any())
+                        Directory.Delete(directory, recursive: false);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                { /* An external reader/lock can defer this file until the next bounded pass. */ }
+            }
+            return pruned;
+        }
+    }
+
+    private bool ManagedDestination(UsbDocumentEntry entry, out string path)
+    {
+        path = "";
+        try
+        {
+            if (!Guid.TryParseExact(entry.Id, "N", out _) || entry.Name != Path.GetFileName(entry.Name)
+                || !IsDocument(entry.Name) || !DateTime.TryParseExact(entry.Date, "yyyy-MM-dd",
+                    CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+                || !Path.IsPathFullyQualified(Settings.Folder) || !Path.IsPathFullyQualified(entry.Destination)) return false;
+            var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Settings.Folder));
+            path = Path.GetFullPath(entry.Destination);
+            var expected = Path.Combine(root, entry.Date,
+                Path.GetFileNameWithoutExtension(entry.Name) + "_" + entry.Id + Path.GetExtension(entry.Name));
+            var prefix = Path.EndsInDirectorySeparator(root) ? root : root + Path.DirectorySeparatorChar;
+            return !root.StartsWith(@"\\") && path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                && path.Equals(expected, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException) { return false; }
+    }
+
+    private void ReleaseReader(string path)
+    {
+        lock (_gate)
+        {
+            var count = _readers.GetValueOrDefault(path);
+            if (count <= 1) _readers.Remove(path); else _readers[path] = count - 1;
+        }
+    }
+
+    private sealed class ArchiveReadStream(string path, Action release) : FileStream(path,
+        FileMode.Open, FileAccess.Read, FileShare.Read, ChunkSize, FileOptions.Asynchronous | FileOptions.SequentialScan)
+    {
+        private Action? _release = release;
+        protected override void Dispose(bool disposing)
+        { try { base.Dispose(disposing); } finally { Interlocked.Exchange(ref _release, null)?.Invoke(); } }
+        public override async ValueTask DisposeAsync()
+        { try { await base.DisposeAsync().ConfigureAwait(false); } finally { Interlocked.Exchange(ref _release, null)?.Invoke(); } }
     }
 
     private static void CleanupTemporary(UsbDocumentEntry entry)
@@ -277,7 +393,7 @@ public sealed class UsbDocumentArchive : IDisposable
     public void Dispose()
     {
         _stop.Cancel(); _queue.Writer.TryComplete();
-        try { _worker.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+        try { Task.WhenAll(_worker, _retentionWorker).GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         _stop.Dispose();
     }
 }

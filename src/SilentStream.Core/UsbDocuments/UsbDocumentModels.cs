@@ -31,5 +31,6 @@ public sealed class UsbDocumentEntry
     public string? Sha256 { get; set; }
     public string? Error { get; set; }
     public DateTimeOffset DetectedAtUtc { get; set; }
+    public DateTimeOffset? ArchivedAtUtc { get; set; }
     public UsbDocumentInfo Public() => new(Id, Name, Date, Status, Size, CopiedBytes, Sha256, Error, DetectedAtUtc);
 }

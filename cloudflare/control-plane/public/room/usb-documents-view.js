@@ -11,7 +11,7 @@
     const card = el("details"); card.className = "section-card card usb-documents"; card.style.marginTop = "16px";
     card.append(el("summary", "USB 자료"));
     const body=el("div");body.className="fold-body";card.append(body);
-    const note = el("p", "열거나 복사한 PPT·PPTX·PDF를 PC에 보관합니다. 미리보기도 포함될 수 있습니다.");
+    const note = el("p", "열거나 복사한 PPT·PPTX·PDF를 PC에 보관합니다. 미리보기도 포함될 수 있습니다. 로컬 보관본은 7일 후 자동 삭제하며 Drive 파일은 유지합니다. PC 앱 0.4.15 이상에서 적용됩니다.");
     note.className = "meta muted"; body.append(note);
     const status = el("p"); status.className="usb-status";status.setAttribute("aria-live","polite"); body.append(status);
     const controls = el("div"); controls.className="usb-controls";

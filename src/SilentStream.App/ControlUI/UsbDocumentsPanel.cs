@@ -17,7 +17,7 @@ public sealed class UsbDocumentsPanel : UserControl
         var save = new Button { Content = "USB 보관 설정 저장", HorizontalAlignment = HorizontalAlignment.Left };
         var retry = new Button { Content = "선택한 실패 파일 재시도", HorizontalAlignment = HorizontalAlignment.Left };
         panel.Children.Add(enabled);
-        panel.Children.Add(new TextBlock { Text = "PPT·PPTX·PDF 읽기를 감지합니다. 탐색기 미리보기도 포함될 수 있습니다.", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "PPT·PPTX·PDF 읽기를 감지합니다. 탐색기 미리보기도 포함될 수 있습니다. 로컬 보관본은 7일 후 자동 삭제하며 Drive 파일은 유지합니다.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(folder); panel.Children.Add(save); panel.Children.Add(status); panel.Children.Add(list); panel.Children.Add(retry);
         var driveEnabled = new CheckBox { Content = "보관된 자료를 Google Drive에 자동 업로드", IsChecked = driveUpload.Settings.Enabled, Margin = new Thickness(0, 16, 0, 4) };
         var account = new TextBox { Text = driveUpload.Settings.Account, Margin = new Thickness(0, 4, 0, 4) };
@@ -29,7 +29,7 @@ public sealed class UsbDocumentsPanel : UserControl
         panel.Children.Add(driveEnabled);
         panel.Children.Add(new TextBlock { Text = "업로드 계정 이메일" }); panel.Children.Add(account);
         panel.Children.Add(new TextBlock { Text = "해당 계정이 소유한 Drive 폴더 링크" }); panel.Children.Add(driveFolder);
-        panel.Children.Add(new TextBlock { Text = "연결 시 Drive 파일 접근 권한을 요청합니다. 지정한 계정·폴더를 확인한 뒤 업로드하며, 로컬 자료는 유지합니다.", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "연결 시 Drive 파일 접근 권한을 요청합니다. 지정한 계정·폴더를 확인한 뒤 업로드합니다. 로컬 보관본은 업로드 성공 여부와 관계없이 7일 후 삭제됩니다.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(connect); panel.Children.Add(retryDrive); panel.Children.Add(driveStatus);
         Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         void Refresh()
