@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import {createHash} from "node:crypto";
 import worker,{ControlPlane} from "../src/index.js";
 import {CentralDocumentDrive} from "../src/central-document-drive.js";
+test("native fetch is called without a class receiver in the Worker runtime",async()=>{
+  const original=globalThis.fetch;
+  try{
+    globalThis.fetch=function(){assert.equal(this,undefined);return Promise.resolve(Response.json({ok:true}));};
+    const client=new CentralDocumentDrive({state:{storage:{}},env:{}});
+    assert.equal((await client.send("https://www.googleapis.com/drive/v3/about")).status,200);
+  }finally{globalThis.fetch=original;}
+});
 
 test("expired central authorization is persisted and is not automatically refreshed again",async()=>{
   const f=await fixture();let refreshes=0;

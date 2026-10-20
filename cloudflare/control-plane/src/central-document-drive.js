@@ -11,7 +11,7 @@ const email=s=>typeof s==="string"&&/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)?s.trim(
 const id=s=>typeof s==="string"&&/^[A-Za-z0-9_-]{10,200}$/.test(s);
 export class DriveFailure extends Error {}
 export class CentralDocumentDrive {
-  constructor(plane,send=fetch){this.plane=plane;this.storage=plane.state.storage;this.env=plane.env;this.send=send;}
+  constructor(plane,send=(input,init)=>fetch(input,init)){this.plane=plane;this.storage=plane.state.storage;this.env=plane.env;this.send=send;}
   async seal(value,aad){
     if(!this.env.DOCUMENT_DRIVE_TOKEN_KEY)throw new DriveFailure("중앙 Drive 암호화 키 설정이 필요합니다.");
     const key=await crypto.subtle.importKey("raw",unbase64(this.env.DOCUMENT_DRIVE_TOKEN_KEY),"AES-GCM",false,["encrypt"]);
