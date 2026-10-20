@@ -83,13 +83,13 @@
         </tbody></table></div>
         <p>조작·USB 목록·다운로드에는 PC와 최신 앱·연결 도우미의 온라인 연결이 필요합니다. PC가 꺼져도 동기화된 재생목록·업로드 이력은 보이며 현재 상태와 구분됩니다.</p>
         <details><summary>오프라인일 때 종료 예약</summary><div class="details-body"><p>호실·중앙 웹은 <strong>연결 후 등록할 요청</strong>을 저장하며 종료 3분 전까지 미연결 시 만료합니다. PC가 등록을 확인한 예약은 휴대폰을 닫아도 남습니다. 직접 연결은 온라인이어야 합니다. 이미 마감한 방송·녹화는 예약을 취소해도 자동 재개되지 않습니다.</p></div></details>
-        <details><summary>Google Drive에도 자료 보관하기</summary><div class="details-body"><p>관리자가 PC 제어창의 <strong>설정 → USB 자료</strong>에서 공용 계정·소유 폴더를 별도로 연결합니다. 기본 꺼짐이며 YouTube와 별도 인증입니다. Google 동의 화면의 접근 범위를 확인하고 승인하세요. 실패한 업로드는 같은 PC 화면에서 재시도합니다. 기기별 Drive 바로가기는 담당자 지정·공유 권한 확인 후 안내합니다.</p></div></details>
+        <details><summary>Google Drive에도 자료 보관하기</summary><div class="details-body"><p>관리자가 <strong>중앙 관리에서 공용 Google 계정을 한 번 연결</strong>하면 모든 기기에 적용됩니다. 각 PC의 Google 로그인은 필요하지 않습니다. PC 앱 0.4.17 이상·온라인 상태에서 자료를 업로드하며, 실패는 중앙에서 재시도합니다. USB 자료 탭의 기기별 Drive 링크는 담당자 지정·읽기 권한 확인 후 활성화됩니다.</p></div></details>
         <details><summary>개인 PC에 직접 연결하기</summary><div class="details-body"><p>PC 설정에서 폰 원격을 켜고 <code>http://&lt;PC IP&gt;:8787</code>에 접속해 제어창의 6자리 PIN을 입력합니다. 외부에서는 같은 Tailscale 네트워크를 이용합니다. 강의실 Google 로그인과는 별도 방식입니다.</p></div></details>
       </section>
       <section class="guide-section" id="maintenance" aria-labelledby="maintenance-title">
         <p class="eyebrow">5. 설정·관리</p><h2 id="maintenance-title">새 기능은 앱과 도우미를 함께 확인하세요</h2>
         <p>앱 업데이트는 다운로드 후 다음 재시작 때 적용됩니다. 도우미 갱신이 필요하면 방송 종료 후 PC 제어창의 <strong>도우미 업데이트</strong>를 누르고 Windows 관리자 승인을 진행하세요.</p>
-        <p>USB 자동 보관은 기본 켜짐이며 저장해 둔 꺼짐은 유지합니다. 폴더 변경·Drive 연결은 PC에서 설정합니다. Windows 설정 → 앱에서 Media Capture Helper를 제거해도 녹화 파일·설정은 자동 삭제하지 않습니다.</p>
+        <p>USB 자동 보관은 기본 켜짐이며 저장해 둔 꺼짐은 유지합니다. 로컬 폴더는 PC에서, 공용 Drive 연결은 중앙에서 설정합니다. Windows 설정 → 앱에서 Media Capture Helper를 제거해도 녹화 파일·설정은 자동 삭제하지 않습니다.</p>
         <details><summary>설정·로그와 선택 알림</summary><div class="details-body"><p>설정·로그는 <code>%AppData%\MediaCaptureHelper</code>에 있습니다. 직접 설정 파일을 바꾸려면 앱을 종료하고 UTF-8로 저장하세요. Telegram 알림은 PC 설정에서 봇 토큰·채팅 ID를 입력하고 시험합니다. 비밀번호·토큰·인증번호는 공유하지 않습니다.</p></div></details>
       </section>
       <section class="guide-section" id="troubleshooting" aria-labelledby="trouble-title">

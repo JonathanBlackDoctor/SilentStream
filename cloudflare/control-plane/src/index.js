@@ -1175,7 +1175,7 @@ export class ControlPlane {
     const canRead=verified&&policy.readerEmail===email&&await this.role(email,roomId)!=="none";
     return json({roomId,readerEmail:policy.readerEmail,verified,url:canRead
       ?"https://drive.google.com/drive/folders/"+encodeURIComponent(policy.folderId)+"?authuser="+encodeURIComponent(email):"",
-      message:!policy.readerEmail?"자료 담당자 미정 · 비공개":verified?"담당자 전용 읽기 권한 확인됨":
+      message:!policy.readerEmail?(verified?"자료 담당자 미정 · 비공개":policy.effectiveReaderEmail?"담당자 해제 · Google 권한 반영 대기":"자료 담당자 미정 · 비공개 확인 대기"):verified?"담당자 전용 읽기 권한 확인됨":
         policy.error||(policy.central?"중앙 공용 계정·담당자 권한 확인 대기":"중앙에서 공용 계정 연결 대기"),
       ...(role==="admin"?{account:policy.account,folderId:policy.folderId,revision:policy.revision,
         effectiveReaderEmail:policy.effectiveReaderEmail||""}:{})});

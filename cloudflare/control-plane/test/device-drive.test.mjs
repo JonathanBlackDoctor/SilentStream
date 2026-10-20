@@ -44,6 +44,7 @@ test("clearing a reader remains pending and prevents membership deletion until A
   assert.equal((await plane.deleteMember({email:body.email,target:p.readerEmail})).status,409);
   await plane.driveFolder({...body,policy:{...body.policy,readerEmail:""}});
   p=data.get("driveFolder:m112");assert.equal(p.effectiveReaderEmail,"reader@example.test");
+  assert.match((await(await plane.driveFolder({email:body.email,roomId:"m112"})).json()).message,/권한 반영 대기/);
   assert.equal((await plane.deleteMember({email:body.email,target:"reader@example.test"})).status,409);
   await plane.acknowledgeDrive("m112",{revision:p.revision,appliedRevision:p.revision,folderId:p.folderId,readerEmail:"",error:""},{app:{documentDriveSupported:true}});
   assert.equal((await plane.deleteMember({email:body.email,target:"reader@example.test"})).status,200);
