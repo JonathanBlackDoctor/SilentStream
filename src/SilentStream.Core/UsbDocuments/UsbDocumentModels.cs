@@ -2,6 +2,7 @@ namespace SilentStream.Core.UsbDocuments;
 
 public sealed class UsbDocumentConfig
 {
+    public DocumentDriveConfig Drive { get; set; } = new();
     public bool Enabled { get; set; } = true;
     public string Folder { get; set; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "SilentStream", "USB 자료");
