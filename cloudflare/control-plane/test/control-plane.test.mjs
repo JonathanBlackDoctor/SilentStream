@@ -58,9 +58,9 @@ test("installer browser navigation resumes its room, state and callback after lo
   assert.equal(post.status, 401);
 });
 
-test("redirects the apex and www hostnames to the protected admin portal without content", async () => {
+test("redirects protected paths on apex and www to the admin portal without content", async () => {
   for (const hostname of ["silentstream.win", "www.silentstream.win"]) {
-    const response = await worker.fetch(new Request(`https://${hostname}/`), productionEnv);
+    const response = await worker.fetch(new Request(`https://${hostname}/control/`), productionEnv);
     assert.equal(response.status, 302, hostname);
     assert.equal(response.headers.get("location"), "https://admin.silentstream.win/control/", hostname);
     assert.equal(response.headers.get("cache-control"), "no-store", hostname);
@@ -289,7 +289,7 @@ test("room manager app prioritizes today's link and explicitly browses earlier d
   assert.match(app, /document\.execCommand\("copy"\)/);
   assert.match(document, /playlist-history-toggle/);
   assert.doesNotMatch(document, /app\.js\?v=3/);
-  assert.match(document, /app\.js\?v=16/);
+  assert.match(document, /app\.js\?v=17/);
 });
 
 test("room PWA assets include install guidance, a safe offline page, and valid PNG sizes", async () => {
@@ -298,7 +298,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
   assert.match(document, /rel="manifest"/);
   assert.match(document, /apple-touch-icon/);
-  assert.match(document, /\/app\.js\?v=16/);
+  assert.match(document, /\/app\.js\?v=17/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);
   assert.doesNotMatch(document, /id="installButton" hidden/);
   assert.match(app, /beforeinstallprompt/);

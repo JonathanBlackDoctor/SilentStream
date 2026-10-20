@@ -13,6 +13,24 @@
     const body=el("div");body.className="fold-body";card.append(body);
     const note = el("p", "열거나 복사한 PPT·PPTX·PDF를 PC에 보관합니다. 미리보기도 포함될 수 있습니다. 로컬 보관본은 7일 후 자동 삭제하며 Drive 파일은 유지합니다. PC 앱 0.4.15 이상에서 적용됩니다.");
     note.className = "meta muted"; body.append(note);
+    const driveLink=el("a","Google Drive 자료 열기");driveLink.target="_blank";driveLink.rel="noopener noreferrer";driveLink.hidden=true;
+    driveLink.style.cssText="display:none;padding:12px;border-radius:8px;background:#e5f0ff;color:#174f96;text-decoration:none;font-size:13px;font-weight:bold";
+    const drivePending=el("button","Google Drive 자료 열기");drivePending.disabled=true;drivePending.hidden=!adapter.drive;\n    const driveNote=el("p");driveNote.className="usb-status";body.append(driveLink,drivePending,driveNote);
+    let driveKey="",driveBusy=false,driveAt=0;
+    async function loadDrive(manual=false){
+      if(!adapter.drive)return;
+      const c=context();if(!c||driveBusy||!manual&&driveKey===c.key&&Date.now()-driveAt<30000)return;
+      driveBusy=true;const version=generation;
+      try{
+        const value=await adapter.drive(c);
+        if(context()?.key!==c.key||version!==generation)return;
+        driveKey=c.key;driveAt=Date.now();
+        drivePending.hidden=!!value.url;driveLink.hidden=!value.url;driveLink.style.display=value.url?"inline-block":"none";
+        if(value.url)driveLink.href=value.url;else driveLink.removeAttribute("href");
+        driveNote.textContent=(value.readerEmail?"자료 담당자: "+value.readerEmail+" · ":"")+value.message;
+      }catch(error){if(context()?.key===c.key)driveNote.textContent=error.message;}
+      finally{driveBusy=false;}
+    }
     const status = el("p"); status.className="usb-status";status.setAttribute("aria-live","polite"); body.append(status);
     const controls = el("div"); controls.className="usb-controls";
     const date = el("input"); date.type="date"; date.setAttribute("aria-label","보관 날짜");
@@ -25,7 +43,7 @@
     let data=null,busy=false,skip=0,key="",generation=0,failedKey="";
     function context() {
       const current=adapter.context();
-      if (current?.key!==key) { key=current?.key||"";generation++;data=null;skip=0;failedKey="";rows.replaceChildren();count.textContent=""; }
+      if (current?.key!==key) { key=current?.key||"";generation++;driveKey="";drivePending.hidden=!adapter.drive;driveLink.hidden=true;driveLink.style.display="none";driveLink.removeAttribute("href");driveNote.textContent="";data=null;skip=0;failedKey="";rows.replaceChildren();count.textContent=""; }
       return current;
     }
     function connection() {
@@ -42,6 +60,7 @@
       return ready;
     }
     async function load(manual=false) {
+      loadDrive(manual);
       if(manual)failedKey="";
       if(!connection()||busy||(!manual&&failedKey===key))return;
       const c=context(),version=generation;
@@ -96,7 +115,7 @@
     date.onchange=()=>{skip=0;load(true);};refresh.onclick=()=>load(true);
     previous.onclick=()=>{skip=Math.max(0,skip-100);load(true);};next.onclick=()=>{skip+=100;load(true);};
     card.ontoggle=()=>{if(card.open)load(true);};
-    const timer=setInterval(()=>{const ready=connection();if(ready&&card.open&&!document.hidden)load();},5000);
+    const timer=setInterval(()=>{const ready=connection();if(card.open&&!document.hidden){loadDrive();if(ready)load();}},5000);
     global.addEventListener("pagehide",()=>clearInterval(timer),{once:true});
     connection();
   }

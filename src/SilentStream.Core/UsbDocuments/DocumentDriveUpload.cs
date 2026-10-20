@@ -10,12 +10,22 @@ public sealed class DocumentDriveConfig
     public bool Enabled { get; set; }
     public string Account { get; set; } = "";
     public string FolderId { get; set; } = "";
+    public string RoomId { get; set; } = "";
+    public string ReaderEmail { get; set; } = "";
+    public string PolicyRevision { get; set; } = "";
+    public string AppliedRevision { get; set; } = "";
+    public string AttemptedRevision { get; set; } = "";
+    public string PolicyError { get; set; } = "";
 }
+
+public sealed record DocumentDrivePolicy(string RoomId, string Account, string FolderId, string ReaderEmail, string Revision);
+public sealed record DocumentDrivePolicyStatus(string Revision, string AppliedRevision, string FolderId, string ReaderEmail, string Error);
 
 public interface IDocumentDriveClient
 {
     Task ConnectAsync(DocumentDriveConfig settings, CancellationToken ct);
     Task ValidateAsync(DocumentDriveConfig settings, CancellationToken ct);
+    Task RestrictAccessAsync(DocumentDriveConfig settings, CancellationToken ct);
     Task<string> AllocateIdAsync(CancellationToken ct);
     Task UploadAsync(DocumentDriveConfig settings, UsbDocumentInfo file, Stream content,
         string remoteId, string md5, CancellationToken ct);
@@ -46,6 +56,62 @@ public sealed class DocumentDriveUpload : IDisposable
     private int _cursor;
     public string Status { get { lock (_gate) return _status; } }
     public DocumentDriveConfig Settings => _config.Load().UsbDocuments.Drive;
+    public DocumentDrivePolicyStatus PolicyStatus { get { var s = Settings; return new(s.PolicyRevision, s.AppliedRevision, s.FolderId, s.ReaderEmail, s.PolicyError); } }
+
+    // Only the authenticated coordinator bridge may call this with server-derived policy.
+    public async Task ApplyPolicyAsync(DocumentDrivePolicy policy, CancellationToken ct)
+    {
+        await _run.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (policy.RoomId != _config.Load().Provisioning.RoomId || policy.RoomId.Length == 0
+                || policy.Revision.Length != 32 || !policy.Revision.All(Uri.IsHexDigit)
+                || !ValidEmail(policy.Account) || policy.ReaderEmail.Length > 0 && !ValidEmail(policy.ReaderEmail))
+                throw new ArgumentException("기기와 Drive 담당자 설정이 일치하지 않습니다.");
+            var folder = FolderId(policy.FolderId);
+            var old = Settings;
+            if (old.PolicyRevision == policy.Revision)
+            {
+                if (old.FolderId != folder || old.Account != policy.Account || old.ReaderEmail != policy.ReaderEmail || old.RoomId != policy.RoomId)
+                    throw new ArgumentException("Drive 설정 버전이 일치하지 않습니다.");
+                return;
+            }
+            if (old.PolicyRevision.Length > 0 && (old.FolderId != folder || old.Account != policy.Account))
+                throw new ArgumentException("기존 기기 보관 폴더와 소유 계정은 변경할 수 없습니다.");
+            _config.Update(c => c.UsbDocuments.Drive = new() { Enabled = old.Enabled && policy.ReaderEmail.Length > 0,
+                Account = policy.Account, FolderId = folder, RoomId = policy.RoomId,
+                ReaderEmail = policy.ReaderEmail, PolicyRevision = policy.Revision });
+            lock (_gate) _status = "Drive 담당자 권한 확인 대기";
+        }
+        finally { _run.Release(); }
+    }
+
+    private static bool ValidEmail(string email) => email.Length is > 3 and <= 254 && email.Contains('@') && !email.Any(char.IsWhiteSpace);
+    private bool HasPolicy(DocumentDriveConfig s) => s.PolicyRevision.Length > 0 && s.RoomId.Length > 0
+        && s.RoomId == _config.Load().Provisioning.RoomId && ValidEmail(s.Account) && s.FolderId.Length >= 10;
+
+    private async Task<bool> ApplyPermissionsAsync(DocumentDriveConfig settings, CancellationToken ct)
+    {
+        if (settings.AppliedRevision == settings.PolicyRevision) return true;
+        if (settings.AttemptedRevision == settings.PolicyRevision) return false;
+        _config.Update(c => c.UsbDocuments.Drive.AttemptedRevision = settings.PolicyRevision);
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromMinutes(2));
+            await _client.RestrictAccessAsync(settings, timeout.Token).ConfigureAwait(false);
+            _config.Update(c => { c.UsbDocuments.Drive.AppliedRevision = settings.PolicyRevision; c.UsbDocuments.Drive.PolicyError = ""; });
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            var message = ex is DriveDocumentException ? ex.Message : "Drive 담당자 권한을 확인할 수 없습니다. 계정 연결 후 재시도하세요.";
+            _config.Update(c => c.UsbDocuments.Drive.PolicyError = message);
+            lock (_gate) _status = message;
+            if (ct.IsCancellationRequested) throw;
+            return false;
+        }
+    }
 
     public DocumentDriveUpload(UsbDocumentArchive archive, IConfigStore config, IDocumentDriveClient client,
         string stateFile, bool startWorker = true)
@@ -84,13 +150,19 @@ public sealed class DocumentDriveUpload : IDisposable
         await _run.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var settings = new DocumentDriveConfig { Enabled = enabled, Account = account.Trim(), FolderId = enabled ? FolderId(folder) : Settings.FolderId };
+            var settings = Settings;
+            if (!HasPolicy(settings)) throw new ArgumentException("중앙 관리에서 기기별 Drive 폴더와 담당자를 먼저 지정하세요.");
+            if (!string.Equals(account.Trim(), settings.Account, StringComparison.OrdinalIgnoreCase) || FolderId(folder) != settings.FolderId)
+                throw new ArgumentException("중앙 관리에서 지정한 공용 계정과 기기 폴더만 사용할 수 있습니다.");
             if (enabled)
             {
-                if (!settings.Account.Contains('@') || settings.Account.Any(char.IsWhiteSpace)) throw new ArgumentException("업로드 계정 이메일을 입력하세요.");
+                if (settings.ReaderEmail.Length == 0) throw new ArgumentException("이 기기의 자료 열람 담당자가 미정입니다.");
                 await _client.ConnectAsync(settings, ct).ConfigureAwait(false);
             }
-            _config.Update(c => c.UsbDocuments.Drive = settings);
+            _config.Update(c => { c.UsbDocuments.Drive.AttemptedRevision = ""; c.UsbDocuments.Drive.AppliedRevision = ""; });
+            settings = Settings;
+            if (enabled && !await ApplyPermissionsAsync(settings, ct).ConfigureAwait(false)) throw new DriveDocumentException(Settings.PolicyError);
+            _config.Update(c => c.UsbDocuments.Drive.Enabled = enabled);
             lock (_gate) _status = enabled ? "Drive 연결 확인 · 자동 업로드 사용" : "Drive 자동 업로드 꺼짐";
         }
         finally { _run.Release(); }
@@ -98,6 +170,7 @@ public sealed class DocumentDriveUpload : IDisposable
 
     public void RetryFailed()
     {
+        _config.Update(c => { c.UsbDocuments.Drive.AttemptedRevision = ""; c.UsbDocuments.Drive.AppliedRevision = ""; });
         lock (_gate)
         {
             if (_stateBroken) return;
@@ -128,7 +201,9 @@ public sealed class DocumentDriveUpload : IDisposable
         try
         {
             var settings = Settings;
-            lock (_gate) { if (_stateBroken || !settings.Enabled) return; }
+            lock (_gate) { if (_stateBroken) return; }
+            if (!HasPolicy(settings)) { lock (_gate) _status = "중앙 관리에서 기기별 Drive 폴더·담당자를 지정하세요."; return; }
+            if (!await ApplyPermissionsAsync(settings, ct).ConfigureAwait(false) || !settings.Enabled || settings.ReaderEmail.Length == 0) return;
             if (!_archive.Settings.Enabled) return;
             var snapshot = _archive.Snapshot(skip: _cursor);
             _cursor += snapshot.Items.Length;

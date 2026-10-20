@@ -64,6 +64,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly RecoveryCoordinator _recovery;
     private readonly InspectionRemoteStore _inspection;
     private readonly SilentStream.Core.UsbDocuments.UsbDocumentArchive _usbDocuments;
+    private readonly SilentStream.Core.UsbDocuments.DocumentDriveUpload _documentDrive;
     private readonly IReadOnlyList<INotifier> _notifiers;
     private readonly ILogService _log;
 
@@ -117,6 +118,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         RecoveryCoordinator recovery,
         InspectionRemoteStore inspection,
         SilentStream.Core.UsbDocuments.UsbDocumentArchive usbDocuments,
+        SilentStream.Core.UsbDocuments.DocumentDriveUpload documentDrive,
         IEnumerable<INotifier> notifiers,
         ILogService log)
     {
@@ -143,6 +145,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _recovery = recovery;
         _inspection = inspection;
         _usbDocuments = usbDocuments;
+        _documentDrive = documentDrive;
         _notifiers = notifiers.ToArray();
         _log = log;
         _cloudflared = new CloudflaredManager(log);
@@ -524,7 +527,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         });
 
         UsbDocumentEndpoints.Map(app, _usbDocuments, HasInspectionBridgeSecret,
-            () => BlockSettingsChange(RemoteSettingsSection.Other));
+            () => BlockSettingsChange(RemoteSettingsSection.Other), _documentDrive);
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
         app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
         app.MapGet("/api/recovery/status", () => Results.Json(_recovery.Status, Json));
@@ -1517,6 +1520,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         {
             updatedAtUtc = nowUtc,
             usbDocumentsSupported = true,
+            documentDriveSupported = true,
+            documentDrive = _documentDrive.PolicyStatus,
             shutdownScheduleControl = true,
             quietShutdownControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,

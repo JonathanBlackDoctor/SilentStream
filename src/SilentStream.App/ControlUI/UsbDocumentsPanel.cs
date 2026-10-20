@@ -20,23 +20,25 @@ public sealed class UsbDocumentsPanel : UserControl
         panel.Children.Add(new TextBlock { Text = "PPT·PPTX·PDF 읽기를 감지합니다. 탐색기 미리보기도 포함될 수 있습니다. 로컬 보관본은 7일 후 자동 삭제하며 Drive 파일은 유지합니다.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(folder); panel.Children.Add(save); panel.Children.Add(status); panel.Children.Add(list); panel.Children.Add(retry);
         var driveEnabled = new CheckBox { Content = "보관된 자료를 Google Drive에 자동 업로드", IsChecked = driveUpload.Settings.Enabled, Margin = new Thickness(0, 16, 0, 4) };
-        var account = new TextBox { Text = driveUpload.Settings.Account, Margin = new Thickness(0, 4, 0, 4) };
-        var driveFolder = new TextBox { Text = driveUpload.Settings.FolderId, Margin = new Thickness(0, 4, 0, 4) };
+        var account = new TextBox { IsReadOnly = true, Text = driveUpload.Settings.Account, Margin = new Thickness(0, 4, 0, 4) };
+        var driveFolder = new TextBox { IsReadOnly = true, Text = driveUpload.Settings.FolderId, Margin = new Thickness(0, 4, 0, 4) };
         var driveStatus = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 8) };
         var connect = new Button { Content = "Drive 계정 연결 및 설정 저장", HorizontalAlignment = HorizontalAlignment.Left };
         var retryDrive = new Button { Content = "실패한 Drive 업로드 재시도", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 4, 0, 0) };
         string? connectionError = null;
         panel.Children.Add(driveEnabled);
         panel.Children.Add(new TextBlock { Text = "업로드 계정 이메일" }); panel.Children.Add(account);
-        panel.Children.Add(new TextBlock { Text = "해당 계정이 소유한 Drive 폴더 링크" }); panel.Children.Add(driveFolder);
-        panel.Children.Add(new TextBlock { Text = "연결 시 Drive 파일 접근 권한을 요청합니다. 지정한 계정·폴더를 확인한 뒤 업로드합니다. 로컬 보관본은 업로드 성공 여부와 관계없이 7일 후 삭제됩니다.", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = "중앙 관리에서 지정한 기기별 Drive 폴더" }); panel.Children.Add(driveFolder);
+        panel.Children.Add(new TextBlock { Text = "연결 시 Drive 파일 접근 권한을 요청합니다. 공용 계정 소유 폴더를 지정 담당자 읽기 전용으로 제한·검증한 뒤 업로드합니다. 로컬 보관본은 업로드 성공 여부와 관계없이 7일 후 삭제됩니다.", TextWrapping = TextWrapping.Wrap });
         panel.Children.Add(connect); panel.Children.Add(retryDrive); panel.Children.Add(driveStatus);
         Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         void Refresh()
         {
             var snapshot = archive.Snapshot();
+            account.Text = driveUpload.Settings.Account;
+            driveFolder.Text = driveUpload.Settings.FolderId;
             status.Text = snapshot.DetectorStatus + (snapshot.Dropped > 0 ? $" · 감지 누락 {snapshot.Dropped}건" : "");
-            if (connect.IsEnabled) driveStatus.Text = connectionError ?? driveUpload.Status;
+            if (connect.IsEnabled) driveStatus.Text = connectionError ?? ("자료 담당자: " + (driveUpload.Settings.ReaderEmail.Length > 0 ? driveUpload.Settings.ReaderEmail : "미정") + "\n" + driveUpload.Status);
             var selected = (list.SelectedItem as Row)?.Id;
             list.ItemsSource = snapshot.Items.Select(i => new Row(i.Id,
                 $"{i.Date}  {i.Name} — {State(i.Status)} {i.CopiedBytes / 1048576d:0.0}/{i.Size / 1048576d:0.0} MiB {i.Error}")).ToArray();

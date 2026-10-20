@@ -20,7 +20,9 @@ public sealed class DocumentDriveUploadTests : IDisposable
     {
         Directory.CreateDirectory(_root);
         _config.Value.UsbDocuments.Folder = Path.Combine(_root, "archive");
-        _config.Value.UsbDocuments.Drive = new() { Enabled = true, Account = "class@example.test", FolderId = "test-folder-12345" };
+        _config.Value.Provisioning.RoomId = "m112";
+        _config.Value.UsbDocuments.Drive = new() { Enabled = true, Account = "class@example.test", FolderId = "test-folder-12345",
+            RoomId = "m112", ReaderEmail = "reader@example.test", PolicyRevision = new string('a', 32), AppliedRevision = new string('a', 32) };
         _archive = new(_config, Path.Combine(_root, "catalog.json"), 100_000_000);
     }
     private DocumentDriveUpload Worker() => new(_archive, _config, _client, State, startWorker: false);
@@ -177,6 +179,107 @@ public sealed class DocumentDriveUploadTests : IDisposable
         await Assert.ThrowsAsync<DriveDocumentException>(() => client.UploadAsync(_config.Value.UsbDocuments.Drive, FileInfo(), new MemoryStream([1, 2, 3]), "remote-123", "md5", default));
         Assert.Equal(2, requests);
     }
+    [Fact]
+    public async Task LegacyFolderCannotUploadWithoutCentralDevicePolicy()
+    {
+        await Add(); _config.Value.UsbDocuments.Drive.PolicyRevision = "";
+        using var worker = Worker(); await worker.RunOnceAsync();
+        Assert.Equal(0, _client.Uploads); Assert.Equal(0, _client.Validations);
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ConfigureAsync(true,"class@example.test","test-folder-12345",default));
+    }
+    [Fact]
+    public async Task PolicyMustMatchProvisionedDeviceAndCannotReplaceItsFolder()
+    {
+        using var worker = Worker();
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ApplyPolicyAsync(new("m111","class@example.test","test-folder-12345","reader@example.test",new string('b',32)),default));
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ApplyPolicyAsync(new("m112","class@example.test","other-folder-12345","reader@example.test",new string('b',32)),default));
+        Assert.Equal(new string('a',32),worker.Settings.PolicyRevision);
+    }
+    [Fact]
+    public async Task PendingPermissionsBlockUploadAndPersistFailureUntilExplicitRetry()
+    {
+        await Add(); using var worker = Worker();
+        await worker.ApplyPolicyAsync(new("m112","class@example.test","test-folder-12345","next@example.test",new string('b',32)),default);
+        _client.FailPermissions=true;
+        await worker.RunOnceAsync();await worker.RunOnceAsync();
+        Assert.Equal(1,_client.Restrictions);Assert.Equal(0,_client.Uploads);
+        using (var restored=Worker())await restored.RunOnceAsync();
+        Assert.Equal(1,_client.Restrictions);
+        _client.FailPermissions=false;worker.RetryFailed();await worker.RunOnceAsync();
+        Assert.Equal(2,_client.Restrictions);Assert.Equal(1,_client.Uploads);
+        Assert.Equal(new string('b',32),worker.PolicyStatus.AppliedRevision);
+    }
+    [Fact]
+    public async Task ClearingReaderRevokesAccessEvenWhenUploadsAreDisabled()
+    {
+        await Add();using var worker=Worker();
+        await worker.ApplyPolicyAsync(new("m112","class@example.test","test-folder-12345","",new string('b',32)),default);
+        await worker.RunOnceAsync();
+        Assert.False(worker.Settings.Enabled);Assert.Equal(1,_client.Restrictions);Assert.Equal(0,_client.Uploads);
+        Assert.Equal(new string('b',32),worker.PolicyStatus.AppliedRevision);
+    }
+    [Fact]
+    public async Task ExplicitReconnectRechecksPreviouslyAppliedPermissions()
+    {
+        using var worker = Worker();
+        await worker.ConfigureAsync(true, "class@example.test", "test-folder-12345", default);
+        Assert.Equal(1, _client.Restrictions);
+    }
+    [Fact]
+    public async Task LocalSettingsCannotOverrideCentralFolder()
+    {
+        using var worker=Worker();
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ConfigureAsync(true,"personal@example.test","test-folder-12345",default));
+        await Assert.ThrowsAsync<ArgumentException>(()=>worker.ConfigureAsync(true,"class@example.test","other-folder-12345",default));
+        Assert.Equal(0,_client.Connections);
+    }
+    [Fact]
+    public async Task GoogleAclRemovesPublicAndForeignAccessAndGrantsOnlyReaderWithoutEmail()
+    {
+        var permissions=new List<object>{
+            new{id="owner",type="user",role="owner",emailAddress="class@example.test"},
+            new{id="public",type="anyone",role="reader",emailAddress=""},
+            new{id="old",type="user",role="writer",emailAddress="old@example.test"}};
+        var deleted=new List<string>();var grants=0;
+        using var client=Google(async request=>{
+            var path=request.RequestUri!.AbsolutePath;
+            if(path.EndsWith("about"))return Json(new{user=new{emailAddress="class@example.test"}});
+            if(!path.Contains("permissions"))return Json(new{mimeType="application/vnd.google-apps.folder",trashed=false,
+                owners=new[]{new{emailAddress="class@example.test"}},capabilities=new{canAddChildren=true}});
+            if(request.Method==HttpMethod.Get)return Json(new{permissions});
+            if(request.Method==HttpMethod.Delete){
+                var id=path.Split('/').Last();deleted.Add(id);
+                permissions.RemoveAll(p=>JsonSerializer.SerializeToElement(p).GetProperty("id").GetString()==id);
+                return new(HttpStatusCode.NoContent);
+            }
+            Assert.Equal(HttpMethod.Post,request.Method);Assert.Contains("sendNotificationEmail=false",request.RequestUri.Query);
+            var grant=JsonDocument.Parse(await request.Content!.ReadAsStringAsync()).RootElement;
+            Assert.Equal("reader@example.test",grant.GetProperty("emailAddress").GetString());
+            Assert.Equal("reader",grant.GetProperty("role").GetString());grants++;
+            permissions.Add(new{id="reader",type="user",role="reader",emailAddress="reader@example.test"});
+            return Json(new{id="reader"});
+        });
+        await client.RestrictAccessAsync(_config.Value.UsbDocuments.Drive,default);
+        Assert.Equal(new[]{"public","old"},deleted);Assert.Equal(1,grants);
+        await client.ValidateAsync(_config.Value.UsbDocuments.Drive,default);
+    }
+    [Fact]
+    public async Task GoogleAclFailsClosedOnInheritedPublicPermission()
+    {
+        var mutations=0;
+        using var client=Google(request=>{
+            if(request.Method!=HttpMethod.Get)mutations++;
+            if(request.RequestUri!.AbsolutePath.EndsWith("about"))return Task.FromResult(Json(new{user=new{emailAddress="class@example.test"}}));
+            if(request.RequestUri.AbsolutePath.Contains("permissions"))return Task.FromResult(Json(new{permissions=new object[]{
+                new{id="owner",type="user",role="owner",emailAddress="class@example.test"},
+                new{id="public",type="anyone",role="reader",permissionDetails=new[]{new{inherited=true}}}}}));
+            return Task.FromResult(Json(new{mimeType="application/vnd.google-apps.folder",trashed=false,
+                owners=new[]{new{emailAddress="class@example.test"}},capabilities=new{canAddChildren=true}}));
+        });
+        await Assert.ThrowsAsync<DriveDocumentException>(()=>client.RestrictAccessAsync(_config.Value.UsbDocuments.Drive,default));
+        Assert.Equal(0,mutations);
+    }
+
     private static UsbDocumentInfo FileInfo() => new("id", "slides.pdf", "2026-10-20", "ready", 3, 3, "sha", null, DateTimeOffset.UtcNow);
     private static object Remote(UsbDocumentInfo file) => new { id = "remote-123", size = "3", md5Checksum = "md5", parents = new[] { "test-folder-12345" }, trashed = false, appProperties = new { silentStreamSha256 = file.Sha256 } };
     private static HttpResponseMessage Json(object value) => new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
@@ -191,6 +294,10 @@ public sealed class DocumentDriveUploadTests : IDisposable
         public bool WrongAccount, FailUpload;
         public readonly List<string> Ids = [];
         public Task ConnectAsync(DocumentDriveConfig settings, CancellationToken ct) { Connections++; return ValidateAsync(settings, ct); }
+        public int Restrictions;
+        public bool FailPermissions;
+        public Task RestrictAccessAsync(DocumentDriveConfig settings, CancellationToken ct)
+        { Restrictions++; if (FailPermissions) throw new DriveDocumentException("공유 권한 확인 실패"); return Task.CompletedTask; }
         public Task ValidateAsync(DocumentDriveConfig settings, CancellationToken ct)
         { Validations++; if (WrongAccount) throw new DriveDocumentException("계정이 다릅니다."); return Task.CompletedTask; }
         public Task<string> AllocateIdAsync(CancellationToken ct) { Allocations++; return Task.FromResult("remote-" + Allocations); }

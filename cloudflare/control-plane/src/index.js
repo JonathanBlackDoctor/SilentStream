@@ -398,7 +398,7 @@ async function serveArtifact(request, env, key, externalUrl, fileName, contentTy
 
 function installPage(room) {
   const display = roomDisplayName(room);
-  return new Response(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${display} 자동 설치</title><style>body{font-family:system-ui;margin:0;background:#f3f6fb;color:#172033}.card{max-width:620px;margin:10vh auto;background:#fff;border:1px solid #dfe6f1;border-radius:20px;padding:32px;box-shadow:0 12px 40px #17203318}h1{margin-top:0}a{display:inline-block;padding:14px 20px;background:#1769e0;color:#fff;border-radius:10px;text-decoration:none;font-weight:800}.sub{color:#68758a;line-height:1.65}</style></head><body><main class="card"><h1>${display} 자동 설치</h1><p class="sub">로그인 권한이 확인되었습니다. 설치파일을 실행하고 Windows 권한 요청에서 <b>예</b>를 누르면 기존 설정과 YouTube 인증을 보존한 채 업데이트·자동 점검·결과 전송을 구성합니다.</p><p><a href="/install/${room}/download">설치파일 다운로드</a></p><p class="sub">설치 중 브라우저에서 한 번 더 로그인 승인이 나타날 수 있습니다. 이후 별도의 기기 PIN은 필요하지 않습니다.</p></main></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
+  return new Response(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${display} 자동 설치</title><style>body{font-family:system-ui;margin:0;background:#f3f6fb;color:#172033}.card{max-width:620px;margin:10vh auto;background:#fff;border:1px solid #dfe6f1;border-radius:20px;padding:32px;box-shadow:0 12px 40px #17203318}h1{margin-top:0}a{display:inline-block;padding:14px 20px;background:#1769e0;color:#fff;border-radius:10px;text-decoration:none;font-weight:800}.sub{color:#68758a;line-height:1.65}.plain{display:inline;padding:0;background:none;color:#1769e0;font-weight:600}.card{box-sizing:border-box}@media(max-width:680px){.card{margin:24px 12px;padding:24px}}</style></head><body><main class="card"><h1>${display} 자동 설치</h1><p class="sub">파일 실행 후 Windows 권한 요청에 <b>예</b>를 누르세요. 기존 설정·YouTube 인증은 유지됩니다.</p><p><a href="/install/${room}/download">설치파일 다운로드</a></p><p class="sub">자동 방송·교시 영상·재생목록·USB 자료·마이크 제어를 제공합니다. PC 종료·예약은 관리자 전용입니다. USB 로컬 보관 7일·Drive 별도 연결.</p><p class="sub"><a class="plain" href="https://${room}.silentstream.win/">${display} 원격 제어</a> · <a class="plain" href="https://silentstream.win/guide.html#remote">사용 안내</a></p></main></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
 function pwaAsset(response, maximumAge = 86400) {
@@ -533,6 +533,15 @@ async function handleRoomHost(request, env, url, room) {
 }
 
 async function handleUsbRequest(request, env, url, email, restriction = "") {
+  const driveRoute=url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/usb-drive$/);
+  if(driveRoute){
+    const roomId=normalizeRoom(driveRoute[1]);
+    if(!roomId||restriction&&restriction!==roomId)return security(error("호실이 일치하지 않습니다.",403));
+    if(request.method!=="GET"&&request.method!=="PUT")return security(error("지원하지 않는 요청입니다.",405));
+    if(request.method==="PUT"&&!sameOrigin(request))return security(error("요청 출처를 확인할 수 없습니다.",403));
+    return security(await callControl(env,"/drive-folder",{email,roomId,
+      ...(request.method==="PUT"?{policy:await limitedJson(request)}:{})}));
+  }
   const usbRoute = url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/usb-documents(?:\/([a-f0-9]{32})\/download)?$/);
   if (usbRoute) {
     const roomId = normalizeRoom(usbRoute[1]);
@@ -603,6 +612,19 @@ export default {
       if (agentHost) return security(new Response("Not Found", { status: 404 }));
 
       const publicBase = new URL(env.PUBLIC_BASE_URI);
+      const zone = publicZone(env);
+      const publicSitePath = {
+        "/": "/site/index.html",
+        "/index.html": "/site/index.html",
+        "/guide.html": "/site/guide.html",
+        "/assets/site.css": "/site/assets/site.css",
+        "/assets/site.js": "/site/assets/site.js"
+      }[url.pathname];
+      if ([zone, `www.${zone}`].includes(url.hostname) && publicSitePath && ["GET", "HEAD"].includes(request.method)) {
+        const response = security(await env.ASSETS.fetch(new Request(new URL(publicSitePath, url), request)));
+        response.headers.set("cache-control", "public, max-age=0, must-revalidate");
+        return response;
+      }
       const aliasRoom = roomForHostname(url.hostname, env);
       if (url.hostname !== publicBase.hostname) {
         if (aliasRoom) return handleRoomHost(request, env, url, aliasRoom);
@@ -804,6 +826,7 @@ export class ControlPlane {
       case "/auth": return (await this.authenticate(body.authorization)) ? json({ ok: true }) : new Response(null, { status: 401 });
       case "/self": return this.self(body.authorization);
       case "/command": return this.command(body);
+      case "/drive-folder": return this.driveFolder(body);
       case "/usb-request": return this.usbRequest(body);
       case "/usb-download": return this.usbDownload(body);
       case "/oauth/begin": return this.oauthBegin(body);
@@ -902,6 +925,8 @@ export class ControlPlane {
     const role = body.member.role === "admin" ? "admin" : body.member.role === "manager" ? "manager" : "";
     const rooms = [...new Set((Array.isArray(body.member.rooms) ? body.member.rooms : []).map(normalizeRoom).filter(Boolean))];
     if (!email || !role || role === "manager" && rooms.length === 0) return error("담당자 이메일, 역할, 호실을 확인해 주세요.", 400);
+    if(await this.blocksDriveMemberChange(email,role==="admin"?[...ROOMS]:rooms))
+      return error("먼저 해당 기기의 자료 담당자를 해제하고 PC에서 Drive 권한 해제를 확인하세요.",409);
     const member = { email, role, rooms: role === "admin" ? [...ROOMS] : rooms, createdAtUtc: new Date().toISOString() };
     await this.state.storage.put(`member:${email}`, member);
     return json(member);
@@ -911,6 +936,8 @@ export class ControlPlane {
     if (await this.role(body.email) !== "admin") return error("관리자 권한이 필요합니다.", 403);
     const target = normalizeEmail(body.target);
     if (!target || target === await this.owner()) return error("최초 소유자는 삭제할 수 없습니다.", 409);
+    if(await this.blocksDriveMemberChange(target))
+      return error("먼저 해당 기기의 자료 담당자를 해제하고 PC에서 Drive 권한 해제를 확인하세요.",409);
     await this.state.storage.delete(`member:${target}`);
     return json({ deleted: true });
   }
@@ -1079,6 +1106,75 @@ export class ControlPlane {
   }
 
 
+  async driveFolder(body) {
+    const roomId=normalizeRoom(body.roomId),email=normalizeEmail(body.email),role=await this.role(email,roomId);
+    if(!roomId||role==="none")return error("호실 접근 권한이 없습니다.",403);
+    const key="driveFolder:"+roomId;
+    let policy=await this.state.storage.get(key);
+    if(body.policy){
+      if(role!=="admin")return error("관리자 권한이 필요합니다.",403);
+      const account=normalizeEmail(body.policy.account),readerEmail=normalizeEmail(body.policy.readerEmail);
+      const folderId=String(body.policy.folderId||"").trim();
+      if(!account||!/^[a-zA-Z0-9_-]{10,200}$/.test(folderId)||body.policy.readerEmail&&!readerEmail)
+        return error("공용 계정, 기기 폴더 ID, 담당자 이메일을 확인하세요.",400);
+      if(readerEmail&&await this.role(readerEmail,roomId)==="none")
+        return error("먼저 이 Google 계정을 중앙 관리의 호실 담당자 또는 관리자로 등록하세요.",409);
+      const mappings=await this.state.storage.list({prefix:"driveFolder:"});
+      if([...mappings.values()].some(p=>p.roomId!==roomId&&p.folderId===folderId))
+        return error("다른 기기에 지정한 폴더입니다. 기기마다 다른 폴더를 사용하세요.",409);
+      if(policy?.revision&&(policy.account!==account||policy.folderId!==folderId))
+        return error("등록된 기기의 소유 계정과 폴더는 변경할 수 없습니다.",409);
+      if(true){ // An explicit save creates a new revision and authorizes one new ACL attempt.
+        policy={roomId,account,folderId,readerEmail,revision:crypto.randomUUID().replaceAll("-",""),
+          requestedBy:email,effectiveReaderEmail:policy?.effectiveReaderEmail||"",verified:false,error:""};
+        await this.state.storage.put(key,policy);
+      }
+    }
+    if(!policy?.revision)return json({roomId,readerEmail:"",verified:false,url:"",message:"기기별 Drive 폴더 미등록"});
+    const verified=policy.verified===true;
+    const canRead=verified&&policy.readerEmail===email&&await this.role(email,roomId)!=="none";
+    return json({roomId,readerEmail:policy.readerEmail,verified,url:canRead
+      ?"https://drive.google.com/drive/folders/"+encodeURIComponent(policy.folderId)+"?authuser="+encodeURIComponent(email):"",
+      message:!policy.readerEmail?"자료 담당자 미정 · 비공개":verified?"담당자 전용 읽기 권한 확인됨":
+        policy.error||"PC 공용 계정 연결·담당자 권한 확인 대기",
+      ...(role==="admin"?{account:policy.account,folderId:policy.folderId,revision:policy.revision,
+        effectiveReaderEmail:policy.effectiveReaderEmail||""}:{})});
+  }
+
+  async acknowledgeDrive(roomId,status,device) {
+    if(!status||!device.app?.documentDriveSupported)return;
+    await this.state.storage.transaction(async storage=>{
+      const key="driveFolder:"+roomId,policy=await storage.get(key);
+      if(!policy?.revision||status.revision!==policy.revision||status.folderId!==policy.folderId
+        ||status.readerEmail!==policy.readerEmail)return;
+      await storage.put(key,{...policy,verified:status.appliedRevision===policy.revision&&!status.error,
+        effectiveReaderEmail:status.appliedRevision===policy.revision&&!status.error?policy.readerEmail:policy.effectiveReaderEmail||"",
+        error:String(status.error||"").slice(0,300)});
+    });
+  }
+
+  async syncDrivePolicy(socket,device) {
+    if(!device.app?.documentDriveSupported)return;
+    await this.acknowledgeDrive(device.roomId,device.app.documentDrive,device);
+    const policy=await this.state.storage.get("driveFolder:"+device.roomId);
+    if(!policy?.revision||device.app.documentDrive?.revision===policy.revision)return;
+    this.driveSync??=new Set();
+    if(this.driveSync.has(device.roomId))return;
+    const attemptKey="driveSync:"+device.deviceId;
+    const previous=await this.state.storage.get(attemptKey);
+    if(previous?.revision===policy.revision&&previous.installationId===device.installationId)return;
+    this.driveSync.add(device.roomId);
+    await this.state.storage.put(attemptKey,{revision:policy.revision,installationId:device.installationId});
+    try { await this.usbRequest({email:policy.requestedBy,roomId:device.roomId,operation:"list",payload:{skip:0}}); }
+    finally { this.driveSync.delete(device.roomId); }
+  }
+
+  async blocksDriveMemberChange(email,rooms=[]) {
+    const mappings=await this.state.storage.list({prefix:"driveFolder:"});
+    return [...mappings.values()].some(p=>!rooms.includes(p.roomId)
+      &&(p.readerEmail===email||p.effectiveReaderEmail===email));
+  }
+
   async usbRequest(body) {
     const roomId = normalizeRoom(body.roomId);
     if (!roomId || await this.role(body.email, roomId) === "none") return error("호실 접근 권한이 없습니다.", 403);
@@ -1094,6 +1190,10 @@ export class ControlPlane {
       return error("PC 앱과 연결 도우미 업데이트가 필요합니다.", 409);
     this.usbPending ??= new Map();
     if (this.usbPending.size >= 16) return error("문서 요청이 많습니다. 잠시 후 재시도하세요.", 429);
+    const policy=body.operation==="list"?await this.state.storage.get("driveFolder:"+roomId):null;
+    const payload=body.operation==="list"?{date:body.payload?.date??null,skip:body.payload?.skip||0,
+      ...(policy?.revision?{drivePolicy:{roomId,account:policy.account,folderId:policy.folderId,
+        readerEmail:policy.readerEmail,revision:policy.revision}}:{})}:body.payload||{};
     const requestId = crypto.randomUUID().replaceAll("-", "");
     let timer;
     const completion = new Promise(resolve => {
@@ -1103,11 +1203,15 @@ export class ControlPlane {
     try {
       socket.send(JSON.stringify({schemaVersion:1,type:"command",requestId,payload:{
         commandId:requestId,action:"usb."+body.operation,requestedBy:normalizeEmail(body.email),
-        requestedAtUtc:new Date().toISOString(),payload:{method:"POST",path:routes[body.operation],body:body.payload||{}}}}));
+        requestedAtUtc:new Date().toISOString(),payload:{method:"POST",path:routes[body.operation],body:payload}}}));
       const result = await completion;
       // Never persist document bytes, filenames or list responses in command history.
       if (!result.ok) return error(result.error || "문서 요청 실패", Number(result.statusCode) || 502);
       if (typeof result.body !== "string" || result.body.length > 400000) return error("응답 크기가 너무 큽니다.", 502);
+      if(body.operation==="list"){
+        let status;try{status=JSON.parse(result.body).drive}catch{}
+        await this.acknowledgeDrive(roomId,status,device);
+      }
       return new Response(result.body || "{}", {headers:{"content-type":"application/json","cache-control":"no-store"}});
     } catch { return error("PC 연결이 끊어졌습니다.", 503); }
     finally { clearTimeout(timer); this.usbPending.delete(requestId); }
@@ -1228,6 +1332,8 @@ export class ControlPlane {
         uploads: mergeUploads(mergeUploads(device.uploads,device.app,device.lastSeenAtUtc), snapshot.app, snapshot.capturedAtUtc)
       });
       await this.deliverShutdownRequest(socket, {...device,app:snapshot.app});
+      const driveWork=this.syncDrivePolicy(socket,{...device,app:snapshot.app});
+      if(this.state.waitUntil)this.state.waitUntil(driveWork);else await driveWork;
     } else if (envelope.type === "hello") {
       const hello = envelope.payload;
       if (normalizeRoom(hello?.roomId) !== attachment.roomId || hello?.installationId !== attachment.installationId) return;

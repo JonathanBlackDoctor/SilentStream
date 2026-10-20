@@ -14,7 +14,7 @@ namespace SilentStream.Core.UsbDocuments;
 public sealed class GoogleDocumentDriveClient : IDocumentDriveClient, IDisposable
 {
     // Existing folders created in Drive's website need Drive access; drive.file cannot see them.
-    // This consent is explicit and independent of YouTube. No sharing API is used.
+    // This consent is explicit and independent of YouTube.
     private const string Scope = "https://www.googleapis.com/auth/drive";
     private readonly ITokenProtector _protector;
     private readonly HttpClient _http;
@@ -35,7 +35,7 @@ public sealed class GoogleDocumentDriveClient : IDocumentDriveClient, IDisposabl
         // Explicit reconnect allows switching away from a previously selected personal account.
         await store.ClearAsync().ConfigureAwait(false);
         _credential = await GoogleWebAuthorizationBroker.AuthorizeAsync(secrets.Secrets, [Scope], "documents", ct, store).ConfigureAwait(false);
-        try { await ValidateAsync(settings, ct).ConfigureAwait(false); }
+        try { await ValidateTargetAsync(settings, ct).ConfigureAwait(false); }
         catch { _credential = null; await store.ClearAsync().ConfigureAwait(false); throw; }
     }
 
@@ -75,6 +75,12 @@ public sealed class GoogleDocumentDriveClient : IDocumentDriveClient, IDisposabl
 
     public async Task ValidateAsync(DocumentDriveConfig settings, CancellationToken ct)
     {
+        await ValidateTargetAsync(settings, ct).ConfigureAwait(false);
+        if (settings.PolicyRevision.Length > 0) VerifyAccess(await PermissionsAsync(settings, ct).ConfigureAwait(false), settings);
+    }
+
+    private async Task ValidateTargetAsync(DocumentDriveConfig settings, CancellationToken ct)
+    {
         using var about = await SendAsync(HttpMethod.Get, "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)", ct).ConfigureAwait(false);
         var identity = await ReadAsync(about, ct).ConfigureAwait(false);
         if (!identity.GetProperty("user").GetProperty("emailAddress").GetString()!.Equals(settings.Account, StringComparison.OrdinalIgnoreCase))
@@ -87,6 +93,65 @@ public sealed class GoogleDocumentDriveClient : IDocumentDriveClient, IDisposabl
             || !target.GetProperty("capabilities").GetProperty("canAddChildren").GetBoolean()
             || !target.GetProperty("owners").EnumerateArray().Any(x => string.Equals(x.GetProperty("emailAddress").GetString(), settings.Account, StringComparison.OrdinalIgnoreCase)))
             throw new DriveDocumentException("지정 계정이 소유하고 업로드할 수 있는 Drive 폴더를 선택하세요.");
+    }
+
+    private async Task<JsonElement[]> PermissionsAsync(DocumentDriveConfig settings, CancellationToken ct)
+    {
+        var values = new List<JsonElement>();
+        string? page = null;
+        var pages = 0;
+        do
+        {
+            if (++pages > 10) throw new DriveDocumentException("폴더 공유 권한 조회 한도를 초과했습니다.");
+            using var response = await SendAsync(HttpMethod.Get, PermissionUrl(settings)
+                + "?pageSize=100&fields=nextPageToken,permissions(id,type,role,emailAddress,deleted,permissionDetails(inherited))"
+                + (page is null ? "" : "&pageToken=" + Uri.EscapeDataString(page)), ct).ConfigureAwait(false);
+            var data = await ReadAsync(response, ct).ConfigureAwait(false);
+            values.AddRange(data.GetProperty("permissions").EnumerateArray().Select(x => x.Clone()));
+            page = data.TryGetProperty("nextPageToken", out var next) ? next.GetString() : null;
+            if (values.Count > 1000) throw new DriveDocumentException("폴더 공유 권한이 너무 많습니다. 관리자가 공유 설정을 확인하세요.");
+        } while (!string.IsNullOrEmpty(page));
+        return values.ToArray();
+    }
+    private static string PermissionUrl(DocumentDriveConfig settings) => "https://www.googleapis.com/drive/v3/files/"
+        + Uri.EscapeDataString(settings.FolderId) + "/permissions";
+    private static string Field(JsonElement p, string name) => p.TryGetProperty(name, out var v) ? v.GetString() ?? "" : "";
+    private static bool Owner(JsonElement p, DocumentDriveConfig s) => Field(p, "type") == "user" && Field(p, "role") == "owner"
+        && Field(p, "emailAddress").Equals(s.Account, StringComparison.OrdinalIgnoreCase);
+    private static bool Reader(JsonElement p, DocumentDriveConfig s) => s.ReaderEmail.Length > 0 && Field(p, "type") == "user"
+        && Field(p, "emailAddress").Equals(s.ReaderEmail, StringComparison.OrdinalIgnoreCase);
+    private static void VerifyAccess(JsonElement[] permissions, DocumentDriveConfig settings)
+    {
+        if (!permissions.Any(p => Owner(p, settings)) || permissions.Any(p => !Owner(p, settings)
+                && !(Reader(p, settings) && Field(p, "role") == "reader"))
+            || settings.ReaderEmail.Length > 0 && !settings.ReaderEmail.Equals(settings.Account, StringComparison.OrdinalIgnoreCase)
+                && !permissions.Any(p => Reader(p, settings) && Field(p, "role") == "reader"))
+            throw new DriveDocumentException("Drive 폴더를 소유자와 지정 담당자만 볼 수 있도록 공유 설정을 확인하세요.");
+    }
+
+    public async Task RestrictAccessAsync(DocumentDriveConfig settings, CancellationToken ct)
+    {
+        await ValidateTargetAsync(settings, ct).ConfigureAwait(false);
+        var permissions = await PermissionsAsync(settings, ct).ConfigureAwait(false);
+        if (!permissions.Any(p => Owner(p, settings))) throw new DriveDocumentException("Drive 폴더 소유 권한을 확인할 수 없습니다.");
+        // Sequential permission changes; inherited access cannot safely be changed on a child.
+        foreach (var p in permissions.Where(p => !Owner(p, settings) && !(Reader(p, settings) && Field(p, "role") == "reader")))
+        {
+            if (p.TryGetProperty("permissionDetails", out var details) && details.EnumerateArray().Any(d => d.TryGetProperty("inherited", out var v) && v.GetBoolean()))
+                throw new DriveDocumentException("상위 폴더에서 다른 사용자에게 공유 중입니다. 상위 폴더를 비공개로 바꾸고 재시도하세요.");
+            using var response = await SendAsync(Reader(p, settings) ? HttpMethod.Patch : HttpMethod.Delete,
+                PermissionUrl(settings) + "/" + Uri.EscapeDataString(Field(p, "id")), ct,
+                Reader(p, settings) ? JsonContent.Create(new { role = "reader" }) : null).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) await ReadAsync(response, ct).ConfigureAwait(false);
+        }
+        if (settings.ReaderEmail.Length > 0 && !settings.ReaderEmail.Equals(settings.Account, StringComparison.OrdinalIgnoreCase)
+            && !permissions.Any(p => Reader(p, settings)))
+        {
+            using var response = await SendAsync(HttpMethod.Post, PermissionUrl(settings) + "?sendNotificationEmail=false", ct,
+                JsonContent.Create(new { type = "user", role = "reader", emailAddress = settings.ReaderEmail })).ConfigureAwait(false);
+            await ReadAsync(response, ct).ConfigureAwait(false);
+        }
+        VerifyAccess(await PermissionsAsync(settings, ct).ConfigureAwait(false), settings);
     }
 
     public async Task<string> AllocateIdAsync(CancellationToken ct)

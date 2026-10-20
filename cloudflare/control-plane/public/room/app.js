@@ -170,7 +170,8 @@ function microphonePanel(value){
 if(typeof window !== "undefined" && window.SilentStreamUsbDocuments) window.SilentStreamUsbDocuments.mount(document.getElementById("usbDocumentsHost"),{
   context:()=>device?{key:roomId,online:controllerFresh(device),
     supported:device.app?.usbDocumentsSupported===true&&device.app?.remoteUsbDocuments===true}:null,
-  list:(c,date,skip)=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents?date="+date+"&skip="+skip),
+  drive: c=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-drive"),
+    list:(c,date,skip)=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents?date="+date+"&skip="+skip),
   change:(c,body)=>api("/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents",
     {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),
   download:async(c,id)=>"/api/control/rooms/"+encodeURIComponent(c.key)+"/usb-documents/"+encodeURIComponent(id)+"/download"

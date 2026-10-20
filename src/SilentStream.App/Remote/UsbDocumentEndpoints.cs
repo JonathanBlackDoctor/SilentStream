@@ -10,7 +10,7 @@ namespace SilentStream.App.Remote;
 internal static class UsbDocumentEndpoints
 {
     public static void Map(WebApplication app, UsbDocumentArchive archive,
-        Func<HttpContext, bool> bridge, Func<IResult?> blockSettings)
+        Func<HttpContext, bool> bridge, Func<IResult?> blockSettings, DocumentDriveUpload? drive = null)
     {
         app.Use(async (context, next) =>
         {
@@ -42,7 +42,19 @@ internal static class UsbDocumentEndpoints
             foreach (var notice in batch.Events) archive.Observe(notice);
             return Results.Ok();
         });
-        app.MapPost("/api/usb-documents/list", (ListRequest request) => Results.Json(archive.Snapshot(request.Date, request.Skip)));
+        app.MapPost("/api/usb-documents/list", async Task<IResult> (ListRequest request, HttpContext context) =>
+        {
+            if (request.DrivePolicy is not null)
+            {
+                if (!bridge(context)) return Results.StatusCode(403);
+                if (drive is null) return Results.Conflict();
+                try { await drive.ApplyPolicyAsync(request.DrivePolicy, context.RequestAborted); }
+                catch (ArgumentException) { return Results.BadRequest(); }
+            }
+            var snapshot = archive.Snapshot(request.Date, request.Skip);
+            return Results.Json(new { snapshot.Supported, snapshot.Enabled, snapshot.DetectorStatus, snapshot.Dropped, snapshot.Items,
+                snapshot.Total, drive = drive?.PolicyStatus });
+        });
         app.MapPost("/api/usb-documents/chunk", async Task<IResult> (ChunkRequest request, HttpContext context) =>
         {
             try
@@ -92,6 +104,6 @@ internal static class UsbDocumentEndpoints
     }
     internal sealed record SettingsRequest(bool Enabled);
     internal sealed record IdRequest(string Id);
-    internal sealed record ListRequest(string? Date, int Skip = 0);
+    internal sealed record ListRequest(string? Date, int Skip = 0, DocumentDrivePolicy? DrivePolicy = null);
     internal sealed record ChunkRequest(string Id, long Offset);
 }

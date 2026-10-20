@@ -58,6 +58,15 @@ public sealed class UsbDocumentEndpointTests : IAsyncLifetime
         Assert.True(_archive.Settings.Enabled);
     }
     [Fact]
+    public async Task PairedBrowserCannotInjectCentralDrivePolicy()
+    {
+        var response = await _client.PostAsJsonAsync("/api/usb-documents/list", new { date = (string?)null,
+            drivePolicy = new DocumentDrivePolicy("m112", "owner@example.test", "test-folder-12345", "reader@example.test", new string('a',32)) });
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        var list = await _client.PostAsJsonAsync("/api/usb-documents/list", new { date = (string?)null });
+        Assert.True(list.IsSuccessStatusCode);
+    }
+    [Fact]
     public async Task TicketIsScopedOneUseAndStreamsOriginalBytes()
     {
         var item = await Document();
