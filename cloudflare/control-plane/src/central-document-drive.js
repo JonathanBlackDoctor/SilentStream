@@ -215,7 +215,7 @@ export class CentralDocumentDrive {
   async transfer(key,r){
     const p=await this.storage.get("driveFolder:"+r.roomId),binding=this.binding(r.roomId);
     if(!binding)return false; // Offline is a gate, not a failed transfer.
-    if(!p?.central||!p.verified||!p.readerEmail)return false;
+    if(!p?.central||!p.verified)return false;
     if(p.folderId!==r.folderId||p.revision!==r.revision||binding.deviceId!==r.deviceId||binding.installationId!==r.installationId)
       throw new DriveFailure("기기 또는 담당자 설정이 변경됐습니다. 중앙에서 확인 후 재시도하세요.");
     if(r.startedAt&&Date.now()-r.startedAt>600000)throw new DriveFailure("파일 전송 10분 한도를 초과했습니다. 연결 확인 후 재시도하세요.");
@@ -296,7 +296,7 @@ export class CentralDocumentDrive {
       for(const [key,p] of await this.storage.list({prefix:"driveFolder:"})){
         await this.applyPolicy(key,p);
         const current=await this.storage.get(key);
-        if(current.central&&current.verified&&current.readerEmail&&this.binding(current.roomId)){
+        if(current.central&&current.verified&&this.binding(current.roomId)){
           try{await this.discover(current);}
           catch{await this.storage.put("centralScan:"+current.roomId,{error:"PC 자료 목록 확인 실패. 중앙 재시도에서 다시 확인합니다."});}
         }
@@ -308,7 +308,7 @@ export class CentralDocumentDrive {
       for(const [key,r] of records){
         if(!["queued","uploading"].includes(r.status)||!this.binding(r.roomId))continue;
         const policy=await this.storage.get("driveFolder:"+r.roomId);
-        if(!policy?.central||!policy.verified||!policy.readerEmail)continue;
+        if(!policy?.central||!policy.verified)continue;
         try{const progressed=await this.transfer(key,r);work=work||progressed;if(!progressed)continue;}
         catch(e){
           const current=await this.storage.get(key);

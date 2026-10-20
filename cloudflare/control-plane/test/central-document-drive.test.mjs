@@ -163,7 +163,14 @@ test("unknown final checksum never marks a file complete",async()=>{
   await assert.rejects(()=>f.drive.transfer(key,f.data.get(key)));
   assert.notEqual(f.data.get(key).status,"uploaded");
 });
-test("offline devices, old apps, missing readers and existing failed files do not create more work",async()=>{
+test("unassigned devices archive privately for their owner without exposing a reader link",async()=>{
+  const f=await fixture(7);f.p.readerEmail="";f.p.verified=false;f.data.set("driveFolder:m112",f.p);
+  await f.drive.run();
+  assert.equal(f.remote.received,7);assert.deepEqual(f.remote.permissions.map(p=>p.role),["owner"]);
+  const view=await(await f.plane.driveFolder({email:reader,roomId:"m112"})).json();
+  assert.equal(view.url,"");assert.equal(view.readerEmail,"");assert.equal(view.verified,true);
+});
+test("offline devices, old apps and existing failed files do not create more work",async()=>{
   const f=await fixture();f.offline();await f.drive.discover(f.p);assert.equal(f.remote.ids,0);
   const g=await fixture();g.data.get("device:pc").app.centralDocumentDrive=false;await g.drive.discover(g.p);
   assert.equal([...g.data.keys()].some(k=>k.startsWith("centralUpload:")),false);
