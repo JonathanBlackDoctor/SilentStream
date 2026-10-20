@@ -1,6 +1,7 @@
 name: release app 0.4.16
 
 # App 0.4.16 pins device Drive folders and verifies owner plus assigned reader access.
+# The shared USB renderer syntax is included in the JavaScript regression checks.
 on:
   push:
     branches: ["claude/relaxed-davinci-qmmjwl"]

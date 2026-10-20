@@ -15,7 +15,8 @@
     note.className = "meta muted"; body.append(note);
     const driveLink=el("a","Google Drive 자료 열기");driveLink.target="_blank";driveLink.rel="noopener noreferrer";driveLink.hidden=true;
     driveLink.style.cssText="display:none;padding:12px;border-radius:8px;background:#e5f0ff;color:#174f96;text-decoration:none;font-size:13px;font-weight:bold";
-    const drivePending=el("button","Google Drive 자료 열기");drivePending.disabled=true;drivePending.hidden=!adapter.drive;\n    const driveNote=el("p");driveNote.className="usb-status";body.append(driveLink,drivePending,driveNote);
+    const drivePending=el("button","Google Drive 자료 열기");drivePending.disabled=true;drivePending.hidden=!adapter.drive;
+    const driveNote=el("p");driveNote.className="usb-status";body.append(driveLink,drivePending,driveNote);
     let driveKey="",driveBusy=false,driveAt=0;
     async function loadDrive(manual=false){
       if(!adapter.drive)return;
