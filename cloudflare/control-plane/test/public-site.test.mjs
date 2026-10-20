@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import worker from "../src/index.js";
 
 const env = {
@@ -8,6 +9,14 @@ const env = {
   GOOGLE_CLIENT_ID: "test-client-id", GOOGLE_CLIENT_SECRET: "test-client-secret",
   ASSETS: { fetch: async request => new Response(new URL(request.url).pathname, { headers: { "content-type": "text/html" } }) }
 };
+
+test("bundled public assets match canonical docs for direct and archived deployments", async () => {
+  for (const name of ["index.html", "guide.html", "assets/site.css", "assets/site.js"]) {
+    const canonical = await readFile(new URL(`../../../docs/${name}`, import.meta.url), "utf8");
+    const bundled = await readFile(new URL(`../public/site/${name}`, import.meta.url), "utf8");
+    assert.equal(bundled.replace(/\r\n/g, "\n"), canonical.replace(/\r\n/g, "\n"), name);
+  }
+});
 
 test("public download and guide assets open only on apex and www", async () => {
   for (const host of ["silentstream.win", "www.silentstream.win"]) {

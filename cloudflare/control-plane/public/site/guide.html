@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f8fb">
+  <meta name="description" content="SilentStream 설치·자동 방송, 재생목록·USB 자료, 마이크·PC 종료 안내.">
+  <title>SilentStream — 사용 안내</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23245bc7'/%3E%3Ccircle cx='32' cy='32' r='14' fill='none' stroke='white' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='5' fill='%23e65d62'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/site.css">
+  <script src="assets/site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">본문으로 건너뛰기</a>
+
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="index.html" aria-label="SilentStream 홈">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span data-site-text="brandName">SilentStream</span>
+      </a>
+      <nav class="header-nav" aria-label="주요 메뉴">
+        <a href="index.html">다운로드</a>
+        <a data-site-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a>
+        <a class="button small-button" data-site-href="downloadSetupUrl" href="#" download aria-label="Windows용 설치 파일 다운로드">
+          <svg class="download-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <span class="button-label">다운로드</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="guide-hero" aria-labelledby="guide-title">
+      <div class="container narrow">
+        <p class="eyebrow">사용 안내</p>
+        <h1 id="guide-title">설치부터 필요한 설정까지, 순서대로 안내합니다.</h1>
+        <p><span data-site-text="brandName">SilentStream</span>은 방송·녹화와 강의 자료 공유를 자동으로 처리합니다. 강의실 담당자는 전달받은 설치·호실 링크와 지정 Google 계정을 사용하세요.</p>
+        <nav class="guide-links" aria-label="안내 목차">
+          <a href="#install">설치·첫 실행</a>
+          <a href="#daily">일상 사용·제어판</a>
+          <a href="#recording">녹화·교시 VOD</a>
+          <a href="#remote">폰 원격 제어</a>
+          <a href="#maintenance">설정·관리</a>
+          <a href="#troubleshooting">문제 해결·이용 안내</a>
+        </nav>
+      </div>
+    </section>
+
+    <div class="guide"><div class="container narrow">
+      <section class="guide-section" id="install" aria-labelledby="install-title">
+        <p class="eyebrow">1. 설치·첫 실행</p><h2 id="install-title">처음 한 번, 강의실 PC와 휴대폰을 연결하세요</h2>
+        <ol class="numbered">
+          <li>Windows 10/11 64비트 강의실 PC에서 <strong>안내받은 호실 전용 설치 링크</strong>를 엽니다. 지정 Google 계정으로 로그인하고 호실을 확인하세요. 개인 PC는 <a data-site-href="downloadSetupUrl" href="#" download>일반 설치 파일</a>을 사용합니다.</li>
+          <li><strong>설치파일 다운로드 → 실행 → Windows 관리자 승인</strong>을 진행합니다. 파일은 브라우저 Ctrl+J에서 찾습니다. 캡처 안내에 동의하고 설치 중 다시 로그인하면 같은 담당자 계정을 사용하세요.</li>
+          <li>휴대폰에서 담당 호실 링크를 같은 계정으로 열고 <strong>호실·온라인</strong>을 확인합니다. 같은 Wi-Fi나 PIN은 필요 없습니다. Android Chrome 메뉴 또는 iPhone Safari 공유 메뉴에서 홈 화면에 추가할 수 있습니다.</li>
+          <li id="youtube">YouTube는 <strong>안내받은 방송용 계정·채널</strong>을 별도로 연결합니다. 담당자 개인 계정을 임의로 연결하지 마세요. 첫 방송은 관리자와 실제 소리를 시험합니다.</li>
+        </ol>
+        <p>온라인은 PC 연결 상태입니다. 소리·방송 정상 여부는 따로 확인하세요. YouTube 라이브가 처음이면 채널 활성화에 시간이 필요할 수 있습니다. 설치 차단·관리자 비밀번호 요청은 관리자에게 문의하세요.</p>
+      </section>
+      <section class="guide-section" id="daily" aria-labelledby="daily-title">
+        <p class="eyebrow">2. 일상 사용·제어판</p><h2 id="daily-title">PC와 음향 장비를 켜면 자동으로 시작합니다</h2>
+        <p>준비 후 방송·백업 녹화가 자동 시작됩니다. 방송은 기본 일부 공개로 링크가 있어야 볼 수 있습니다. 인터넷이 끊겨도 로컬 녹화는 계속되며 송출을 다시 시도합니다.</p>
+        <div class="status-list"><span class="status"><i aria-hidden="true"></i>초록: 방송 중</span><span class="status wait"><i aria-hidden="true"></i>노랑: 연결·준비 중</span><span class="status error"><i aria-hidden="true"></i>빨강: 오류·재시도 중</span></div>
+        <p>수동 조작은 휴대폰의 <strong>기기 관리 → 방송 시작 / 방송 중지</strong>를 사용합니다. 방송 중지만 하면 백업 녹화는 계속됩니다. PC 제어창은 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>F12</kbd>로 열어 음향·녹화·USB 설정을 확인합니다.</p>
+      </section>
+      <section class="guide-section" id="recording" aria-labelledby="recording-title">
+        <p class="eyebrow">3. 녹화·교시 VOD</p><h2 id="recording-title">교시 영상과 재생목록을 자동으로 모읍니다</h2>
+        <ul>
+          <li><strong>교시 영상:</strong> 직접 연결 화면에서 시간표를 정하면 녹화본을 교시별로 잘라 일부 공개 VOD로 업로드합니다. 요일별 기본 시간표·당일 변경을 지원합니다.</li>
+          <li><strong>재생목록:</strong> 호실·한국 날짜별 평일 재생목록을 자동 생성하고 업로드한 교시 영상을 추가합니다. <strong>오늘 재생목록 링크 복사 / 다른 날짜 찾기</strong>로 공유하세요. 생성·인증·동기화 전에는 복사할 수 없습니다.</li>
+          <li><strong>진행 확인:</strong> <strong>교시 업로드</strong>에서 날짜별 상태·영상 링크를 확인합니다. 예상 시간은 추정이며 YouTube 처리 시간은 별도입니다. 할당량이 부족한 영상은 대기열에 남아 한도 초기화 후 업로드됩니다.</li>
+          <li><strong>PC 녹화본:</strong> 기본 위치는 내 비디오의 MediaCaptureHelper 폴더입니다. 기본 7일·100GB 한도이며 PC 설정에서 바꿀 수 있습니다.</li>
+        </ul>
+        <details><summary>교시 음성만 받고 싶다면</summary><div class="details-body"><p>직접 연결 화면의 교시 자료에서 <strong>음성 받기</strong>를 사용합니다. 로컬 M4A가 없으면 앱에 기록된 접근 가능한 YouTube VOD에서 복구합니다. 비공개·삭제·로그인 필요 영상은 복구하지 못할 수 있습니다.</p></div></details>
+      </section>
+      <section class="guide-section" id="remote" aria-labelledby="remote-title">
+        <p class="eyebrow">4. 폰 원격 제어·자료</p><h2 id="remote-title">필요한 자료와 기기 기능을 한곳에서</h2>
+        <div class="table-wrap"><table><tbody>
+          <tr><th scope="row">USB 자료</th><td>USB에서 읽힌 <strong>PPT·PPTX·PDF</strong>를 자동 보관합니다. USB를 꽂기만 해서는 수집하지 않습니다. <strong>USB 자료 → 날짜 → 다운로드</strong>로 받으세요. 로컬 보관본은 업로드 성공 여부와 무관하게 <strong>7일 후 자동 삭제</strong>하며 USB 원본·Drive 파일은 유지합니다.</td></tr>
+          <tr><th scope="row">마이크 입력</th><td>장치 선택·입력 다시 연결·입력 복구를 사용합니다. 복구 후 실제 소리와 음량을 확인하세요. 장비·Windows 음소거는 현장에서 확인합니다.</td></tr>
+          <tr><th scope="row">PC 전원<br>(관리자)</th><td><strong>지금 PC 종료 / 종료 예약</strong>을 확인 후 실행합니다. 방송·녹화를 마감하며 다른 앱의 미저장 내용은 사라질 수 있습니다. 한국 시간 3분 이후~30일 이내 1회 예약, 2분 전부터 마감합니다. 전원 켜기는 지원하지 않습니다.</td></tr>
+        </tbody></table></div>
+        <p>조작·USB 목록·다운로드에는 PC와 최신 앱·연결 도우미의 온라인 연결이 필요합니다. PC가 꺼져도 동기화된 재생목록·업로드 이력은 보이며 현재 상태와 구분됩니다.</p>
+        <details><summary>오프라인일 때 종료 예약</summary><div class="details-body"><p>호실·중앙 웹은 <strong>연결 후 등록할 요청</strong>을 저장하며 종료 3분 전까지 미연결 시 만료합니다. PC가 등록을 확인한 예약은 휴대폰을 닫아도 남습니다. 직접 연결은 온라인이어야 합니다. 이미 마감한 방송·녹화는 예약을 취소해도 자동 재개되지 않습니다.</p></div></details>
+        <details><summary>Google Drive에도 자료 보관하기</summary><div class="details-body"><p>관리자가 PC 제어창의 <strong>설정 → USB 자료</strong>에서 공용 계정·소유 폴더를 별도로 연결합니다. 기본 꺼짐이며 YouTube와 별도 인증입니다. Google 동의 화면의 접근 범위를 확인하고 승인하세요. 실패한 업로드는 같은 PC 화면에서 재시도합니다. 기기별 Drive 바로가기는 담당자 지정·공유 권한 확인 후 안내합니다.</p></div></details>
+        <details><summary>개인 PC에 직접 연결하기</summary><div class="details-body"><p>PC 설정에서 폰 원격을 켜고 <code>http://&lt;PC IP&gt;:8787</code>에 접속해 제어창의 6자리 PIN을 입력합니다. 외부에서는 같은 Tailscale 네트워크를 이용합니다. 강의실 Google 로그인과는 별도 방식입니다.</p></div></details>
+      </section>
+      <section class="guide-section" id="maintenance" aria-labelledby="maintenance-title">
+        <p class="eyebrow">5. 설정·관리</p><h2 id="maintenance-title">새 기능은 앱과 도우미를 함께 확인하세요</h2>
+        <p>앱 업데이트는 다운로드 후 다음 재시작 때 적용됩니다. 도우미 갱신이 필요하면 방송 종료 후 PC 제어창의 <strong>도우미 업데이트</strong>를 누르고 Windows 관리자 승인을 진행하세요.</p>
+        <p>USB 자동 보관은 기본 켜짐이며 저장해 둔 꺼짐은 유지합니다. 폴더 변경·Drive 연결은 PC에서 설정합니다. Windows 설정 → 앱에서 Media Capture Helper를 제거해도 녹화 파일·설정은 자동 삭제하지 않습니다.</p>
+        <details><summary>설정·로그와 선택 알림</summary><div class="details-body"><p>설정·로그는 <code>%AppData%\MediaCaptureHelper</code>에 있습니다. 직접 설정 파일을 바꾸려면 앱을 종료하고 UTF-8로 저장하세요. Telegram 알림은 PC 설정에서 봇 토큰·채팅 ID를 입력하고 시험합니다. 비밀번호·토큰·인증번호는 공유하지 않습니다.</p></div></details>
+      </section>
+      <section class="guide-section" id="troubleshooting" aria-labelledby="trouble-title">
+        <p class="eyebrow">6. 문제 해결·이용 안내</p><h2 id="trouble-title">막히면 연결·계정·실제 소리를 확인하세요</h2>
+        <ul>
+          <li><strong>권한 없음:</strong> 배정된 Google 계정과 호실을 확인합니다. PC 전원은 관리자 전용입니다.</li>
+          <li><strong>오프라인:</strong> PC 전원·인터넷·앱 연결을 확인하고 새로고침합니다.</li>
+          <li><strong>소리 없음:</strong> 마이크·수신기 연결·음소거 확인 → 입력 복구 → 실제 발성 시험.</li>
+          <li><strong>USB 감지 오류·새 기능 비활성:</strong> 앱·도우미 업데이트와 USB 자동 보관을 확인합니다. USB 문서를 다시 열고 오류가 남으면 관리자에게 호실·오류 화면을 전달하세요.</li>
+        </ul>
+        <p id="legal">본인 소유 또는 관리 권한이 있는 PC에서 필요한 캡처 동의를 받고 사용하세요. 화면·음성의 수집·공유 책임은 사용자에게 있습니다. 녹화·USB 자료는 PC에 저장되며, 별도 연결한 경우 지정 Drive 폴더에도 업로드됩니다. OAuth 토큰은 PC에서 보호됩니다.</p>
+        <div class="inline-links"><a class="button" href="index.html">다운로드</a><a class="button secondary" data-site-href="releasesPageUrl" href="#" target="_blank" rel="noopener">릴리스</a></div>
+      </section>
+    </div></div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"></span><span data-site-text="brandName">SilentStream</span></a>
+      <span>Windows 10/11 (64비트) · 본인 소유 또는 관리 권한이 있는 PC용</span>
+      <nav class="footer-links" aria-label="푸터 메뉴"><a href="index.html">다운로드</a><a data-site-href="repoUrl" href="#" target="_blank" rel="noopener">GitHub</a></nav>
+      <span>© <span data-current-year>2026</span></span>
+    </div>
+  </footer>
+</body>
+</html>
