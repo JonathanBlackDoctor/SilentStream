@@ -43,7 +43,6 @@
        (별도 정적 파일 배포 불필요). RemoteControlServer가 임베디드 리소스로 서빙한다. -->
   <ItemGroup>
     <EmbeddedResource Include="Remote\index.html" />
-    <EmbeddedResource Include="..\..\cloudflare\control-plane\public\room\usb-documents-view.js" LogicalName="SilentStream.App.Remote.usb-documents-view.js" />
     <EmbeddedResource Include="..\..\cloudflare\control-plane\public\room\upload-view.js" LogicalName="SilentStream.App.Remote.upload-view.js" />
     <EmbeddedResource Include="Remote\manifest.webmanifest" />
     <EmbeddedResource Include="Remote\service-worker.js" />
