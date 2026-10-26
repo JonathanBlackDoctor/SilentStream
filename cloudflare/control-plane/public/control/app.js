@@ -60,7 +60,7 @@ const dangerousActions={
 };
 async function act(room,action,confirmation){confirmation=dangerousActions[action]||confirmation;if(confirmation&&!confirm(`${roomName(room)}: ${confirmation}`))return;try{const result=await api(`/api/control/rooms/${encodeURIComponent(room)}/actions/${encodeURIComponent(action)}`,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});show(result.ok?"명령을 실행했습니다.":result.error||"명령을 완료하지 못했습니다.",!result.ok);setTimeout(load,700)}catch(error){show(error.message,true)}}
 function showDetails(room){const device=devices.find(value=>value.roomId===room);$("detailTitle").textContent=`${roomName(room)} 상세 상태`;$("detailBody").textContent=JSON.stringify(device,null,2);detail.showModal()}
-async function loadMembers(){await loadDriveFolders();const members=await api("/api/control/members");$("members").classList.add("show");$("roomChecks").innerHTML=roomIds.map(room=>`<label><input type="checkbox" value="${room}" checked> ${roomName(room)}</label>`).join("");$("memberList").innerHTML=members.map(member=>`<div class="member-row"><span><b>${esc(member.email)}</b> · ${member.role==="admin"?"관리자":member.rooms.map(room=>roomName(room)).join(", ")}</span>${member.email===session.email&&session.owner?"<span>최초 소유자</span>":`<button class="danger" data-delete="${encodeURIComponent(member.email)}">삭제</button>`}</div>`).join("")}
+async function loadMembers(){const members=await api("/api/control/members");$("members").classList.add("show");$("roomChecks").innerHTML=roomIds.map(room=>`<label><input type="checkbox" value="${room}" checked> ${roomName(room)}</label>`).join("");$("memberList").innerHTML=members.map(member=>`<div class="member-row"><span><b>${esc(member.email)}</b> · ${member.role==="admin"?"관리자":member.rooms.map(room=>roomName(room)).join(", ")}</span>${member.email===session.email&&session.owner?"<span>최초 소유자</span>":`<button class="danger" data-delete="${encodeURIComponent(member.email)}">삭제</button>`}</div>`).join("")}
 roomsEl.addEventListener("click",event=>{const button=event.target.closest("button");if(!button)return;if(button.dataset.detail)showDetails(button.dataset.detail);if(button.dataset.action)act(button.dataset.room,button.dataset.action,button.dataset.confirm)});
 $("members").addEventListener("click",async event=>{const button=event.target.closest("button[data-delete]");if(!button||!confirm("이 사용자의 권한을 삭제할까요?"))return;try{await api(`/api/control/members/${button.dataset.delete}`,{method:"DELETE"});await loadMembers()}catch(error){show(error.message,true)}});
 $("memberRole").addEventListener("change",()=>{$("roomChecks").style.opacity=$("memberRole").value==="admin"?".45":"1"});
@@ -68,55 +68,6 @@ $("memberForm").addEventListener("submit",async event=>{event.preventDefault();i
 $("closeDetail").addEventListener("click",()=>detail.close());
 addEventListener("pagehide",()=>document.body.classList.add("auth-pending"));
 addEventListener("pageshow",event=>{if(event.persisted)location.reload()});
-async function loadDriveFolders(){
-  $("driveSettings")?.classList.add("show");const host=$("driveFolders");if(!host||host.querySelector(":focus"))return;
-  await loadCentralDrive();
-  const values=await Promise.all(roomIds.map(room=>api("/api/control/rooms/"+room+"/usb-drive")));
-  if(host.querySelector(":focus"))return;
-  host.replaceChildren();
-  for(const value of values){
-    const form=document.createElement("form");form.className="drive-form";form.dataset.driveRoom=value.roomId;
-    const title=document.createElement("b");title.textContent=roomName(value.roomId);
-    const account=document.createElement("input");account.type="email";account.required=true;account.name="account";account.placeholder="공용 소유 계정";account.setAttribute("aria-label",roomName(value.roomId)+" 공용 소유 계정");account.value=value.account||"";
-    const folder=document.createElement("input");folder.required=true;folder.name="folderId";folder.placeholder="기기 폴더 ID";folder.setAttribute("aria-label",roomName(value.roomId)+" Drive 폴더 ID");folder.value=value.folderId||"";
-    const reader=document.createElement("input");reader.type="email";reader.name="readerEmail";reader.placeholder="담당자 미정";reader.setAttribute("aria-label",roomName(value.roomId)+" 자료 담당자");reader.value=value.readerEmail||"";
-    if(value.revision){account.readOnly=folder.readOnly=true;}
-    const save=document.createElement("button");save.type="submit";save.textContent="자료 담당자 저장";
-    const state=document.createElement("p");state.textContent=value.message;state.style.gridColumn="1/-1";
-    form.append(title,account,folder,reader,save,state);
-    form.onsubmit=async event=>{
-      event.preventDefault();save.disabled=true;
-      try{await api("/api/control/rooms/"+value.roomId+"/usb-drive",{method:"PUT",headers:{"content-type":"application/json"},
-        body:JSON.stringify({account:account.value,folderId:folder.value,readerEmail:reader.value})});
-        show("자료 담당자를 저장했습니다. 중앙에서 Google 권한 확인 후 바로가기가 활성화됩니다.");
-        save.disabled=false;save.focus();save.blur();await loadDriveFolders();
-      }catch(error){show(error.message,true);save.disabled=false;}
-    };
-    host.append(form);
-  }
-}
-
-async function loadCentralDrive(){
-  const value=await api("/api/control/document-drive");
-  $("centralDriveStatus").textContent=(value.account?value.account+" · ":"")+(value.error||value.message);
-  $("centralDriveConnect").disabled=!value.configured;
-  $("centralDriveRetry").disabled=!value.connected||!!value.error;
-}
-$("centralDriveConnect").addEventListener("click",async()=>{
-  const button=$("centralDriveConnect");button.disabled=true;
-  try{
-    const value=await api("/api/control/document-drive/connect",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
-    const target=new URL(value.url);
-    if(target.origin!=="https://accounts.google.com")throw Error("Google 연결 주소를 확인할 수 없습니다.");
-    location.assign(target.href);
-  }catch(error){show(error.message,true);button.disabled=false;}
-});
-$("centralDriveRetry").addEventListener("click",async()=>{
-  const button=$("centralDriveRetry");button.disabled=true;
-  try{await api("/api/control/document-drive/retry",{method:"POST",headers:{"content-type":"application/json"},body:"{}"});show("중앙 Drive 실패 작업을 다시 확인합니다.");}
-  catch(error){show(error.message,true);}finally{button.disabled=false;}
-});
-
 load();setInterval(()=>{if(!document.activeElement?.dataset?.shutdownInput)load()},10000);
 
 roomsEl.addEventListener('input',event=>{if(event.target.dataset.shutdownInput)shutdownDrafts[event.target.dataset.shutdownInput]=event.target.value});

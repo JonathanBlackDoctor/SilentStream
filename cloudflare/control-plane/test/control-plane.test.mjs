@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import worker, {
   ControlPlane,
+  normalizeAppStatus,
   isSafeLoopbackCallback,
   normalizePlaylistHistory,
   normalizeRoom,
@@ -17,6 +18,13 @@ const productionEnv = {
   GOOGLE_CLIENT_ID: "test-client-id",
   GOOGLE_CLIENT_SECRET: "test-client-secret"
 };
+
+test("status accepts supported app fields and drops unknown legacy capabilities and metadata", () => {
+  assert.deepEqual(normalizeAppStatus({state:"Live", live:true, remoteShutdownScheduleCommands:true,
+    legacyCapability:true, retiredMetadata:{account:"private",folder:"private"}}),
+    {state:"Live",live:true,remoteShutdownScheduleCommands:true});
+  for (const invalid of [null, undefined, [], "invalid"]) assert.equal(normalizeAppStatus(invalid), null);
+});
 
 test("serves the authenticated control document without an asset redirect loop", async () => {
   const config = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
@@ -289,7 +297,7 @@ test("room manager app prioritizes today's link and explicitly browses earlier d
   assert.match(app, /document\.execCommand\("copy"\)/);
   assert.match(document, /playlist-history-toggle/);
   assert.doesNotMatch(document, /app\.js\?v=3/);
-  assert.match(document, /app\.js\?v=18/);
+  assert.match(document, /app\.js\?v=19/);
 });
 
 test("room PWA assets include install guidance, a safe offline page, and valid PNG sizes", async () => {
@@ -298,7 +306,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
   assert.match(document, /rel="manifest"/);
   assert.match(document, /apple-touch-icon/);
-  assert.match(document, /\/app\.js\?v=18/);
+  assert.match(document, /\/app\.js\?v=19/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);
   assert.doesNotMatch(document, /id="installButton" hidden/);
   assert.match(app, /beforeinstallprompt/);

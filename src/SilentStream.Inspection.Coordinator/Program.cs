@@ -36,7 +36,6 @@ builder.Services.AddHostedService<StartupInspectionHostedService>();
 builder.Services.AddHostedService<InspectionEngine>();
 builder.Services.AddHostedService<InspectionStatusReporter>();
 builder.Services.AddHostedService<CentralControlAgentHostedService>();
-builder.Services.AddHostedService<UsbDocumentBridge>();
 builder.Services.AddHostedService<CloudflaredHostedService>();
 
 var app = builder.Build();

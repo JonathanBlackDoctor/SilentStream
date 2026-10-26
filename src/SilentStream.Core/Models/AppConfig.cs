@@ -28,7 +28,6 @@ public sealed class AppConfig
     /// </summary>
     public int Version { get; set; } = 13;
 
-    public SilentStream.Core.UsbDocuments.UsbDocumentConfig UsbDocuments { get; set; } = new();
 
     // camelCase would yield "youTube"; the documented schema (plan §6) uses "youtube".
     [JsonPropertyName("youtube")]

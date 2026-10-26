@@ -330,7 +330,6 @@
       </div>
     </details>
 
-    <div id="usbDocumentsHost"></div>
     <button id="restartAppBtn" class="ghost" style="margin-top:0">앱 다시 시작</button>
 
     <div class="card" id="recoveryCard">
@@ -360,7 +359,6 @@
   <div id="toast"></div>
 
   <script src="/upload-view.js?v=1"></script>
-  <script src="/usb-documents-view.js"></script>
   <script>
     const BADGE_COLORS = {Live:"--green",Warmup:"--yellow",ConnectingYouTube:"--yellow",Retrying:"--red",Stopping:"--red",Idle:"--muted",RecordingOnly:"--yellow"};
 
@@ -368,25 +366,6 @@
     let rooms = [];          // [{label, baseUrl, token}]
 
     let cur = null;
-    let usbStatus = null, usbStatusAt = 0;
-    async function usbJson(room,path,options) {
-      const response=await api(room,path,options);
-      if(!response.ok)throw new Error(response.status===403?"설정이 잠겨 있습니다. PC에서 설정 잠금을 확인하세요.":"USB 자료 요청을 완료하지 못했습니다.");
-      return response.status===204?{}:response.json();
-    }
-    window.SilentStreamUsbDocuments.mount(document.getElementById("usbDocumentsHost"),{
-      context:()=>cur?{key:cur.baseUrl,room:cur,online:Date.now()-usbStatusAt<15000,
-        supported:usbStatus?.usbDocumentsSupported===true}:null,
-      list:(c,date,skip)=>usbJson(c.room,"/api/usb-documents?date="+date+"&skip="+skip),
-      change:(c,body)=>usbJson(c.room,"/api/usb-documents/"+body.operation,
-        {method:"POST",body:JSON.stringify(body.operation==="settings"?{enabled:body.enabled}:{id:body.id})}),
-      download:async(c,id)=>{
-        const ticket=await usbJson(c.room,"/api/usb-documents/"+encodeURIComponent(id)+"/ticket",{method:"POST"});
-        if(!/^\/usb-download\/[A-F0-9]{64}$/.test(ticket.url))throw new Error("다운로드 주소가 올바르지 않습니다.");
-        return c.room.baseUrl+ticket.url;
-      }
-    });
-
     // 대시보드에 표시 중인 호실 (rooms의 원소)
     let view = "";           // "pair" | "grid" | "dash"
     let pairTarget = null;   // 재페어링 대상 호실(토큰 만료), 없으면 null
@@ -1221,7 +1200,6 @@
     }
     $("directUploadDate").onchange=renderUploads;
     function renderStatus(s){
-      usbStatus=s;usbStatusAt=Date.now();
       renderTodayPlaylist(s.dailyPlaylist || null);
       renderShutdownSchedule(s);
       if (cur) setRoomOnline(cur, true);

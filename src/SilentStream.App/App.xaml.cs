@@ -59,13 +59,6 @@ public partial class App : Application
         collection.AddSingleton<RemoteSystemShutdownService>();
         collection.AddSingleton<RemoteUninstallService>();
         collection.AddSingleton<InspectionRemoteStore>();
-        collection.AddSingleton(sp => new SilentStream.Core.UsbDocuments.UsbDocumentArchive(
-            sp.GetRequiredService<IConfigStore>(), Path.Combine(AppPaths.AppDataDir, "usb-documents.json")));
-        collection.AddSingleton<SilentStream.Core.UsbDocuments.IDocumentDriveClient, SilentStream.Core.UsbDocuments.GoogleDocumentDriveClient>();
-        collection.AddSingleton(sp => new SilentStream.Core.UsbDocuments.DocumentDriveUpload(
-            sp.GetRequiredService<SilentStream.Core.UsbDocuments.UsbDocumentArchive>(),
-            sp.GetRequiredService<IConfigStore>(), sp.GetRequiredService<SilentStream.Core.UsbDocuments.IDocumentDriveClient>(),
-            Path.Combine(AppPaths.AppDataDir, "document-drive-uploads.json")));
         // 확장(폰 원격 제어): 임베디드 Kestrel 서버. 구체 타입은 제어창 PIN 표시에 사용.
         collection.AddSingleton<RemoteControlServer>();
         collection.AddSingleton<IRemoteControlServer>(sp => sp.GetRequiredService<RemoteControlServer>());
@@ -128,8 +121,7 @@ public partial class App : Application
         // 제어창 생성 전에 현재 버전을 넣어 제목이 첫 바인딩부터 올바르게 표시되도록 한다.
         var version = GetAppVersion();
         viewModel.SetVersion(version);
-        _controlWindow = new ControlWindow(viewModel, _services.GetRequiredService<SilentStream.Core.UsbDocuments.UsbDocumentArchive>(), _services.GetRequiredService<IStreamOrchestrator>(),
-            _services.GetRequiredService<SilentStream.Core.UsbDocuments.DocumentDriveUpload>());
+        _controlWindow = new ControlWindow(viewModel, _services.GetRequiredService<IStreamOrchestrator>());
         _hotkeyManager = new HotkeyManager(log);
         _hotkeyManager.HotkeyPressed += () => _controlWindow.Toggle();
         _hotkeyManager.Register(config.Hotkey);
