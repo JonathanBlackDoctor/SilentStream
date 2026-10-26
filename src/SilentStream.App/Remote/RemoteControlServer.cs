@@ -63,8 +63,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly RemoteUninstallService _appUninstall;
     private readonly RecoveryCoordinator _recovery;
     private readonly InspectionRemoteStore _inspection;
-    private readonly SilentStream.Core.UsbDocuments.UsbDocumentArchive _usbDocuments;
-    private readonly SilentStream.Core.UsbDocuments.DocumentDriveUpload _documentDrive;
     private readonly IReadOnlyList<INotifier> _notifiers;
     private readonly ILogService _log;
 
@@ -117,8 +115,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
         RemoteUninstallService appUninstall,
         RecoveryCoordinator recovery,
         InspectionRemoteStore inspection,
-        SilentStream.Core.UsbDocuments.UsbDocumentArchive usbDocuments,
-        SilentStream.Core.UsbDocuments.DocumentDriveUpload documentDrive,
         IEnumerable<INotifier> notifiers,
         ILogService log)
     {
@@ -144,8 +140,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _appUninstall = appUninstall;
         _recovery = recovery;
         _inspection = inspection;
-        _usbDocuments = usbDocuments;
-        _documentDrive = documentDrive;
         _notifiers = notifiers.ToArray();
         _log = log;
         _cloudflared = new CloudflaredManager(log);
@@ -477,7 +471,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private void MapEndpoints(WebApplication app)
     {
         app.MapGet("/", () => Results.Content(_html, "text/html; charset=utf-8"));
-        app.MapGet("/usb-documents-view.js", () => Results.Content(LoadEmbeddedText("usb-documents-view.js"), "text/javascript; charset=utf-8"));
         app.MapGet("/upload-view.js", () => Results.Content(_uploadView, "text/javascript; charset=utf-8"));
 
         // PWA 설치 자산(원격 컨트롤러 개선 Phase 3). /api·/ws 밖이라 무인증 서빙 — 페어링 전에도 브라우저가
@@ -526,8 +519,6 @@ public sealed class RemoteControlServer : IRemoteControlServer
             await ctx.Response.WriteAsJsonAsync(new { token }).ConfigureAwait(false);
         });
 
-        UsbDocumentEndpoints.Map(app, _usbDocuments, HasInspectionBridgeSecret,
-            () => BlockSettingsChange(RemoteSettingsSection.Other), _documentDrive);
         app.MapGet("/api/status", () => Results.Json(BuildStatus(), Json));
         app.MapGet("/api/diagnostics", () => Results.Json(BuildDiagnostics(DateTime.Now), Json));
         app.MapGet("/api/recovery/status", () => Results.Json(_recovery.Status, Json));
@@ -1219,12 +1210,14 @@ public sealed class RemoteControlServer : IRemoteControlServer
             autoIncludeMicrophones = _configStore.Load().Audio.AutoIncludeMicrophones,
             devices = GetRemoteMicrophoneDevices(),
             micWarning = microphone.Warning,
-            silent = microphone.Attention,
+            silent = microphone.Quiet,
+            attention = microphone.Attention,
             unavailable = microphone.Unavailable,
             sources = _audioMixer.Sources.Select(s =>
             {
                 levels.TryGetValue(s.Id, out var l);
                 statuses.TryGetValue(s.Id, out var status);
+                var input = MicrophoneInputHealth.Evaluate(s, status, !silentIds.Contains(s.Id), DateTime.UtcNow);
                 return new
                 {
                     id = s.Id,
@@ -1239,7 +1232,10 @@ public sealed class RemoteControlServer : IRemoteControlServer
                     captureUpdatedAtUtc = status?.UpdatedAtUtc,
                     lastPacketAtUtc = status?.LastPacketAtUtc,
                     bytesReceived = status?.BytesReceived ?? 0,
-                    signalWarning = silentIds.Contains(s.Id),
+                    signalWarning = input.Code == "quiet",
+                    inputState = input.Code,
+                    inputMessage = input.Message,
+                    inputFailure = input.IsFailure,
                     gain = s.Gain,
                     muted = s.Muted,
                     gate = s.GateEnabled,
@@ -1458,29 +1454,16 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private MicrophoneHealthSnapshot BuildMicrophoneHealth()
     {
-        var statuses = _audioMixer.SourceStatuses.ToDictionary(status => status.Id, StringComparer.Ordinal);
-        var names = _audioMixer.Sources
-            .Where(source => source.Kind == AudioSourceKind.Microphone
-                && !AudioDeviceClassifier.IsLoopbackName(source.Name)
-                && !(statuses.TryGetValue(source.Id, out var status) && status.IsLoopback))
-            .ToDictionary(source => source.Id, source => source.Name, StringComparer.Ordinal);
-        string[] silent;
-        lock (_silentMicsGate)
-        {
-            silent = _silentMics
-                .Where(entry => names.ContainsKey(entry.Key))
-                .Select(entry => entry.Value)
-                .ToArray();
-        }
-        var unavailable = statuses.Values
-            .Where(status => names.ContainsKey(status.Id) && !status.CaptureActive && !string.IsNullOrWhiteSpace(status.Error))
-            .Select(status => names[status.Id])
-            .Distinct(StringComparer.CurrentCulture)
-            .ToArray();
-        var attention = silent.Concat(unavailable)
-            .Distinct(StringComparer.CurrentCulture)
-            .ToArray();
-        return new MicrophoneHealthSnapshot(attention.Length > 0, attention, unavailable);
+        var statuses = _audioMixer.SourceStatuses.ToDictionary(s => s.Id, StringComparer.Ordinal);
+        HashSet<string> silentIds;
+        lock (_silentMicsGate) silentIds = _silentMics.Keys.ToHashSet(StringComparer.Ordinal);
+        var inputs = _audioMixer.Sources.Where(s => s.Kind == AudioSourceKind.Microphone)
+            .Select(s => new { s.Name, State = MicrophoneInputHealth.Evaluate(s,
+                statuses.GetValueOrDefault(s.Id), !silentIds.Contains(s.Id), DateTime.UtcNow) }).ToArray();
+        var attention = inputs.Where(s => s.State.IsFailure).Select(s => s.Name).Distinct().ToArray();
+        return new MicrophoneHealthSnapshot(attention.Length > 0, attention,
+            inputs.Where(s => s.State.Code == "deviceUnavailable").Select(s => s.Name).Distinct().ToArray(),
+            inputs.Where(s => s.State.Code == "quiet").Select(s => s.Name).Distinct().ToArray());
     }
 
     private IResult? BlockSettingsChange(RemoteSettingsSection section)
@@ -1519,10 +1502,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         return new
         {
             updatedAtUtc = nowUtc,
-            usbDocumentsSupported = true,
-            documentDriveSupported = true,
-            centralDocumentDrive = true,
-            documentDrive = _documentDrive.PolicyStatus,
+            appVersion = typeof(RemoteControlServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
             shutdownScheduleControl = true,
             quietShutdownControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,
@@ -1565,7 +1545,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             audio = new
             {
                 micWarning = microphone.Warning,
-                silent = microphone.Attention,
+                silent = microphone.Quiet,
+                attention = microphone.Attention,
                 unavailable = microphone.Unavailable
             },
             metrics = new
@@ -1616,7 +1597,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             badge = StateBadge(state),
             live = state == StreamState.Live,
             micWarning = microphone.Warning,
-            silent = microphone.Attention,
+            silent = microphone.Quiet,
+            attention = microphone.Attention,
             unavailableMics = microphone.Unavailable,
             inspection = inspection is null ? null : new
             {
@@ -1914,7 +1896,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
 
     private sealed record AutomationRequest(bool? Enabled);
 
-    private sealed record MicrophoneHealthSnapshot(bool Warning, string[] Attention, string[] Unavailable);
+    private sealed record MicrophoneHealthSnapshot(bool Warning, string[] Attention, string[] Unavailable, string[] Quiet);
 
     private sealed record PeriodDto(
         int No, string Start, string End, string SlotId, string SlotLabel, string SlotKind, int SlotOrder);

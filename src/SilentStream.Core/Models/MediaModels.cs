@@ -73,6 +73,8 @@ public sealed record AudioSourceSettings(
     bool GateEnabled = false,
     double GateThresholdDb = -45);
 
+public enum AudioCaptureFailure { None, DeviceUnavailable, DataStopped, CaptureError }
+
 /// <summary>
 /// Runtime availability of one configured audio source. A source can remain configured while its
 /// physical endpoint is unplugged or Windows refuses to open it; surfacing that distinction keeps
@@ -87,6 +89,7 @@ public sealed record AudioSourceSettings(
 /// <param name="ResolvedDeviceId">WASAPI endpoint actually opened after resolving defaults.</param>
 /// <param name="ResolvedDeviceName">Friendly name of the endpoint actually opened.</param>
 /// <param name="IsLoopback">True when the resolved capture is system-output monitoring, not a physical microphone.</param>
+/// <param name="Failure">Observed endpoint/capture/packet failure; it does not diagnose a defective cable.</param>
 public sealed record AudioSourceRuntimeStatus(
     string Id,
     bool CaptureActive,
@@ -96,7 +99,8 @@ public sealed record AudioSourceRuntimeStatus(
     long BytesReceived = 0,
     string? ResolvedDeviceId = null,
     string? ResolvedDeviceName = null,
-    bool IsLoopback = false);
+    bool IsLoopback = false,
+    AudioCaptureFailure Failure = AudioCaptureFailure.None);
 
 /// <summary>Latest peak/RMS level for one mixer source (dBFS; -100 ≈ silence).</summary>
 /// <param name="Id">Matches <see cref="AudioSourceSettings.Id"/>.</param>
@@ -125,7 +129,7 @@ public sealed record AudioLevels(
 /// <summary>
 /// Whether a present microphone is currently delivering audible signal. Flips to false after
 /// the mic stays below the silence threshold for a grace period while capturing, so the UI and
-/// phone can warn that the mic may be muted/unplugged (무음·마이크 끊김 감지 → 폰 알림).
+/// phone can show quiet input separately from runtime capture/transport failures.
 /// </summary>
 /// <param name="SourceId">The mic source this status refers to.</param>
 /// <param name="SignalPresent">True when audible signal is detected; false when silent too long.</param>

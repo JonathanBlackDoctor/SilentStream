@@ -40,6 +40,7 @@ public sealed class WasapiAudioMixerRuntimeStatusTests
             var runtime = Assert.Single(mixer.SourceStatuses, status => status.Id == id);
             Assert.False(runtime.CaptureActive);
             Assert.False(string.IsNullOrWhiteSpace(runtime.Error));
+            Assert.Equal(AudioCaptureFailure.DeviceUnavailable, runtime.Failure);
             Assert.Null(runtime.LastPacketAtUtc);
             Assert.Equal(0, runtime.BytesReceived);
             Assert.Equal(endpoint, runtime.ResolvedDeviceId);

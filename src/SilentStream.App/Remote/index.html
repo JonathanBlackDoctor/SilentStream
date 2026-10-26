@@ -1251,7 +1251,7 @@
       $("recFile").textContent = s.recording.file || "대기 중";
       $("recUsed").textContent = fmtBytes(s.recording.usedBytes);
       $("recFree").textContent = fmtBytes(s.recording.freeBytes);
-      if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.silent, s.audio.unavailable);
+      if (s.audio) updateMicWarn(s.audio.micWarning, s.audio.attention||s.audio.silent, s.audio.unavailable);
       if (s.quality) renderQualityStatus(s.quality); // 적용 품질(진실)은 상태 푸시로 갱신된다
       if (s.diagnostics) renderDiagnostics(s.diagnostics);
       $("startBtn").disabled = s.state!=="Idle";
@@ -1621,13 +1621,14 @@
       if(warn){
         const missing=(unavailable||[]), room=String(cur && cur.label || "").toUpperCase();
         el.textContent = missing.length
-          ? `⚠ ${room==="M113"?"M113 · ":""}마이크 연결 실패: ${missing.join(", ")} — 수신기 전원·USB/오디오 케이블·Windows 입력 장치를 확인하세요.`
-          : "⚠ 마이크 신호 없음: "+((silent||[]).join(", "))+" — 연결/음소거를 확인하세요.";
+          ? `⚠ ${room==="M113"?"M113 · ":""}마이크 장치 인식 안 됨: ${missing.join(", ")} — USB·전원·Windows 입력 장치를 확인하세요.`
+          : "⚠ 마이크 입력 장애: "+((silent||[]).join(", "))+" — 장치·입력 데이터·드라이버 상태를 확인하세요.";
         el.classList.remove("hidden");
       }
       else el.classList.add("hidden");
     }
     function renderAudio(d){
+      const inputLabel=s=>s.inputMessage||(s.available===false?"입력 사용 불가 · 연결·드라이버 확인 필요":"연결됨 · 실제 소리 확인 필요");
       $("srcList").innerHTML = (d.microphoneControl ? `<div class="src">
         <label>입력 모드 (개별 선택 시 전체 자동 추가 해제)
         <select id="remoteMicDevice" style="display:block;width:100%;max-width:100%;margin:8px 0"><option value="">마이크 선택</option>${typeof d.autoIncludeMicrophones === "boolean" ? `<option value="*" ${d.autoIncludeMicrophones ? "selected" : ""}>연결된 모든 입력 자동 사용</option>` : ""}${(d.devices||[]).map(v=>`<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("")}</select></label>
@@ -1639,7 +1640,7 @@
       </div>` : "") + d.sources.map(s=>`
         <div class="src" data-id="${esc(s.id)}">
           <div class="top">
-            <span class="name">${esc(s.name)} ${s.available===false&&s.captureError?'<span class="pill failed">연결 안 됨</span>':''}</span>
+            <span class="name">${esc(s.name)} ${s.kind==="mic"?`<span class="pill ${s.inputFailure?"failed":""}">${esc(inputLabel(s))}</span>`:""}</span>
             <button class="mutebtn ${s.muted?'on':''}" data-mute="${esc(s.id)}">${s.muted?'음소거됨':'음소거'}</button>
           </div>
           ${s.captureError?`<div class="asset-meta">${esc(s.captureError)}</div>`:""}
@@ -1654,7 +1655,7 @@
       $("srcList").querySelectorAll("[data-gain]").forEach(sl=>sl.onchange=async()=>{
         try{ const r=await api(cur,"/api/audio/gain",{method:"POST",body:JSON.stringify({id:sl.dataset.gain,gain:parseFloat(sl.value)})}); if(await handleSettingsLockError(r)) return; if(!r.ok) throw new Error("gain"); }catch(e){}
       });
-      updateMicWarn(d.micWarning, d.silent, d.unavailable);
+      updateMicWarn(d.micWarning, d.attention||d.silent, d.unavailable);
       if(d.microphoneControl){
         $("remoteMicReload").onclick=()=>loadAudio().catch(()=>{$("remoteMicResult").textContent="목록을 불러오지 못했습니다.";});
         const command=async(path,body={})=>{

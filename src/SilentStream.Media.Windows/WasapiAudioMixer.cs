@@ -108,7 +108,9 @@ public sealed class WasapiAudioMixer : IAudioMixer
                         : chain.LastError ?? "오디오 데이터가 5초 이상 수신되지 않았습니다.";
                     return new AudioSourceRuntimeStatus(chain.Settings.Id, active, error,
                         chain.StatusUpdatedUtc, chain.LastPacketUtc, Interlocked.Read(ref chain.BytesReceived),
-                        chain.ResolvedDeviceId, chain.ResolvedDeviceName, chain.IsLoopbackCapture);
+                        chain.ResolvedDeviceId, chain.ResolvedDeviceName, chain.IsLoopbackCapture,
+                        active || !_running ? AudioCaptureFailure.None : chain.Failure == AudioCaptureFailure.None
+                            ? AudioCaptureFailure.DataStopped : chain.Failure);
                 }).ToArray();
             }
         }
@@ -397,6 +399,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
     {
         var wasUnavailable = !chain.Started && !string.IsNullOrWhiteSpace(chain.LastError);
         IWaveIn? pendingCapture = null;
+        var endpointResolved = false;
         var resolvedDeviceId = chain.Settings.DeviceId;
         var resolvedDeviceName = chain.Settings.Name;
         var resolvedLoopback = chain.Settings.Kind == AudioSourceKind.System
@@ -406,6 +409,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
             IWaveIn capture;
             if (_captureFactory is not null)
             {
+                endpointResolved = true; // injected capture factory models an already resolved endpoint
                 capture = _captureFactory(chain.Settings);
             }
             else if (chain.Settings.Kind == AudioSourceKind.System)
@@ -418,13 +422,14 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 var device = string.IsNullOrEmpty(chain.Settings.DeviceId)
                     ? PickDefaultMicDevice(enumerator)
                     : enumerator.GetDevice(chain.Settings.DeviceId);
-                if (device is null)
+                if (device is null || device.State != DeviceState.Active)
                 {
                     throw new InvalidOperationException("사용 가능한 마이크 캡처 장치가 없습니다.");
                 }
                 resolvedDeviceId = device.ID;
                 resolvedDeviceName = device.FriendlyName;
                 resolvedLoopback = AudioDeviceClassifier.IsLoopbackName(device.FriendlyName);
+                endpointResolved = true;
                 capture = new WasapiCapture(device);
             }
             pendingCapture = capture;
@@ -469,6 +474,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
             chain.IsLoopbackCapture = resolvedLoopback;
             chain.Slot.Set(provider);
             chain.LastError = null;
+            chain.Failure = AudioCaptureFailure.None;
             chain.StatusUpdatedUtc = UtcNow;
             chain.LastPacketUtc = null;
             Interlocked.Exchange(ref chain.BytesReceived, 0);
@@ -493,6 +499,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
             chain.ResolvedDeviceName = resolvedDeviceName;
             chain.IsLoopbackCapture = resolvedLoopback;
             chain.LastError = ex.Message;
+            chain.Failure = endpointResolved ? AudioCaptureFailure.CaptureError : AudioCaptureFailure.DeviceUnavailable;
             chain.StatusUpdatedUtc = UtcNow;
             chain.Restarting = false;
             if (chain.Settings.Kind == AudioSourceKind.Microphone
@@ -522,19 +529,19 @@ public sealed class WasapiAudioMixer : IAudioMixer
         }
     }
 
-    private void TryRestartSource(SourceChain chain, bool silent = false)
+    private void TryRestartSource(SourceChain chain)
     {
         lock (_gate)
         {
-            if ((chain.Started && !silent) || chain.Restarting || !_running || !_chains.Contains(chain)
+            if (chain.Started || chain.Restarting || !_running || !_chains.Contains(chain)
                 || !chain.Recovery.CanRetryFailure(UtcNow))
             {
                 return;
             }
             chain.Restarting = true;
             chain.LastRestartAttemptUtc = UtcNow;
-            chain.Recovery.Attempt(chain.LastRestartAttemptUtc, silent);
-            _log.Warn($"오디오 입력 재연결 시도 ({(silent ? "무음 지속" : "연결/데이터 중단")}): {chain.Settings.Name}");
+            chain.Recovery.Attempt(chain.LastRestartAttemptUtc);
+            _log.Warn($"오디오 입력 재연결 시도 (장치/캡처/데이터 중단): {chain.Settings.Name}");
         }
         Task.Run(() =>
         {
@@ -558,6 +565,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         {
             if (!_running || !_chains.Contains(chain) || !ReferenceEquals(chain.Capture, capture)) return;
             chain.LastError = error.Message;
+            chain.Failure = AudioCaptureFailure.CaptureError;
             chain.StatusUpdatedUtc = UtcNow;
             notifySignalLoss = chain.Settings.Kind == AudioSourceKind.Microphone
                 && !chain.IsLoopbackCapture && chain.SignalPresent;
@@ -685,6 +693,8 @@ public sealed class WasapiAudioMixer : IAudioMixer
             if (chain.Settings.Kind == AudioSourceKind.Microphone && chain.Started && !IsCaptureHealthy(chain, now))
             {
                 chain.LastError = "오디오 데이터가 5초 이상 수신되지 않았습니다.";
+                chain.Failure = AudioCaptureFailure.DataStopped;
+                _log.Warn($"마이크 입력 데이터 중단(5초 이상 미수신): {chain.Settings.Name} — 연결·드라이버 원인 확인 필요");
                 chain.StatusUpdatedUtc = now;
                 if (chain.Settings.Kind == AudioSourceKind.Microphone && chain.SignalPresent)
                 {
@@ -698,9 +708,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
                 TryRestartSource(chain);
             }
             DetectSilence(chain, rmsDb, now);
-            if (chain.Settings.Kind == AudioSourceKind.Microphone && chain.Started
-                && chain.Recovery.CanRetrySilence(now, chain.Settings, chain.IsLoopbackCapture))
-                TryRestartSource(chain, silent: true);
+            // Quiet packets are valid input. Only endpoint/capture/packet failures reopen a source.
         }
 
         var (masterPeak, masterRms) = _masterLevel.SnapshotReset();
@@ -749,7 +757,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         {
             chain.SignalPresent = false;
             QueueSignal(new MicSignalStatus(chain.Settings.Id, false, now));
-            _log.Warn($"마이크 신호 없음(무음 {SilenceGrace.TotalSeconds:F0}초 이상): {chain.Settings.Name} — 연결/음소거 확인 필요");
+            _log.Debug($"마이크 입력 조용함({SilenceGrace.TotalSeconds:F0}초 이상): {chain.Settings.Name} — 연결 장애와 별도 상태");
         }
     }
 
@@ -861,6 +869,7 @@ public sealed class WasapiAudioMixer : IAudioMixer
         }
         public long BytesReceived;
         public volatile string? LastError;
+        public AudioCaptureFailure Failure;
         public volatile bool Restarting;
         public volatile string? ResolvedDeviceId;
         public volatile string? ResolvedDeviceName;

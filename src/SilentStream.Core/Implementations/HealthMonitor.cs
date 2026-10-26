@@ -1,4 +1,5 @@
 using SilentStream.Core.Contracts;
+using SilentStream.Core.Media;
 using SilentStream.Core.Models;
 
 namespace SilentStream.Core.Implementations;
@@ -8,7 +9,7 @@ namespace SilentStream.Core.Implementations;
 /// signals into one typed <see cref="HealthEvent"/> stream with severity + debounce/hysteresis:
 /// <list type="bullet">
 ///   <item>rtmp_down / live_started / live_stopped — derived from <see cref="IStreamOrchestrator.StateChanged"/>.</item>
-///   <item>mic_silent — from <see cref="IAudioMixer.MicSignalChanged"/> (the mixer already grace-debounces).</item>
+///   <item>mic_silent — informational from <see cref="IAudioMixer.MicSignalChanged"/>; capture failures are checked separately.</item>
 ///   <item>disk_low — POLLED from <see cref="IRecordingManager.GetStatus"/> vs config MinFreeGb (no event exists).</item>
 ///   <item>upload_failed — POLLED from <see cref="IUploadQueue.Snapshot"/> for terminal failures (no event exists).</item>
 /// </list>
@@ -157,8 +158,8 @@ public sealed class HealthMonitor : IHealthMonitor
                         _liveSessionActive = true;
                         Notify(buffer, HealthEventKind.LiveStarted, HealthSeverity.Info,
                             "라이브 송출을 시작했습니다.", sourceKey: null);
-                        // A mic that fell silent before going live must escalate Warn→Critical now.
-                        RestampSilentMics(buffer, HealthSeverity.Critical);
+                        // Only transport/capture failures escalate while live; quiet input stays informational.
+                        RestampMicrophoneFailures(buffer, HealthSeverity.Critical);
                     }
                     break;
 
@@ -181,8 +182,8 @@ public sealed class HealthMonitor : IHealthMonitor
                         _liveSessionActive = false;
                         Notify(buffer, HealthEventKind.LiveStopped, HealthSeverity.Info,
                             "라이브 송출이 종료되었습니다.", sourceKey: null);
-                        // Session ended — a still-silent mic drops back from Critical to Warn.
-                        RestampSilentMics(buffer, HealthSeverity.Warn);
+                        // Capture failures remain visible at Warn when the live session ends.
+                        RestampMicrophoneFailures(buffer, HealthSeverity.Warn);
                     }
                     break;
 
@@ -202,7 +203,7 @@ public sealed class HealthMonitor : IHealthMonitor
                         _liveSessionActive = false;
                         Notify(buffer, HealthEventKind.LiveStopped, HealthSeverity.Info,
                             "라이브 송출이 종료되었습니다 — 로컬 녹화는 계속됩니다.", sourceKey: null);
-                        RestampSilentMics(buffer, HealthSeverity.Warn);
+                        RestampMicrophoneFailures(buffer, HealthSeverity.Warn);
                     }
                     break;
 
@@ -266,28 +267,42 @@ public sealed class HealthMonitor : IHealthMonitor
     private void OnMicSignalChanged(object? sender, MicSignalStatus status)
     {
         var source = _mixer.Sources.FirstOrDefault(s => s.Id == status.SourceId);
-        if (source is null) return; // A queued notification from an input removed by auto-discovery.
+        if (source is null) return;
+        var runtime = _mixer.SourceStatuses.FirstOrDefault(s => s.Id == source.Id);
         var buffer = new List<HealthEvent>();
         lock (_gate)
         {
-            if (!status.SignalPresent)
-            {
-                if (_silentMics.Add(status.SourceId))
-                {
-                    // A silent mic during a live broadcast is more urgent than while idle.
-                    var severity = _liveSessionActive ? HealthSeverity.Critical : HealthSeverity.Warn;
-                    SetCondition(buffer, HealthEventKind.MicSilent, severity, active: true,
-                          $"마이크 신호가 없습니다: {source.Name} — 연결/음소거를 확인하세요.",
-                        status.SourceId);
-                }
-            }
-            else if (_silentMics.Remove(status.SourceId))
-            {
-                SetCondition(buffer, HealthEventKind.MicSilent, HealthSeverity.Info, active: false,
-                      $"마이크 신호가 복구되었습니다: {source.Name}", status.SourceId);
-            }
+            if (status.SignalPresent) _silentMics.Remove(status.SourceId);
+            else _silentMics.Add(status.SourceId);
+            CheckMicrophone(buffer, source, runtime);
         }
         RaiseAll(buffer);
+    }
+
+    private void CheckMicrophone(List<HealthEvent> buffer, AudioSourceSettings source, AudioSourceRuntimeStatus? runtime)
+    {
+        var input = MicrophoneInputHealth.Evaluate(source, runtime, !_silentMics.Contains(source.Id), _now());
+        UpdateMicrophoneCondition(buffer, HealthEventKind.MicSilent, HealthSeverity.Info,
+            input.Code == "quiet", source, input);
+        UpdateMicrophoneCondition(buffer, HealthEventKind.MicInputFailure,
+            _liveSessionActive ? HealthSeverity.Critical : HealthSeverity.Warn,
+            input.IsFailure, source, input);
+    }
+
+    private void UpdateMicrophoneCondition(List<HealthEvent> buffer, HealthEventKind kind, HealthSeverity severity,
+        bool active, AudioSourceSettings source, MicrophoneInputState input)
+    {
+        var key = kind + "|" + source.Id;
+        _active.TryGetValue(key, out var previous);
+        var message = $"{source.Name}: {input.Message}";
+        // Opening the endpoint is not evidence that input packets have recovered yet.
+        if (kind == HealthEventKind.MicInputFailure && input.Code == "starting" && previous is not null)
+            return;
+        if (active && (previous is null || previous.Severity != severity || previous.Message != message))
+            SetCondition(buffer, kind, severity, true, message, source.Id);
+        else if (!active && previous is not null)
+            SetCondition(buffer, kind, HealthSeverity.Info, false,
+                $"{(kind == HealthEventKind.MicInputFailure ? "입력 장애 해제" : "무음 안내 해제")} · {message}", source.Id);
     }
 
     private void OnYouTubeAuthStatusChanged(object? sender, YouTubeAuthHealthStatus status)
@@ -346,7 +361,9 @@ public sealed class HealthMonitor : IHealthMonitor
 
         // Gather external inputs OUTSIDE the lock so disk I/O never blocks the event handlers.
         var state = _orchestrator.State;
-        var currentInputs = _mixer.Sources.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var sources = _mixer.Sources;
+        var currentInputs = sources.Select(s => s.Id).ToHashSet(StringComparer.Ordinal);
+        var runtimes = _mixer.SourceStatuses.ToDictionary(s => s.Id, StringComparer.Ordinal);
 
         long? freeBytes = null;
         var recordingEnabled = false;
@@ -389,12 +406,13 @@ public sealed class HealthMonitor : IHealthMonitor
 
         lock (_gate)
         {
-            foreach (var removed in _silentMics.Where(id => !currentInputs.Contains(id)).ToArray())
-            {
-                _silentMics.Remove(removed);
-                SetCondition(buffer, HealthEventKind.MicSilent, HealthSeverity.Info, active: false,
-                    "입력 목록에서 제외된 마이크의 이전 경고를 해제했습니다.", removed);
-            }
+            _silentMics.RemoveWhere(id => !currentInputs.Contains(id));
+            foreach (var removed in _active.Values.Where(e => (e.Kind is HealthEventKind.MicSilent or HealthEventKind.MicInputFailure)
+                && e.SourceKey is { } id && !currentInputs.Contains(id)).ToArray())
+                SetCondition(buffer, removed.Kind, HealthSeverity.Info, false,
+                    "입력 목록에서 제외된 마이크의 이전 상태를 해제했습니다.", removed.SourceKey);
+            foreach (var source in sources.Where(s => s.Kind == AudioSourceKind.Microphone))
+                CheckMicrophone(buffer, source, runtimes.GetValueOrDefault(source.Id));
             if (roomKnown)
             {
                 _room = room;
@@ -612,30 +630,12 @@ public sealed class HealthMonitor : IHealthMonitor
         }
     }
 
-    private string ResolveMicName(string sourceId)
+    /// <summary>Only endpoint/capture failures change urgency with the live state.</summary>
+    private void RestampMicrophoneFailures(List<HealthEvent> buffer, HealthSeverity severity)
     {
-        foreach (var source in _mixer.Sources)
-        {
-            if (source.Id == sourceId)
-            {
-                return source.Name;
-            }
-        }
-        return "마이크";
-    }
-
-    /// <summary>
-    /// Re-stamps every currently-silent mic to <paramref name="severity"/> when the live-session state flips,
-    /// so a mic that fell silent before the broadcast escalates to Critical the moment it goes Live (and back to
-    /// Warn on stop). Must be called under <c>_gate</c>; <see cref="SetCondition"/> overwrites the same _active key.
-    /// </summary>
-    private void RestampSilentMics(List<HealthEvent> buffer, HealthSeverity severity)
-    {
-        foreach (var sourceId in _silentMics)
-        {
-            SetCondition(buffer, HealthEventKind.MicSilent, severity, active: true,
-                $"마이크 신호가 없습니다: {ResolveMicName(sourceId)} — 연결/음소거를 확인하세요.", sourceId);
-        }
+        foreach (var issue in _active.Values.Where(e => e.Kind == HealthEventKind.MicInputFailure).ToArray())
+            if (issue.Severity != severity)
+                SetCondition(buffer, issue.Kind, severity, true, issue.Message, issue.SourceKey);
     }
 
     private static string FormatGb(long bytes) => (bytes / (double)GB).ToString("0.0") + "GB";

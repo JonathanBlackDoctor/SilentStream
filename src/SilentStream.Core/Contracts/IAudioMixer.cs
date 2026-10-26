@@ -6,7 +6,7 @@ namespace SilentStream.Core.Contracts;
 /// Captures system audio (WASAPI loopback) plus zero or more microphones and mixes them into
 /// a single PCM stream. Each source has independent gain (>1.0 amplifies), mute and an optional
 /// noise gate; the mixer publishes real-time peak/RMS levels for the UI meters and warns when a
-/// present microphone falls silent. A missing/failed source never stops the mix. See plan §3.4.
+/// present microphone falls silent as information, separately from capture failures. A missing/failed source never stops the mix.
 /// </summary>
 public interface IAudioMixer : IDisposable
 {

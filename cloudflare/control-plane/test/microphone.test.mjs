@@ -44,6 +44,20 @@ test("connected capture does not claim audible signal; muted and failed input re
   assert.match(html, /unplugged/);
 });
 
+test("healthy quiet input and endpoint or data failure have separate escaped labels", () => {
+  const html = render({ online: true, audio: { microphoneControl: true, micWarning: false, sources: [
+    { kind: "mic", name: "Quiet", available: true, inputState: "quiet", inputMessage: "연결됨 · 입력 데이터 정상 · 현재 조용함" },
+    { kind: "mic", name: "USB", available: false, inputState: "deviceUnavailable", inputMessage: "장치 인식 안 됨" },
+    { kind: "mic", name: "Driver", available: false, inputState: "dataStopped", inputMessage: "입력 데이터 중단 · 원인 미확정" },
+    { kind: "mic", name: "Escape", inputMessage: "<script>unsafe</script>" }
+  ] } });
+  assert.match(html, /입력 데이터 정상 · 현재 조용함/);
+  assert.match(html, /장치 인식 안 됨/);
+  assert.match(html, /입력 데이터 중단 · 원인 미확정/);
+  assert.doesNotMatch(html, /연결 안 됨|<script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
 test("microphone commands preserve selected ID and reject cross-room and foreign-origin requests", async () => {
   const calls = [];
   const control = { async fetch(request) {

@@ -43,6 +43,15 @@ public class HealthNotificationServiceTests : IDisposable
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
     [Fact]
+    public async Task Healthy_quiet_microphone_does_not_send_a_default_warning_notification()
+    {
+        using var service = CreateStarted();
+        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Info, message: "연결·데이터 정상, 현재 조용함"));
+        await Task.Delay(150);
+        Assert.Empty(_notifier.Sent);
+    }
+
+    [Fact]
     public async Task Event_below_the_min_level_is_filtered()
     {
         using var service = CreateStarted();
@@ -58,7 +67,7 @@ public class HealthNotificationServiceTests : IDisposable
     {
         using var service = CreateStarted();
 
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn, message: "마이크 신호가 없습니다"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn, message: "마이크 신호가 없습니다"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 1);
 
         var sent = Assert.Single(_notifier.Sent);
@@ -96,12 +105,12 @@ public class HealthNotificationServiceTests : IDisposable
     {
         using var service = CreateStarted();
 
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn, sourceKey: "mic:1"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 1);
 
         // Recovery arrives as Info/Active=false — below the warn filter, but its onset was pushed,
         // so the pairing rule must push it too (never leave the operator staring at a stale 🚨).
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Info, active: false,
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Info, active: false,
             message: "마이크 신호가 복구되었습니다", sourceKey: "mic:1"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 2);
 
@@ -135,8 +144,8 @@ public class HealthNotificationServiceTests : IDisposable
         _configStore.Update(c => c.Notifications.NotifyLevel = "critical");
         using var service = CreateStarted();
 
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn, sourceKey: "mic:1")); // filtered
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Info, active: false, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn, sourceKey: "mic:1")); // filtered
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Info, active: false, sourceKey: "mic:1"));
         await Task.Delay(150);
 
         Assert.Empty(_notifier.Sent);
@@ -161,21 +170,21 @@ public class HealthNotificationServiceTests : IDisposable
     {
         using var service = CreateStarted();
 
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Critical, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Critical, sourceKey: "mic:1"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 1);
 
         // 라이브 종료 시 재스탬프(Critical→Warn)와 동일 심각도 재방출은 새 정보가 아니다 — 무음 유지.
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn, sourceKey: "mic:1"));
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn, sourceKey: "mic:1"));
         await Task.Delay(150);
         Assert.Single(_notifier.Sent);
 
         // 강등 뒤 재승격은 다시 알린다.
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Critical, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Critical, sourceKey: "mic:1"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 2);
 
         // 회복은 여전히 짝지어 전송된다.
-        _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Info, active: false, sourceKey: "mic:1"));
+        _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Info, active: false, sourceKey: "mic:1"));
         await WaitUntilAsync(() => _notifier.Sent.Count >= 3);
         Assert.Contains("✅", _notifier.Sent[2]);
     }
@@ -216,7 +225,7 @@ public class HealthNotificationServiceTests : IDisposable
 
         // Raise는 헬스 스레드의 동기 호출을 흉내낸다 — 예외가 새어 나오면 이 호출이 throw한다.
         var ex = Record.Exception(() =>
-            _monitor.Raise(Event(HealthEventKind.MicSilent, HealthSeverity.Warn)));
+            _monitor.Raise(Event(HealthEventKind.MicInputFailure, HealthSeverity.Warn)));
 
         Assert.Null(ex);
         await Task.Delay(50);

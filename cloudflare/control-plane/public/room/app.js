@@ -162,7 +162,8 @@ function microphonePanel(value){
   const ready=audio.remoteMicrophoneCommands===true;
   const disabled=value.online&&ready?'':'disabled';
   const mics=(audio.sources||[]).filter(s=>s.kind==="mic");
-  return '<section><h3>마이크 입력</h3>'+(ready?'':'<p>PC 앱의 자동 복구는 사용할 수 있습니다. 휴대폰 명령은 연결 도우미 업데이트 후 활성화됩니다.</p>')+mics.map(s=>'<p>'+esc(s.resolvedDeviceName||s.name)+' · '+(s.muted?'앱 음소거':s.available?'연결됨 · 실제 소리 확인 필요':'연결 안 됨')+(s.gate?' · 게이트 켜짐':'')+'</p><meter min="0" max="1" value="'+Math.max(0,Math.min(1,Number(s.peak)||0))+'" aria-label="마이크 음량"></meter>'+(s.captureError?'<p>'+esc(s.captureError)+'</p>':'')).join('')+
+  const label=s=>s.inputMessage||(s.muted?"앱 음소거":s.available?"연결됨 · 실제 소리 확인 필요":"입력 사용 불가 · 연결·드라이버 확인 필요");
+  return '<section><h3>마이크 입력</h3>'+(ready?'':'<p>PC 앱의 자동 복구는 사용할 수 있습니다. 휴대폰 명령은 연결 도우미 업데이트 후 활성화됩니다.</p>')+mics.map(s=>'<p>'+esc(s.resolvedDeviceName||s.name)+' · '+esc(label(s))+(s.gate?' · 게이트 켜짐':'')+'</p><meter min="0" max="1" value="'+Math.max(0,Math.min(1,Number(s.peak)||0))+'" aria-label="마이크 음량"></meter>'+(s.captureError?'<p>'+esc(s.captureError)+'</p>':'')).join('')+
   '<label>입력 모드 (개별 선택 시 전체 자동 추가 해제)<select id="microphoneDevice" style="display:block;width:100%;max-width:100%;padding:10px;margin:8px 0;font:inherit" '+disabled+'><option value="">마이크 선택</option>'+(typeof audio.autoIncludeMicrophones==='boolean'?'<option value="*" '+(audio.autoIncludeMicrophones?'selected':'')+'>연결된 모든 입력 자동 사용</option>':'')+(audio.devices||[]).map(d=>'<option value="'+esc(d.id)+'">'+esc(d.name)+'</option>').join('')+'</select></label>'+
   '<div class="actions"><button '+disabled+' data-mic-select>선택 적용</button><button '+disabled+' data-action="audio.refresh">입력 다시 연결</button><button '+disabled+' data-action="audio.restore">입력 복구 (음소거·게이트 해제)</button></div><p>상태는 약 10초마다 갱신됩니다. 복구 후 실제 소리를 내어 음량을 확인하세요. Windows/장비 음소거는 현장에서 확인해야 합니다.</p></section>';
 }

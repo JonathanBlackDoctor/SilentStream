@@ -40,7 +40,7 @@ public enum HealthEventKind
 
     /// <summary>
     /// A capturing microphone fell silent (already grace-debounced by the mixer). Keyed by the mic
-    /// source id; cleared when signal returns. Warn normally, Critical while a live session is active.
+    /// source id; cleared when signal returns. Informational even while live; silence is not a connection failure.
     /// </summary>
     MicSilent,
 
@@ -74,12 +74,15 @@ public enum HealthEventKind
     /// manual pin itself is a momentary Info. NOTE: the enum member name is serialized to the
     /// phone via ToString() — it is a wire contract.
     /// </summary>
-    QualityDegraded
+    QualityDegraded,
+
+    /// <summary>A microphone endpoint/capture/packet failure, distinct from healthy quiet input.</summary>
+    MicInputFailure
 }
 
 /// <summary>
 /// A single typed health signal emitted by <see cref="Contracts.IHealthMonitor"/>. Condition kinds
-/// (<see cref="HealthEventKind.RtmpDown"/>, <see cref="HealthEventKind.MicSilent"/>,
+/// (<see cref="HealthEventKind.RtmpDown"/>, <see cref="HealthEventKind.MicSilent"/>, <see cref="HealthEventKind.MicInputFailure"/>,
 /// <see cref="HealthEventKind.DiskLow"/>, <see cref="HealthEventKind.OauthExpiring"/>) toggle
 /// <see cref="Active"/> on onset (true) and recovery
 /// (false); momentary kinds (live started/stopped, upload failed) are always <see cref="Active"/>=true.

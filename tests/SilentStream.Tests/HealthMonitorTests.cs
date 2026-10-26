@@ -109,7 +109,7 @@ public class HealthMonitorTests : IDisposable
 
         _mixer.RaiseMic("mic:1", present: false);
         var onset = Assert.Single(_events, e => e.Kind == HealthEventKind.MicSilent && e.Active);
-        Assert.Equal(HealthSeverity.Warn, onset.Severity);
+        Assert.Equal(HealthSeverity.Info, onset.Severity);
         Assert.Equal("mic:1", onset.SourceKey);
         Assert.Contains("교탁 마이크", onset.Message);
 
@@ -133,7 +133,7 @@ public class HealthMonitorTests : IDisposable
     }
 
     [Fact]
-    public void Mic_silence_during_a_live_session_is_critical()
+    public void Mic_silence_during_a_live_session_is_informational()
     {
         using var hm = CreateStarted();
         _mixer.ConfigureSources(new[]
@@ -145,11 +145,11 @@ public class HealthMonitorTests : IDisposable
         _mixer.RaiseMic("mic:1", present: false);
 
         var onset = Assert.Single(_events, e => e.Kind == HealthEventKind.MicSilent && e.Active);
-        Assert.Equal(HealthSeverity.Critical, onset.Severity);
+        Assert.Equal(HealthSeverity.Info, onset.Severity);
     }
 
     [Fact]
-    public void Mic_silent_before_live_escalates_to_critical_when_live_starts_and_downgrades_on_stop()
+    public void Healthy_silence_stays_informational_across_live_and_stop()
     {
         using var hm = CreateStarted();
         _mixer.ConfigureSources(new[]
@@ -157,19 +157,19 @@ public class HealthMonitorTests : IDisposable
             new AudioSourceSettings("mic:1", AudioSourceKind.Microphone, null, "마이크1")
         });
 
-        // Silent while idle → Warn.
+        // Healthy quiet input is informational before and during live.
         _mixer.RaiseMic("mic:1", present: false);
         var idle = Assert.Single(_events, e => e.Kind == HealthEventKind.MicSilent && e.Active);
-        Assert.Equal(HealthSeverity.Warn, idle.Severity);
+        Assert.Equal(HealthSeverity.Info, idle.Severity);
 
-        // Going live must escalate the still-silent mic to Critical (the dead-mic-during-broadcast case).
+        // Starting a broadcast must not turn healthy silence into an outage.
         _orch.Raise(StreamState.Live);
-        Assert.Equal(HealthSeverity.Critical, _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
-        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent && e.Severity == HealthSeverity.Critical);
+        Assert.Equal(HealthSeverity.Info, _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent && e.Severity == HealthSeverity.Info);
 
-        // Stopping the session drops it back to Warn.
+        // Stopping does not change the informational severity.
         _orch.Raise(StreamState.Stopping);
-        Assert.Equal(HealthSeverity.Warn, _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
+        Assert.Equal(HealthSeverity.Info, _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
     }
 
     [Fact]
@@ -182,20 +182,52 @@ public class HealthMonitorTests : IDisposable
         });
 
         _orch.Raise(StreamState.Live);
-        _mixer.RaiseMic("mic:1", present: false); // critical while live
+        _mixer.RaiseMic("mic:1", present: false); // informational while live
 
         // 방송만 중지 → RecordingOnly: the live session ends while recording continues.
         _orch.Raise(StreamState.RecordingOnly);
 
         var stopped = Assert.Single(_events, e => e.Kind == HealthEventKind.LiveStopped);
         Assert.Contains("녹화는 계속", stopped.Message);
-        Assert.Equal(HealthSeverity.Warn,
+        Assert.Equal(HealthSeverity.Info,
             _events.Last(e => e.Kind == HealthEventKind.MicSilent && e.Active).Severity);
 
         // The eventual full stop must not announce a second live_stopped.
         _orch.Raise(StreamState.Stopping);
         _orch.Raise(StreamState.Idle);
         Assert.Single(_events, e => e.Kind == HealthEventKind.LiveStopped);
+    }
+
+    [Fact]
+    public void Quiet_input_that_loses_packets_raises_failure_and_recovers_even_without_a_sound_edge()
+    {
+        using var hm = CreateStarted();
+        _mixer.ConfigureSources([new("mic:1", AudioSourceKind.Microphone, "dev1", "USB")]);
+        _orch.Raise(StreamState.Live);
+        _mixer.RaiseMic("mic:1", false);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent && e.Severity == HealthSeverity.Info);
+        _mixer.RuntimeOverride = new("mic:1", false, "No packets", _clock.Now,
+            Failure: AudioCaptureFailure.DataStopped);
+        hm.RunChecksOnce();
+        var failed = Assert.Single(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicInputFailure);
+        Assert.Equal(HealthSeverity.Critical, failed.Severity);
+        Assert.Contains("입력 데이터 중단", failed.Message);
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent);
+        var count = _events.Count;
+        hm.RunChecksOnce();
+        Assert.Equal(count, _events.Count);
+        _orch.Raise(StreamState.RecordingOnly);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicInputFailure && e.Severity == HealthSeverity.Warn);
+        _mixer.RuntimeOverride = new("mic:1", true, null, _clock.Now);
+        hm.RunChecksOnce();
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicInputFailure);
+        _mixer.RuntimeOverride = new("mic:1", true, null, _clock.Now, _clock.Now, 4096);
+        hm.RunChecksOnce();
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicInputFailure);
+        Assert.Contains(hm.ActiveEvents, e => e.Kind == HealthEventKind.MicSilent && e.Severity == HealthSeverity.Info);
+        _mixer.ConfigureSources([]);
+        hm.RunChecksOnce();
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind is HealthEventKind.MicSilent or HealthEventKind.MicInputFailure);
     }
 
     // ---- rtmp_down (hysteresis + escalation + recovery) ----
@@ -563,8 +595,9 @@ public class HealthMonitorTests : IDisposable
     {
         private readonly List<AudioSourceSettings> _sources = new();
         public IReadOnlyList<AudioSourceSettings> Sources => _sources;
+        public AudioSourceRuntimeStatus? RuntimeOverride { get; set; }
         public IReadOnlyList<AudioSourceRuntimeStatus> SourceStatuses => _sources
-            .Select(source => new AudioSourceRuntimeStatus(source.Id, true, null, DateTime.UtcNow))
+            .Select(source => RuntimeOverride ?? new AudioSourceRuntimeStatus(source.Id, true, null, DateTime.UtcNow, DateTime.UtcNow))
             .ToArray();
         public IReadOnlyList<AudioDeviceInfo> GetMicrophoneDevices() => Array.Empty<AudioDeviceInfo>();
         public void ConfigureSources(IReadOnlyList<AudioSourceSettings> sources)

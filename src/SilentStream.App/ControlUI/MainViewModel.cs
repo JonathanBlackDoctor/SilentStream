@@ -11,6 +11,7 @@ using SilentStream.Core.Contracts;
 using SilentStream.Core.Hotkeys;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.Logging;
+using SilentStream.Core.Media;
 using SilentStream.Core.Models;
 
 namespace SilentStream.App.ControlUI;
@@ -199,6 +200,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private string _micWarningText = "";
     public string MicWarningText { get => _micWarningText; private set => Set(ref _micWarningText, value); }
+    private string _micInfoText = "";
+    public string MicInfoText { get => _micInfoText; private set => Set(ref _micInfoText, value); }
+    private bool _micInfoVisible;
+    public bool MicInfoVisible { get => _micInfoVisible; private set => Set(ref _micInfoVisible, value); }
+
 
     // ---- 오디오 마스터 필터 (다음 세션부터 적용) ----
     private bool _noiseSuppressionEnabled;
@@ -624,6 +630,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
                 }
             }
         }
+        UpdateMicWarning();
         MasterMeterRms = ToFraction(levels.MasterRmsDb);
         MasterMeterPeak = ToFraction(levels.MasterPeakDb);
         MasterMeterBrush = levels.MasterPeakDb >= -3 ? "#E74C3C"
@@ -668,18 +675,16 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void UpdateMicWarning()
     {
-        if (_silentMics.Count == 0)
-        {
-            MicWarningVisible = false;
-            MicWarningText = "";
-            return;
-        }
-
-        var names = _silentMics
-            .Select(id => AudioSources.FirstOrDefault(s => s.Id == id)?.Name ?? "마이크")
-            .ToList();
-        MicWarningText = $"⚠ 마이크 신호 없음: {string.Join(", ", names)} — 연결/음소거를 확인하세요.";
-        MicWarningVisible = true;
+        var statuses = _audioMixer.SourceStatuses.ToDictionary(s => s.Id, StringComparer.Ordinal);
+        var inputs = _audioMixer.Sources.Where(s => s.Kind == AudioSourceKind.Microphone)
+            .Select(s => new { s.Name, State = MicrophoneInputHealth.Evaluate(s,
+                statuses.GetValueOrDefault(s.Id), !_silentMics.Contains(s.Id), DateTime.UtcNow) }).ToArray();
+        var failures = inputs.Where(s => s.State.IsFailure).ToArray();
+        MicWarningVisible = failures.Length > 0;
+        MicWarningText = string.Join(" · ", failures.Select(s => $"⚠ {s.Name}: {s.State.Message}"));
+        var quiet = inputs.Where(s => s.State.Code == "quiet").Select(s => s.Name).ToArray();
+        MicInfoVisible = !MicWarningVisible && quiet.Length > 0;
+        MicInfoText = quiet.Length == 0 ? "" : $"마이크 연결·데이터 정상 · 현재 조용함: {string.Join(", ", quiet)}";
     }
 
     private void RefreshDevices()

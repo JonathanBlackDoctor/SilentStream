@@ -50,7 +50,7 @@ public sealed class MicrophoneHotplugTests
     }
 
     [Fact]
-    public async Task Silent_packets_trigger_multiple_reopens_and_audible_signal_resets_schedule()
+    public async Task Healthy_silent_packets_remain_open_but_packet_loss_still_reopens()
     {
         var clock = new ManualClock();
         var captures = new ConcurrentQueue<FakeCapture>();
@@ -64,27 +64,20 @@ public sealed class MicrophoneHotplugTests
         await mixer.StartAsync(CancellationToken.None);
         try
         {
-            var count = 1;
-            foreach (var seconds in new[] { 60, 300, 600 })
+            foreach (var seconds in new[] { 11, 60, 300, 600 })
             {
                 clock.Advance(seconds);
                 current!.Emit(0);
                 mixer.TickLevels();
-                count++;
-                await WaitUntil(() => captures.Count == count);
-                Assert.True(mixer.SourceStatuses.Single(s => s.Id == "mic:a").CaptureActive);
+                Assert.Single(captures);
+                var runtime = Assert.Single(mixer.SourceStatuses, s => s.Id == "mic:a");
+                Assert.True(runtime.CaptureActive);
+                Assert.Equal(AudioCaptureFailure.None, runtime.Failure);
             }
-            current!.Emit(.25f);
+            // Data loss after a long quiet period must still be detected and recovered.
+            clock.Advance(6);
             mixer.TickLevels();
-            var before = captures.Count;
-            clock.Advance(59);
-            current.Emit(0);
-            mixer.TickLevels();
-            Assert.Equal(before, captures.Count);
-            clock.Advance(1);
-            current.Emit(0);
-            mixer.TickLevels();
-            await WaitUntil(() => captures.Count == before + 1);
+            await WaitUntil(() => captures.Count == 2);
         }
         finally { await mixer.StopAsync(); }
     }

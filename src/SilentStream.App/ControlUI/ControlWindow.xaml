@@ -108,6 +108,11 @@
             <TextBlock Text="{Binding MicWarningText}" Foreground="White" TextWrapping="Wrap" />
         </Border>
 
+        <Border Grid.Row="1" Margin="0,0,0,12" CornerRadius="8" Padding="12,9"
+                Background="#23313C" Visibility="{Binding MicInfoVisible, Converter={StaticResource B2V}}">
+            <TextBlock Text="{Binding MicInfoText}" Foreground="#D2E0EA" TextWrapping="Wrap" />
+        </Border>
+
         <!-- 좌측은 기능 탐색, 우측은 한 기능에 필요한 카드만 보여 준다. -->
         <TabControl Grid.Row="2" TabStripPlacement="Left" Background="Transparent" BorderThickness="0"
                     Padding="0" ItemContainerStyle="{StaticResource NavTab}">

@@ -45,3 +45,23 @@ test("all-input option is capability gated and sends the automatic-mode selectio
   await app.nodes.remoteMicSelect.onclick();
   assert.equal(app.calls[0].body.deviceId, "*");
 });
+
+test("direct input list separates healthy silence from data and endpoint failures", () => {
+  const app = setup();
+  vm.runInContext('renderAudio({microphoneControl:true,sources:[{id:"q",kind:"mic",name:"Quiet",inputState:"quiet",inputMessage:"연결됨 · 입력 데이터 정상 · 현재 조용함"},{id:"d",kind:"mic",name:"Driver",inputFailure:true,inputMessage:"입력 데이터 중단 · 원인 미확정"}]})', app.context);
+  assert.match(app.nodes.srcList.innerHTML, /입력 데이터 정상 · 현재 조용함/);
+  assert.match(app.nodes.srcList.innerHTML, /입력 데이터 중단 · 원인 미확정/);
+  assert.doesNotMatch(app.nodes.srcList.innerHTML, /연결 안 됨/);
+});
+
+test("quiet input hides alarm while data failure uses input-failure wording", () => {
+  const node = { textContent: "", classList: { hidden: true, add() { this.hidden = true; }, remove() { this.hidden = false; } } };
+  const context = vm.createContext({ $: () => node, cur: "m112" });
+  vm.runInContext(html.slice(html.indexOf("    function updateMicWarn("), html.indexOf("    function renderAudio(")), context);
+  vm.runInContext('updateMicWarn(false,["Quiet"],[])', context);
+  assert.equal(node.classList.hidden, true);
+  vm.runInContext('updateMicWarn(true,["Driver"],[])', context);
+  assert.equal(node.classList.hidden, false);
+  assert.match(node.textContent, /입력 장애/);
+  assert.doesNotMatch(node.textContent, /연결 실패|신호 없음/);
+});

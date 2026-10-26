@@ -11,23 +11,6 @@ public sealed class MicrophoneRecoveryPolicyTests
     private static readonly AudioSourceSettings Mic = new("mic:a", AudioSourceKind.Microphone, "a", "A");
 
     [Fact]
-    public void Persistent_silence_retries_repeatedly_but_backs_off_until_real_signal()
-    {
-        var policy = new MicrophoneRecoveryPolicy(Start);
-        var now = Start;
-        foreach (var delay in new[] { 60, 300, 600, 600 })
-        {
-            now = now.AddSeconds(delay);
-            Assert.False(policy.CanRetrySilence(now.AddMilliseconds(-1), Mic, false));
-            Assert.True(policy.CanRetrySilence(now, Mic, false));
-            policy.Attempt(now, silent: true);
-        }
-        policy.ObserveSignal(now);
-        Assert.False(policy.CanRetrySilence(now.AddSeconds(59), Mic, false));
-        Assert.True(policy.CanRetrySilence(now.AddSeconds(60), Mic, false));
-    }
-
-    [Fact]
     public void Failed_opens_cannot_spin_and_continue_retrying_after_five_minute_cap()
     {
         var policy = new MicrophoneRecoveryPolicy(Start);
@@ -35,7 +18,7 @@ public sealed class MicrophoneRecoveryPolicyTests
         foreach (var delay in new[] { 30, 60, 120, 300, 300 })
         {
             Assert.True(policy.CanRetryFailure(now));
-            policy.Attempt(now, silent: false);
+            policy.Attempt(now);
             now = now.AddSeconds(delay);
             Assert.False(policy.CanRetryFailure(now.AddMilliseconds(-1)));
         }
@@ -43,13 +26,13 @@ public sealed class MicrophoneRecoveryPolicyTests
     }
 
     [Fact]
-    public void Intentional_mute_zero_gain_and_loopback_do_not_trigger_silence_restarts()
+    public void Audible_signal_resets_capture_failure_retry_budget()
     {
         var policy = new MicrophoneRecoveryPolicy(Start);
-        var now = Start.AddHours(1);
-        Assert.False(policy.CanRetrySilence(now, Mic with { Muted = true }, false));
-        Assert.False(policy.CanRetrySilence(now, Mic with { Gain = 0 }, false));
-        Assert.False(policy.CanRetrySilence(now, Mic, true));
+        policy.Attempt(Start);
+        Assert.False(policy.CanRetryFailure(Start.AddSeconds(1)));
+        policy.ObserveSignal(Start.AddSeconds(1));
+        Assert.True(policy.CanRetryFailure(Start.AddSeconds(1)));
     }
 
     [Fact]
