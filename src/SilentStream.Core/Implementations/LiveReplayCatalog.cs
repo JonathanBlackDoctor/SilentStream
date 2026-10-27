@@ -18,6 +18,7 @@ public sealed class LiveReplayCatalog : ILiveReplayCatalog
     private readonly object _gate = new();
     private readonly string _stateFile;
     private State? _state;
+    private readonly HashSet<string> _currentSessions = new(StringComparer.Ordinal);
 
     public LiveReplayCatalog() : this(AppPaths.LiveReplaysFile) { }
 
@@ -44,17 +45,19 @@ public sealed class LiveReplayCatalog : ILiveReplayCatalog
         }
     }
 
-    public void RecordStarted(LiveSession session, DateTimeOffset startedAtUtc)
+    public void RecordStarted(LiveSession session, DateTimeOffset startedAtUtc, string? room = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         lock (_gate)
         {
             var state = LoadLocked();
-            var item = new LiveReplayRecord(session.BroadcastId, session.WatchUrl, startedAtUtc, null);
+            var item = new LiveReplayRecord(session.BroadcastId, session.WatchUrl, startedAtUtc, null,
+                room?.Trim().ToLowerInvariant());
             var index = state.Items.FindIndex(candidate =>
                 string.Equals(candidate.BroadcastId, session.BroadcastId, StringComparison.Ordinal));
             if (index >= 0) state.Items[index] = item;
             else state.Items.Add(item);
+            _currentSessions.Add(session.BroadcastId);
             TrimLocked(state);
             PersistLocked();
         }
@@ -69,6 +72,25 @@ public sealed class LiveReplayCatalog : ILiveReplayCatalog
                 string.Equals(candidate.BroadcastId, broadcastId, StringComparison.Ordinal));
             if (index < 0) return;
             state.Items[index] = state.Items[index] with { EndedAtUtc = endedAtUtc };
+            _currentSessions.Remove(broadcastId);
+            PersistLocked();
+        }
+    }
+
+    public bool IsCurrentSession(string broadcastId)
+    {
+        lock (_gate) return _currentSessions.Contains(broadcastId);
+    }
+
+    public void MarkPlaylistAdded(string broadcastId, DateTimeOffset addedAtUtc)
+    {
+        lock (_gate)
+        {
+            var state = LoadLocked();
+            var index = state.Items.FindIndex(item => item.BroadcastId == broadcastId);
+            if (index < 0) return;
+            state.Items[index] = state.Items[index] with { PlaylistAddedAtUtc = addedAtUtc };
+            TrimLocked(state);
             PersistLocked();
         }
     }
@@ -95,8 +117,10 @@ public sealed class LiveReplayCatalog : ILiveReplayCatalog
     {
         if (state.Items.Count <= MaxRetained) return;
         state.Items = state.Items
+            .Where(item => item.PlaylistAddedAtUtc is null)
+            .Concat(state.Items.Where(item => item.PlaylistAddedAtUtc is not null)
             .OrderByDescending(item => item.StartedAtUtc)
-            .Take(MaxRetained)
+            .Take(MaxRetained))
             .ToList();
     }
 
@@ -107,7 +131,12 @@ public sealed class LiveReplayCatalog : ILiveReplayCatalog
         var temporary = _stateFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(_state, JsonOptions));
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(file, _state, JsonOptions);
+                file.Flush(flushToDisk: true);
+            }
             File.Move(temporary, _stateFile, true);
         }
         finally

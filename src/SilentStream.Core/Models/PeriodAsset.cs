@@ -18,7 +18,8 @@ public sealed record PeriodAsset(
     string SlotId = "",
     string SlotLabel = "",
     string SlotKind = ScheduleSlotKinds.Period,
-    int SlotOrder = 0)
+    int SlotOrder = 0,
+    string? SourceKey = null)
 {
     public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
         ? SlotId

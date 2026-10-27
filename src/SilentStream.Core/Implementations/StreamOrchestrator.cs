@@ -703,7 +703,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             _durationLimitRetryAttempted = false;
             try
             {
-                _liveReplays?.RecordStarted(_session, _liveBroadcastStartedAtUtc.Value);
+                _liveReplays?.RecordStarted(_session, _liveBroadcastStartedAtUtc.Value,
+                    SilentStream.Core.YouTube.TitleTemplater.ResolveRoomName(_configStore.Load()));
             }
             catch (Exception ex)
             {

@@ -1,4 +1,5 @@
 import {mergeUploads} from "./offline-history.js";
+import {YouTubeReplayJobs, YOUTUBE_SCOPE} from "./youtube-replay-jobs.js";
 const ROOM_DEFINITIONS = Object.freeze({
   m111: Object.freeze({ displayName: "M111" }),
   m112: Object.freeze({ displayName: "M112" }),
@@ -24,7 +25,7 @@ const ACTIONS = Object.freeze({
 const APP_STATUS_FIELDS = Object.freeze([
   "appVersion", "updatedAtUtc", "shutdownScheduleControl", "quietShutdownControl", "shutdownSchedule",
   "windowsShutdownPending", "remoteShutdownScheduleCommands", "state", "badge", "live",
-  "liveReplay", "room", "dailyPlaylist", "playlists", "recovery", "automation", "settingsLock",
+  "liveReplay", "liveReplays", "room", "dailyPlaylist", "playlists", "recovery", "automation", "settingsLock",
   "quality", "audio", "metrics", "recording", "today", "diagnostics", "queue"
 ]);
 
@@ -94,6 +95,17 @@ export function normalizePlaylistHistory(value, roomId) {
   }
   const items = [...byDate.values()].sort((left, right) => right.date.localeCompare(left.date)).slice(0, 400);
   return { room, from: items.at(-1)?.date || null, to: items[0]?.date || null, items };
+}
+
+export function recentPublicPlaylists(device, now = new Date()) {
+  const history = normalizePlaylistHistory(device?.playlists, "m112");
+  const today = new Date(now.valueOf() + 9 * 3600000).toISOString().slice(0, 10);
+  return {
+    room: "m112",
+    updatedAtUtc: device?.lastSeenAtUtc || null,
+    items: (history?.items || []).filter(item => item.date <= today && item.status === "ready" && item.url)
+      .slice(0, 3).map(({ date, url }) => ({ date, status: "ready", url }))
+  };
 }
 
 export function parseDeviceAuthorization(value) {
@@ -506,6 +518,21 @@ async function handleRoomHost(request, env, url, room) {
   const allowed = await callControl(env, "/authorize-room", { email, roomId: room });
   if (!allowed.ok) return security(allowed);
 
+  if (url.pathname === "/api/room/playlist-links" && request.method === "GET") {
+    if (room !== "m112") return security(new Response(null,{status:404}));
+    return security(await callControl(env,"/room-playlists",{email,roomId:room}));
+  }
+  if (staticRead && url.pathname.startsWith("/archive")) {
+    if (room !== "m112") return security(new Response(null,{status:404}));
+    const path={"/archive/":"index.html","/archive/index.html":"index.html","/archive/style.css":"style.css",
+      "/archive/app.js":"app.js","/archive/data.mjs":"data.mjs","/archive/icon.svg":"icon.svg","/archive/playlists.json":"playlists.json"}[url.pathname];
+    if(url.pathname==="/archive")return redirect(new URL("/archive/",url));
+    if(!path)return security(new Response(null,{status:404}));
+    const response=security(await env.ASSETS.fetch(new Request(new URL("/archive/"+path,url),request)));
+    response.headers.set("content-security-policy","default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; connect-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'");
+    return response;
+  }
+
   if (request.method === "GET" && ["/", "/index.html", "/control", "/control/"].includes(url.pathname))
     return security(await env.ASSETS.fetch(new Request(new URL("/room/index.html", url), request)));
   if (url.pathname === "/api/control/session" && request.method === "GET") {
@@ -589,6 +616,16 @@ export default {
 
       const publicBase = new URL(env.PUBLIC_BASE_URI);
       const zone = publicZone(env);
+      if ([zone, `www.${zone}`].includes(url.hostname) && url.pathname.startsWith("/api/public/")) {
+        if (url.pathname !== "/api/public/m112/playlists" || env.PUBLIC_M112_PLAYLISTS !== "true")
+          return security(new Response("Not Found", { status: 404 }));
+        if (!["GET", "HEAD"].includes(request.method))
+          return security(new Response(null, { status: 405, headers: { allow: "GET, HEAD" } }));
+        const source = await callControl(env, "/public-playlists", {});
+        const response = security(request.method === "HEAD" ? new Response(null, source) : source);
+        response.headers.set("access-control-allow-origin", "*");
+        return response;
+      }
       const publicSitePath = {
         "/": "/site/index.html",
         "/index.html": "/site/index.html",
@@ -636,6 +673,10 @@ export default {
         const consumed = await callControl(env, "/oauth/consume", { state });
         if (!consumed.ok) return security(error("Google 로그인 요청이 만료되었습니다.", 400));
         const authorization = await consumed.json();
+        if (authorization.purpose === "youtube") {
+          const email=await humanEmail(request,env);
+          if(email!==authorization.email)return security(error("연결을 시작한 관리자로 다시 로그인해 주세요.",403));
+        }
         const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -647,6 +688,11 @@ export default {
         });
         if (!tokenResponse.ok) return security(error("Google 로그인 코드를 교환하지 못했습니다.", 401));
         const tokens = await tokenResponse.json();
+        if (authorization.purpose === "youtube") {
+          const saved=await callControl(env,"/youtube/register",{email:authorization.email,roomId:authorization.roomId,tokens});
+          if(!saved.ok)return security(saved);
+          return redirect(new URL(`/control/youtube?room=${authorization.roomId}`,publicBase));
+        }
         const email = await verifyGoogleIdToken(tokens.id_token, env.GOOGLE_CLIENT_ID);
         const sessionResponse = await callControl(env, "/oauth/session/create", { email });
         if (!sessionResponse.ok) return security(sessionResponse);
@@ -689,6 +735,35 @@ export default {
       }
 
       if (url.pathname === "/health") return security(json({ status: "ok", runtime: "cloudflare-workers" }));
+
+      if (url.pathname === "/control/youtube" && request.method === "GET") {
+        const roomId=normalizeRoom(url.searchParams.get("room")||"m112");
+        if(!roomId)return security(error("호실을 확인해 주세요.",400));
+        const result=await callControl(env,"/youtube/status",{email,roomId});
+        if(!result.ok)return security(result);
+        const value=await result.json();
+        const esc=x=>String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+        const labels={pending:"예약됨",waiting:"방송 종료·처리 대기",running:"확인 중",completed:"편입 완료","auth-required":"YouTube 연결 필요",failed:"확인 필요"};
+        const rows=value.jobs.map(j=>`<li>${esc(j.date)} · ${esc(labels[j.status]||j.status)}</li>`).join("");
+        return security(new Response(`<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>서버 재생목록 · SilentStream</title><style>body{font:15px system-ui;color:#243a32;background:#f5f4ef;margin:0}main{max-width:620px;margin:10vh auto;padding:28px}h1{font-size:25px}p,li{line-height:1.8}button,a{color:inherit}button{font:inherit;background:#243a32;color:#fff;border:0;border-radius:8px;padding:13px 18px;cursor:pointer}nav{display:flex;gap:15px;flex-wrap:wrap;margin:24px 0}small{color:#697366}</style><main><a href="/control/">중앙 관리</a><h1>${roomDisplayName(roomId)} 서버 재생목록</h1><p>${value.connected?"YouTube 채널 연결됨":"YouTube 채널을 연결해 주세요."}</p><p>수업 종료 이후 라이브를 날짜별 재생목록에 추가합니다. PC가 꺼져 있어도 서버가 처리합니다.</p><form method="post" action="/api/control/youtube/connect"><input type="hidden" name="room" value="${roomId}"><button>${value.connected?"YouTube 연결 갱신":"YouTube 계정 연결"}</button></form><small>강의가 올라가는 YouTube 채널을 선택하세요. 기존 관리자 로그인은 유지됩니다.</small><nav>${ROOMS.map(room=>`<a href="?room=${room}">${roomDisplayName(room)}</a>`).join("")}</nav><ul>${rows||"<li>예약된 라이브 없음</li>"}</ul><a href="https://m112.silentstream.win/archive/">M112 재생목록 보기</a></main></html>`,{headers:{"content-type":"text/html; charset=utf-8"}}));
+      }
+      if (url.pathname === "/api/control/youtube/connect" && request.method === "POST") {
+        if(!sameOrigin(request))return security(error("요청 출처를 확인할 수 없습니다.",403));
+        if(Number(request.headers.get("content-length")||0)>2048)return security(error("요청이 너무 큽니다.",413));
+        const formText=await request.text();
+        if(formText.length>2048)return security(error("요청이 너무 큽니다.",413));
+        const form=new URLSearchParams(formText),roomId=normalizeRoom(form.get("room"));
+        if(!roomId)return security(error("호실을 확인해 주세요.",400));
+        if(!env.YOUTUBE_TOKEN_KEY)return security(error("서버 연결 준비가 필요합니다.",503));
+        const state=randomSecret(),verifier=randomSecret()+randomSecret();
+        const saved=await callControl(env,"/oauth/begin",{state,verifier,purpose:"youtube",email,roomId});
+        if(!saved.ok)return security(saved);
+        const authorization=new URL("https://accounts.google.com/o/oauth2/v2/auth");
+        for(const [key,value] of Object.entries({client_id:env.GOOGLE_CLIENT_ID,redirect_uri:new URL("/auth/callback",publicBase).toString(),
+          response_type:"code",scope:YOUTUBE_SCOPE,access_type:"offline",prompt:"consent select_account",state,
+          code_challenge:await sha256Base64Url(verifier),code_challenge_method:"S256"}))authorization.searchParams.set(key,value);
+        return redirect(authorization);
+      }
       if (url.pathname === "/ready") return readinessResponse(env);
 
       if (url.pathname === "/") {
@@ -782,6 +857,7 @@ export class ControlPlane {
     this.state = state;
     this.env = env;
     this.pending = new Map();
+    this.replayJobs = new YouTubeReplayJobs(state,env);
   }
 
   async fetch(request) {
@@ -792,6 +868,20 @@ export class ControlPlane {
     switch (url.pathname) {
       case "/session": return this.session(body.email);
       case "/rooms": return this.rooms(body.email);
+      case "/public-playlists": return this.publicPlaylists();
+      case "/room-playlists": {
+        if(body.roomId!=="m112"||await this.role(body.email,"m112")==="none")return error("권한이 없습니다.",403);
+        return this.publicPlaylists(true);
+      }
+      case "/youtube/status": {
+        if(!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin")return error("관리자 권한이 필요합니다.",403);
+        await this.replayJobs.seedDevices();return json(await this.replayJobs.status(body.roomId));
+      }
+      case "/youtube/register": {
+        if(!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin")return error("관리자 권한이 필요합니다.",403);
+        try{return json(await this.replayJobs.register(body.tokens));}
+        catch{return error("YouTube 편집 권한과 오프라인 연결을 확인해 주세요.",400);}
+      }
       case "/members": return request.method === "GET" ? error("Method Not Allowed", 405) : this.members(body);
       case "/members/delete": return this.deleteMember(body);
       case "/authorize-room": return this.authorizeRoom(body.email, body.roomId);
@@ -813,6 +903,18 @@ export class ControlPlane {
 
   async owner() {
     return await this.state.storage.get("ownerEmail") || "";
+  }
+
+  async publicPlaylists(authenticated=false) {
+    if (!authenticated && this.env.PUBLIC_M112_PLAYLISTS !== "true") return new Response(null, { status: 404 });
+    const ids = await this.state.storage.get("roomDevices:m112") || [];
+    const devices = (await Promise.all(ids.map(id => this.state.storage.get(`device:${id}`))))
+      .filter(device => device && device.roomId === "m112" && !device.revokedAtUtc)
+      .sort((a, b) => String(b.lastSeenAtUtc || b.registeredAtUtc || "")
+        .localeCompare(String(a.lastSeenAtUtc || a.registeredAtUtc || "")));
+    const device = devices[0];
+    return normalizePlaylistHistory(device?.playlists, "m112") ? json(recentPublicPlaylists(device))
+      : json({ error: "재생목록이 아직 동기화되지 않았습니다." }, 503);
   }
 
   async ensureOwner(email) {
@@ -1156,6 +1258,7 @@ export class ControlPlane {
         uploads: mergeUploads(mergeUploads(device.uploads,device.app,device.lastSeenAtUtc), snapshot.app, snapshot.capturedAtUtc)
       });
       await this.deliverShutdownRequest(socket, {...device,app:snapshot.app});
+      await this.replayJobs.observe({...device,deviceId:attachment.deviceId,app:normalizeAppStatus(snapshot.app)});
     } else if (envelope.type === "hello") {
       const hello = envelope.payload;
       if (normalizeRoom(hello?.roomId) !== attachment.roomId || hello?.installationId !== attachment.installationId) return;
@@ -1174,18 +1277,24 @@ export class ControlPlane {
   async oauthBegin(body) {
     if (!safeSecret(body.state) || !safeSecret(body.verifier) || body.verifier.length > 256)
       return error("로그인 요청이 올바르지 않습니다.", 400);
+    if(body.purpose==="youtube" && (!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin"))
+      return error("관리자 권한이 필요합니다.",403);
     const key = `oauthState:${await sha256(body.state)}`;
-    await this.state.storage.put(key, { verifier: body.verifier, returnTo: safeReturnPath(body.returnTo), expiresAt: Date.now() + 10 * 60 * 1000 });
+    await this.state.storage.put(key, { verifier: body.verifier, returnTo: safeReturnPath(body.returnTo), expiresAt: Date.now() + 10 * 60 * 1000,
+      ...(body.purpose==="youtube"?{purpose:"youtube",email:normalizeEmail(body.email),roomId:normalizeRoom(body.roomId)}:{}) });
     return json({ saved: true });
   }
 
   async oauthConsume(body) {
     if (!safeSecret(body.state)) return error("로그인 요청이 올바르지 않습니다.", 400);
     const key = `oauthState:${await sha256(body.state)}`;
-    const value = await this.state.storage.get(key);
-    await this.state.storage.delete(key);
+    const value = await this.state.storage.transaction(async store=>{
+      const entry=await store.get(key);await store.delete(key);return entry;
+    });
     return value && value.expiresAt > Date.now() ? json(value) : error("로그인 요청이 만료되었습니다.", 400);
   }
+
+  async alarm() { await this.replayJobs.runDue(); }
 
   async oauthSessionCreate(body) {
     const email = normalizeEmail(body.email);

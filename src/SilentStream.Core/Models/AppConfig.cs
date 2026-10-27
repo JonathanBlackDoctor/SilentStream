@@ -96,6 +96,9 @@ public sealed class AppConfig
 
 public sealed class YouTubeConfig
 {
+    /// <summary>Server owns live-archive association. Explicit local-only fallback is opt-in.</summary>
+    public bool UseLocalLiveReplayRecovery { get; set; }
+
     /// <summary>DPAPI-encrypted refresh token (base64). Empty until first login.</summary>
     public string RefreshTokenEnc { get; set; } = string.Empty;
 

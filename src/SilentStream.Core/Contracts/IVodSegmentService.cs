@@ -16,6 +16,14 @@ public interface IVodSegmentService
     /// </summary>
     Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct);
 
+    /// <summary>Returns each physical recording overlap separately, excluding durable queued parts.</summary>
+    async Task<IReadOnlyList<VodClip>> ExtractPeriodPartsAsync(
+        PeriodBoundary period, IReadOnlySet<string> queuedParts, CancellationToken ct)
+    {
+        var path = await ExtractPeriodAsync(period, ct).ConfigureAwait(false);
+        return path is null ? [] : [new VodClip(path, null, period.StartLocal, period.EndLocal, 1, 1)];
+    }
+
     /// <summary>
     /// Extracts an arbitrary [start, end] wall-clock window from an explicit session snapshot —
     /// the approval-based split path (adjusted boundaries, merged 연강 periods, cuts executed
@@ -45,3 +53,6 @@ public interface IVodSegmentService
             fileBaseLabel, ct);
     }
 }
+
+public sealed record VodClip(string FilePath, string? SourceKey, DateTime StartLocal,
+    DateTime EndLocal, int PartNumber, int PartCount);

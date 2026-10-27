@@ -18,11 +18,36 @@ namespace SilentStream.Core.Implementations;
 public sealed class YouTubePlaylistGateway(
     IConfigStore configStore,
     ITokenProtector tokenProtector,
-    IYouTubeAuthHealth authHealth) : IYouTubePlaylistGateway
+    IYouTubeAuthHealth authHealth) : IYouTubePlaylistGateway, IYouTubeReplayGateway
 {
     private readonly SemaphoreSlim _serviceGate = new(1, 1);
     private YouTubeService? _service;
     private GoogleAuthorizationCodeFlow? _flow;
+
+    public async Task<DateTimeOffset?> GetCompletedReplayEndAsync(
+        string broadcastId, bool completeOrphan, CancellationToken ct)
+    {
+        var service = await EnsureServiceAsync(ct).ConfigureAwait(false);
+        var request = service.LiveBroadcasts.List("snippet,status");
+        request.Id = broadcastId;
+        var response = await request.ExecuteAsync(ct).ConfigureAwait(false);
+        var broadcast = response.Items?.SingleOrDefault();
+        if (broadcast is null) return null;
+        if (completeOrphan && broadcast.Status?.LifeCycleStatus is "live" or "testing")
+        {
+            await service.LiveBroadcasts.Transition(
+                LiveBroadcastsResource.TransitionRequest.BroadcastStatusEnum.Complete,
+                broadcastId, "status").ExecuteAsync(ct).ConfigureAwait(false);
+            // Completion/archiving is asynchronous. Read it back on a later maintenance pass.
+            return null;
+        }
+        if (broadcast.Status?.LifeCycleStatus != "complete"
+            || broadcast.Snippet?.ActualEndTimeDateTimeOffset is not { } endedAt) return null;
+        var videoRequest = service.Videos.List("status");
+        videoRequest.Id = broadcastId;
+        var videos = await videoRequest.ExecuteAsync(ct).ConfigureAwait(false);
+        return videos.Items?.SingleOrDefault()?.Status?.UploadStatus == "processed" ? endedAt : null;
+    }
 
     public async Task<string?> FindPlaylistByMarkerAsync(string marker, CancellationToken ct)
     {

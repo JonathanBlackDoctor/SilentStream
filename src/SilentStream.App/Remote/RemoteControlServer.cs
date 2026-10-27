@@ -1518,6 +1518,11 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 endedAtUtc = liveReplay.EndedAtUtc,
                 replayReady = liveReplay.EndedAtUtc is not null
             },
+            liveReplays = _liveReplays.Snapshot().Take(100).Select(item => new
+            {
+                broadcastId = item.BroadcastId, startedAtUtc = item.StartedAtUtc,
+                endedAtUtc = item.EndedAtUtc, room = item.Room
+            }).ToArray(),
             room = _roomName, // 호실명 — shown in the phone header so a manager knows which PC this is
             dailyPlaylist = DailyPlaylistRemote.Build(_playlists, _configStore.Load(), DateTimeOffset.UtcNow),
             // Older coordinators already forward /api/status; include history for compatibility.

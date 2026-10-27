@@ -49,6 +49,32 @@ public sealed class VodSegmentService : IVodSegmentService
         return ExtractRangeAsync(session, period.StartLocal, period.EndLocal, period.ResolvedSlotLabel, ct);
     }
 
+    public async Task<IReadOnlyList<VodClip>> ExtractPeriodPartsAsync(
+        PeriodBoundary period, IReadOnlySet<string> queuedParts, CancellationToken ct)
+    {
+        var segments = _sessionInfo.GetSegments(period.StartLocal, period.EndLocal)
+            .Where(s => s.StartLocal < period.EndLocal && (s.EndLocal ?? period.EndLocal) > period.StartLocal)
+            .DistinctBy(s => (s.FilePath.ToUpperInvariant(), s.StartLocal.Ticks))
+            .OrderBy(s => s.StartLocal).ThenBy(s => s.FilePath, StringComparer.OrdinalIgnoreCase).ToArray();
+        var result = new List<VodClip>();
+        for (var i = 0; i < segments.Length; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var segment = segments[i];
+            var start = segment.StartLocal > period.StartLocal ? segment.StartLocal : period.StartLocal;
+            var end = segment.EndLocal is { } finished && finished < period.EndLocal ? finished : period.EndLocal;
+            var identity = $"{Path.GetFullPath(segment.FilePath).ToUpperInvariant()}|{segment.StartLocal.Ticks}|{period.StartLocal.Ticks}|{period.EndLocal.Ticks}";
+            var key = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(identity))).ToLowerInvariant();
+            if (queuedParts.Contains(key)) continue;
+            var label = period.ResolvedSlotLabel + (segments.Length > 1 ? $"_{i + 1}-{segments.Length}" : "");
+            var path = await ExtractRangeAsync(new RecordingSession(segment.FilePath, segment.StartLocal),
+                start, end, label, ct).ConfigureAwait(false);
+            if (path is not null) result.Add(new VodClip(path, key, start, end, i + 1, segments.Length));
+        }
+        return result;
+    }
+
     public async Task<string?> ExtractRangeAsync(
         RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
         CancellationToken ct)

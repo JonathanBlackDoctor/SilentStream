@@ -11,6 +11,8 @@ public interface IYouTubePlaylistService
     IReadOnlyList<DailyPlaylistRecord> Snapshot(string room, DateOnly from, DateOnly to);
 
     bool HasRetryableFailures { get; }
+
+    bool IsVideoAdded(string room, DateOnly date, string videoId) => false;
 }
 public interface IYouTubePlaylistGateway
 {

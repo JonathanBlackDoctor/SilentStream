@@ -9,7 +9,11 @@ public interface ILiveReplayCatalog
 
     IReadOnlyList<LiveReplayRecord> Snapshot();
 
-    void RecordStarted(LiveSession session, DateTimeOffset startedAtUtc);
+    void RecordStarted(LiveSession session, DateTimeOffset startedAtUtc, string? room = null);
 
     void RecordEnded(string broadcastId, DateTimeOffset endedAtUtc);
+
+    bool IsCurrentSession(string broadcastId);
+
+    void MarkPlaylistAdded(string broadcastId, DateTimeOffset addedAtUtc);
 }

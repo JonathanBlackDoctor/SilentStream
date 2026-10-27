@@ -1,8 +1,8 @@
 [CmdletBinding()]
 param([string]$Version='0.4.8', [string]$SigningMaterialVersion=$Version)
 $ErrorActionPreference='Stop'
-if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14','0.4.15','0.4.16','0.4.17','0.4.18','0.4.19')) { throw 'Use reviewed signing material for each immutable release.' }
-if ($SigningMaterialVersion -ne $Version -and -not ($Version -in @('0.4.13','0.4.14','0.4.15','0.4.16','0.4.17','0.4.18','0.4.19') -and $SigningMaterialVersion -eq '0.4.12')) { throw 'Unreviewed signing material reuse.' }
+if ($Version -notin @('0.4.8','0.4.9','0.4.10','0.4.11','0.4.12','0.4.13','0.4.14','0.4.15','0.4.16','0.4.17','0.4.18','0.4.19','0.4.20')) { throw 'Use reviewed signing material for each immutable release.' }
+if ($SigningMaterialVersion -ne $Version -and -not ($Version -in @('0.4.13','0.4.14','0.4.15','0.4.16','0.4.17','0.4.18','0.4.19') -and $SigningMaterialVersion -eq '0.4.12') -and -not ($Version -eq '0.4.20' -and $SigningMaterialVersion -eq '0.4.19')) { throw 'Unreviewed signing material reuse.' }
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 Set-Location -LiteralPath $repo
 $package = Join-Path $repo 'recovery-package'

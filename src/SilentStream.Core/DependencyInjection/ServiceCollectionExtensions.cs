@@ -48,7 +48,9 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IPeriodAssetCatalog, PeriodAssetCatalog>();
         services.AddSingleton<IYouTubeAudioRecoveryService, YouTubeAudioRecoveryService>();
         services.AddSingleton<IYouTubeUploadService, YouTubeUploadService>();
-        services.AddSingleton<IYouTubePlaylistGateway, YouTubePlaylistGateway>();
+        services.AddSingleton<YouTubePlaylistGateway>();
+        services.AddSingleton<IYouTubePlaylistGateway>(sp => sp.GetRequiredService<YouTubePlaylistGateway>());
+        services.AddSingleton<IYouTubeReplayGateway>(sp => sp.GetRequiredService<YouTubePlaylistGateway>());
         services.AddSingleton<IYouTubePlaylistService, YouTubePlaylistService>();
         services.AddSingleton<IYouTubeCaptionService, YouTubeCaptionService>();
         services.AddSingleton<IUploadQueue, UploadQueue>();

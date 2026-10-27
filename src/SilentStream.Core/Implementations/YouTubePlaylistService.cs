@@ -266,7 +266,12 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
         var temporary = _stateFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporary, JsonSerializer.Serialize(_state, JsonOptions));
+            using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(file, _state, JsonOptions);
+                file.Flush(flushToDisk: true);
+            }
             File.Move(temporary, _stateFile, true);
         }
         finally
@@ -280,6 +285,9 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
 
     private static string Marker(string room, DateOnly date) =>
         $"SilentStream-Playlist-Key: {room}/{date:yyyy-MM-dd}";
+
+    public bool IsVideoAdded(string room, DateOnly date, string videoId) =>
+        IsVideoRecorded(NormalizeRoom(room), date, videoId);
 
     private bool IsVideoRecorded(string room, DateOnly date, string videoId)
     {
