@@ -796,6 +796,8 @@ export default {
       if (url.pathname === "/api/control/rooms" && request.method === "GET") {
         return security(await callControl(env, "/rooms", { email }));
       }
+      const commandHistory=url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/recent-commands$/);
+      if(commandHistory&&request.method==="GET")return security(await callControl(env,"/recent-commands",{email,roomId:normalizeRoom(commandHistory[1])}));
       if (url.pathname === "/api/control/members" && request.method === "GET") {
         return security(await callControl(env, "/members", { email }));
       }
@@ -874,6 +876,13 @@ export class ControlPlane {
     switch (url.pathname) {
       case "/session": return this.session(body.email);
       case "/rooms": return this.rooms(body.email);
+      case "/recent-commands": {
+        if(!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin")return error("관리자 권한이 필요합니다.",403);
+        const commands=await this.state.storage.list({prefix:"command:"});
+        return json([...commands.values()].filter(c=>c.roomId===body.roomId)
+          .sort((a,b)=>String(b.requestedAtUtc).localeCompare(String(a.requestedAtUtc))).slice(0,5)
+          .map(c=>({action:c.action,state:c.state,statusCode:c.statusCode,requestedAtUtc:c.requestedAtUtc,completedAtUtc:c.completedAtUtc,error:c.error||null})));
+      }
       case "/public-playlists": return this.publicPlaylists();
       case "/room-playlists": {
         if(body.roomId!=="m112"||await this.role(body.email,"m112")==="none")return error("권한이 없습니다.",403);

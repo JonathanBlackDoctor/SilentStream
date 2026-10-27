@@ -40,6 +40,10 @@ test('only administrators can connect a YouTube grant; ordinary room management 
   const response=await app.request('/api/control/youtube/connect',{user:'manager@example.com',method:'POST',origin:app.env.PUBLIC_BASE_URI,body:'room=m112'});
   assert.equal(response.status,403);
   assert.equal([...app.values.keys()].some(k=>k.startsWith('oauthState:')),false);
+  assert.equal((await app.request('/api/control/rooms/m112/recent-commands',{user:'manager@example.com'})).status,403);
+  await app.values.set('command:test',{roomId:'m112',action:'app.restart',state:'completed',statusCode:202,requestedAtUtc:'2026-10-27T00:00:00Z',body:'private-result'});
+  const commands=await(await app.request('/api/control/rooms/m112/recent-commands')).json();
+  assert.equal(commands[0].action,'app.restart');assert.equal(JSON.stringify(commands).includes('private-result'),false);
 });
 test('connection requests reject foreign origins and request offline, scoped PKCE consent',async()=>{
   const app=setup();const opts={method:'POST',body:'room=m112'};
