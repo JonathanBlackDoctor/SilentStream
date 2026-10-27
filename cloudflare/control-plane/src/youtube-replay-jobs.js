@@ -91,7 +91,7 @@ export class YouTubeReplayJobs {
       jobs:[...jobs.values()].sort((a,b)=>b.startedAtUtc.localeCompare(a.startedAtUtc)).slice(0,20)
         .map(j=>({date:j.date,status:j.status,broadcastId:j.broadcastId,error:j.error||null,completedAtUtc:j.completedAtUtc||null}))};
   }
-  async register(tokens) {
+  async register(tokens,expectedRoom) {
     if (!this.env.YOUTUBE_TOKEN_KEY || !tokens?.access_token || !tokens.refresh_token)
       throw new ApiFailure('offline-authorization-required',true);
     if (!String(tokens.scope || '').split(' ').some(s=>[YOUTUBE_SCOPE,'https://www.googleapis.com/auth/youtube'].includes(s)))
@@ -99,6 +99,17 @@ export class YouTubeReplayJobs {
     const response=await this.google('channels',{part:'id',mine:'true'},tokens.access_token);
     const channelId=response.items?.[0]?.id;
     if (!id(channelId) || response.items.length!==1) throw new ApiFailure('channel-selection-required',true);
+    if(expectedRoom) {
+      if(!ROOM_IDS.includes(expectedRoom))throw new ApiFailure('room-selection-required',true);
+      const ids=await this.storage.get('roomDevices:'+expectedRoom)||[];
+      const devices=(await Promise.all(ids.slice(0,20).map(id=>this.storage.get('device:'+id))))
+        .filter(d=>d&&!d.revokedAtUtc&&d.roomId===expectedRoom)
+        .sort((a,b)=>String(b.lastSeenAtUtc||b.registeredAtUtc||'').localeCompare(String(a.lastSeenAtUtc||a.registeredAtUtc||'')));
+      const sample=devices[0]?.playlists?.items?.find(item=>item.status==='ready'&&id(item.playlistId));
+      if(!sample)throw new ApiFailure('room-playlist-required',true);
+      const playlists=await this.google('playlists',{part:'snippet',id:sample.playlistId},tokens.access_token);
+      if(playlists.items?.[0]?.snippet?.channelId!==channelId)throw new ApiFailure('choose-the-classroom-channel',true);
+    }
     await this.storage.put(GRANT+channelId,{channelId,connectionId:crypto.randomUUID(),status:'connected',connectedAtUtc:iso(this.now()),
       expiresAt:this.now()+(Number(tokens.expires_in)||3600)*1000,
       encrypted:await seal({access_token:tokens.access_token,refresh_token:tokens.refresh_token},this.env.YOUTUBE_TOKEN_KEY,channelId)});

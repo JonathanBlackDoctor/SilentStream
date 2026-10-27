@@ -139,3 +139,10 @@ test('a stale refresh result cannot replace a freshly reconnected grant',async()
   assert.equal(app.values.get('ytGrant:'+CHANNEL).status,'connected');
   assert.notEqual(app.values.get('ytGrant:'+CHANNEL).connectionId,old.connectionId);
 });
+test('connection setup verifies the selected channel owns the room playlist before storing a grant',async()=>{
+  const app=await setup(false),original=app.service.fetch;
+  app.service.fetch=async(address,options)=>new URL(address).pathname.endsWith('/channels')
+    ?Response.json({items:[{id:'UC_wrong_selected_channel'}]}):original(address,options);
+  await assert.rejects(()=>app.service.register(tokens,'m112'));
+  assert.equal([...app.values.keys()].some(k=>k.startsWith('ytGrant:')),false);
+});

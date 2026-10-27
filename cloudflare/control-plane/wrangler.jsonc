@@ -67,17 +67,19 @@
   "vars": {
     "PUBLIC_BASE_URI": "https://admin.silentstream.win",
     "DEVICE_BASE_URI": "https://agent.silentstream.win",
-    "PACKAGE_KEY": "releases/v0.4.19/SilentStream-prepared-package-v0.4.19.zip",
-    "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.19/SilentStream-prepared-package-v0.4.19.zip",
-    "PACKAGE_SHA256": "5ab1e33d2a475be380227a4de58ba3ba90997f66a143416f479666d6dbb9f4be",
-    "PACKAGE_LENGTH": "798452877",
-    "INSTALLER_KEY": "releases/v0.4.19/SilentStream-Central-Installer-v0.4.19.exe",
-    "INSTALLER_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.19/SilentStream-Central-Installer-v0.4.19.exe",
-    "INSTALLER_SHA256": "c5aecb440047be7fa5c0e59c5b7341e069518e6b2003cdd13f9e0d8f40fd42cf",
+    "PACKAGE_KEY": "releases/v0.4.20/SilentStream-prepared-package-v0.4.20.zip",
+    "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.20/SilentStream-prepared-package-v0.4.20.zip",
+    "PACKAGE_SHA256": "70367308f46ea1eba4fb36b6912d874dbaa8dbd58368214faa77a95c9eacdfb3",
+    "PACKAGE_LENGTH": "798470923",
+    "INSTALLER_KEY": "releases/v0.4.20/SilentStream-Central-Installer-v0.4.20.exe",
+    "INSTALLER_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.20/SilentStream-Central-Installer-v0.4.20.exe",
+    "INSTALLER_SHA256": "9fafddd4363bceacb9d8381852341622515c45cdb8d3c104dd71be07cb5781a0",
     "INSTALLER_LENGTH": "161832793",
     "GOOGLE_CLIENT_ID": "909291792658-um7mnfcnu8po4d36hs6n09q6inssc654.apps.googleusercontent.com",
     "BOOTSTRAP_OWNER_EMAIL": "alpaomegastartend@gmail.com",
     "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": ""
+    "ACCESS_AUD": "",
+    "YOUTUBE_REPLAY_ROOMS": "m111,m112,m113,baek202",
+    "YOUTUBE_REPLAY_DISCOVERY": "true"
   }
 }

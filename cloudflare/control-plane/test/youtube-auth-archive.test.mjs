@@ -43,6 +43,7 @@ test('only administrators can connect a YouTube grant; ordinary room management 
 });
 test('connection requests reject foreign origins and request offline, scoped PKCE consent',async()=>{
   const app=setup();const opts={method:'POST',body:'room=m112'};
+  assert.equal((await app.request('/control/youtube')).headers.get('referrer-policy'),'same-origin');
   assert.equal((await app.request('/api/control/youtube/connect',{...opts,origin:'https://evil.example'})).status,403);
   const response=await app.request('/api/control/youtube/connect',{...opts,origin:app.env.PUBLIC_BASE_URI});
   assert.equal(response.status,302);const target=new URL(response.headers.get('location'));
@@ -68,7 +69,8 @@ test('authorized callback encrypts the grant and redirects without exposing it t
   const app=setup(),state='s'.repeat(64),code='c'.repeat(64),original=globalThis.fetch;
   const tokens={access_token:'private-access-fixture',refresh_token:'private-refresh-fixture',scope:YOUTUBE_SCOPE,expires_in:3600};
   globalThis.fetch=async()=>Response.json(tokens);t.after(()=>{globalThis.fetch=original});
-  app.plane.replayJobs.fetch=async()=>Response.json({items:[{id:'UC_owned_channel'}]});
+  app.plane.replayJobs.fetch=async address=>Response.json({items:[new URL(address).pathname.endsWith('/channels')
+    ?{id:'UC_owned_channel'}:{snippet:{channelId:'UC_owned_channel'}}]});
   await app.plane.oauthBegin({purpose:'youtube',email:'owner@example.com',roomId:'m112',state,verifier:'v'.repeat(64)});
   const response=await app.request(`/auth/callback?state=${state}&code=${code}`);
   assert.equal(response.status,302);assert.equal(new URL(response.headers.get('location')).pathname,'/control/youtube');

@@ -25,7 +25,7 @@ function checkedAt(payload) {
 async function update() {
   if (loading) return; loading = true;
   try {
-    const response = await fetch(FEED_URL, {cache:'no-store',credentials:'omit',signal:AbortSignal.timeout(10000)});
+    const response = await fetch(FEED_URL, {cache:'no-store',credentials:'same-origin',signal:AbortSignal.timeout(10000)});
     if (!response.ok) throw new Error('조회 실패');
     const payload = await response.json(); render(payload);
     try { localStorage.setItem('m112-playlists-v1',JSON.stringify(payload)); } catch {}

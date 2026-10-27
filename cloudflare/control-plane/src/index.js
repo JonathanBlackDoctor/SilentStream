@@ -169,6 +169,12 @@ function redirect(location, status = 302, headers = {}) {
   }));
 }
 
+function formPage(response) {
+  const secured=security(response);
+  secured.headers.set("referrer-policy","same-origin");
+  return secured;
+}
+
 function base64UrlBytes(value) {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((value.length + 3) % 4);
   const binary = atob(padded);
@@ -745,7 +751,7 @@ export default {
         const esc=x=>String(x??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
         const labels={pending:"예약됨",waiting:"방송 종료·처리 대기",running:"확인 중",completed:"편입 완료","auth-required":"YouTube 연결 필요",failed:"확인 필요"};
         const rows=value.jobs.map(j=>`<li>${esc(j.date)} · ${esc(labels[j.status]||j.status)}</li>`).join("");
-        return security(new Response(`<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>서버 재생목록 · SilentStream</title><style>body{font:15px system-ui;color:#243a32;background:#f5f4ef;margin:0}main{max-width:620px;margin:10vh auto;padding:28px}h1{font-size:25px}p,li{line-height:1.8}button,a{color:inherit}button{font:inherit;background:#243a32;color:#fff;border:0;border-radius:8px;padding:13px 18px;cursor:pointer}nav{display:flex;gap:15px;flex-wrap:wrap;margin:24px 0}small{color:#697366}</style><main><a href="/control/">중앙 관리</a><h1>${roomDisplayName(roomId)} 서버 재생목록</h1><p>${value.connected?"YouTube 채널 연결됨":"YouTube 채널을 연결해 주세요."}</p><p>수업 종료 이후 라이브를 날짜별 재생목록에 추가합니다. PC가 꺼져 있어도 서버가 처리합니다.</p><form method="post" action="/api/control/youtube/connect"><input type="hidden" name="room" value="${roomId}"><button>${value.connected?"YouTube 연결 갱신":"YouTube 계정 연결"}</button></form><small>강의가 올라가는 YouTube 채널을 선택하세요. 기존 관리자 로그인은 유지됩니다.</small><nav>${ROOMS.map(room=>`<a href="?room=${room}">${roomDisplayName(room)}</a>`).join("")}</nav><ul>${rows||"<li>예약된 라이브 없음</li>"}</ul><a href="https://m112.silentstream.win/archive/">M112 재생목록 보기</a></main></html>`,{headers:{"content-type":"text/html; charset=utf-8"}}));
+        return formPage(new Response(`<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>서버 재생목록 · SilentStream</title><style>body{font:15px system-ui;color:#243a32;background:#f5f4ef;margin:0}main{max-width:620px;margin:10vh auto;padding:28px}h1{font-size:25px}p,li{line-height:1.8}button,a{color:inherit}button{font:inherit;background:#243a32;color:#fff;border:0;border-radius:8px;padding:13px 18px;cursor:pointer}nav{display:flex;gap:15px;flex-wrap:wrap;margin:24px 0}small{color:#697366}</style><main><a href="/control/">중앙 관리</a><h1>${roomDisplayName(roomId)} 서버 재생목록</h1><p>${value.connected?"YouTube 채널 연결됨":"YouTube 채널을 연결해 주세요."}</p><p>수업 종료 이후 라이브를 날짜별 재생목록에 추가합니다. PC가 꺼져 있어도 서버가 처리합니다.</p><form method="post" action="/api/control/youtube/connect"><input type="hidden" name="room" value="${roomId}"><button>${value.connected?"YouTube 연결 갱신":"YouTube 계정 연결"}</button></form><small>강의가 올라가는 YouTube 채널을 선택하세요. 기존 관리자 로그인은 유지됩니다.</small><nav>${ROOMS.map(room=>`<a href="?room=${room}">${roomDisplayName(room)}</a>`).join("")}</nav><ul>${rows||"<li>예약된 라이브 없음</li>"}</ul><a href="https://m112.silentstream.win/archive/">M112 재생목록 보기</a></main></html>`,{headers:{"content-type":"text/html; charset=utf-8"}}));
       }
       if (url.pathname === "/api/control/youtube/connect" && request.method === "POST") {
         if(!sameOrigin(request))return security(error("요청 출처를 확인할 수 없습니다.",403));
@@ -879,7 +885,7 @@ export class ControlPlane {
       }
       case "/youtube/register": {
         if(!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin")return error("관리자 권한이 필요합니다.",403);
-        try{return json(await this.replayJobs.register(body.tokens));}
+        try{return json(await this.replayJobs.register(body.tokens,body.roomId));}
         catch{return error("YouTube 편집 권한과 오프라인 연결을 확인해 주세요.",400);}
       }
       case "/members": return request.method === "GET" ? error("Method Not Allowed", 405) : this.members(body);
