@@ -36,3 +36,11 @@ API 근거: [방송 상태 전이](https://developers.google.com/youtube/data/li
 서버에는 대상 YouTube 채널의 OAuth 편집 권한과 갱신 토큰을 별도로 연결해야 한다. 기존 관리 웹의 Google 로그인은 openid/email/profile이며 YouTube 편집 권한이 아니다. PC의 DPAPI 암호화 토큰을 파일 복사해 해결할 수 없으며, 새 동의·안전한 서버 저장·채널별 연결 확인이 필요하다. 토큰을 GitHub나 프런트엔드에 넣지 않는다.
 
 근거: [Cloudflare Alarms의 영속 예약·재시도](https://developers.cloudflare.com/durable-objects/api/alarms/), [YouTube 재생목록 삽입 권한](https://developers.google.com/youtube/data/reference/rest/v3/playlistItems/insert).
+
+## 서버 구현과 실행 환경 검증 — 2026-10-27
+
+위 서버 대안은 현재 구현·배포됐다. 관리자 `/control/youtube?room=m112`에서 실제 강의 채널을 연결하면 영속 큐와 알람이 17:25 이후 편입을 처리한다. 호실별 채널 소유 확인·암호화된 갱신 토큰·실제 재생목록 중복 확인·일일 방송 검색을 사용한다. 서버 연결 전에는 편입 완료를 보장하지 않는다.
+
+서버의 native `fetch`를 클래스 속성에 그대로 저장하면 Workers에서 잘못된 `this`로 호출되어 `Illegal invocation`이 발생한다. 전역 호출을 감싼 함수로 이를 수정했다. Node 검사와 별도로 실제 workerd에서 채널 확인·토큰 암호화·갱신을 검증하는 `test/runtime/youtube-runtime.test.mjs`와 GitHub 검사 작업을 추가했다. 테스트의 외부 통신은 가짜 YouTube Worker에만 연결하며 실제 자격 증명이나 운영 영상은 사용하지 않는다.
+
+실행 환경 근거: [Cloudflare의 Illegal invocation 설명](https://developers.cloudflare.com/workers/observability/errors/#illegal-invocation-errors).

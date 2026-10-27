@@ -35,7 +35,9 @@ class ApiFailure extends Error {
 
 export class YouTubeReplayJobs {
   constructor(state,env,options={}) {
-    this.storage=state.storage;this.env=env;this.fetch=options.fetch || fetch;this.now=options.now || Date.now;
+    this.storage=state.storage;this.env=env;
+    // Workers' native fetch requires its global receiver, even when used by a service instance.
+    this.fetch=options.fetch || ((...args)=>fetch(...args));this.now=options.now || Date.now;
   }
   enabled(room) { return String(this.env.YOUTUBE_REPLAY_ROOMS || '').split(',').includes(room); }
   async observe(device) {

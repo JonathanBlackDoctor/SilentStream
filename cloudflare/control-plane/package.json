@@ -7,12 +7,13 @@
     "sync:site": "node scripts/sync-public-site.mjs",
     "predev": "node scripts/sync-public-site.mjs",
     "predeploy": "node scripts/sync-public-site.mjs",
-    "check": "node --check src/index.js && node --check public/control/app.js && node --check public/room/app.js && node --check public/room/service-worker.js && node --test test/*.test.mjs",
+    "check": "node --check src/index.js && node --check public/control/app.js && node --check public/room/app.js && node --check public/room/service-worker.js && node --test test/*.test.mjs && node --test test/runtime/*.test.mjs",
     "smoke": "node test/local-smoke.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
+    "miniflare": "5.20260831.0-alpha",
     "wrangler": "^4.0.0",
     "ws": "^8.21.3"
   }
