@@ -4,6 +4,14 @@ import {YouTubeReplayJobs,replayCandidate,seal,unseal,YOUTUBE_SCOPE} from '../sr
 const VIDEO='video_one_1', CHANNEL='UC_test_owned_channel', NOW=Date.parse('2026-10-27T09:00:00Z');
 const tokens={access_token:'test-private-access',refresh_token:'test-private-refresh',expires_in:3600,scope:YOUTUBE_SCOPE};
 const replay={broadcastId:VIDEO,startedAtUtc:'2026-10-27T00:00:00Z'};
+test('YouTube API failures expose only recognized setup problems',async()=>{
+  const job=new YouTubeReplayJobs({storage:{}},{},{fetch:async()=>Response.json({error:{message:'private upstream detail',errors:[{reason:'accessNotConfigured'}]}},{status:403})});
+  await assert.rejects(job.google('channels',{mine:'true'},'private-token'),{message:'youtube-api-disabled'});
+  job.fetch=async()=>Response.json({error:{errors:[{reason:'insufficientPermissions'}]}},{status:403});
+  await assert.rejects(job.google('channels',{},'private-token'),{message:'youtube-permission-required'});
+  job.fetch=async()=>Response.json({error:{message:'private unknown failure'}},{status:403});
+  await assert.rejects(job.google('channels',{},'private-token'),{message:'youtube-api-403'});
+});
 function storageFixture(){
   const values=new Map();let alarm=null,lock=Promise.resolve();
   const storage={get:async key=>structuredClone(values.get(key)),put:async(key,value)=>values.set(key,structuredClone(value)),

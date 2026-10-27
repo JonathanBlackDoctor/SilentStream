@@ -81,3 +81,20 @@ test('authorized callback encrypts the grant and redirects without exposing it t
   assert.equal(await response.text(),'');assert.equal(JSON.stringify([...app.values]).includes(tokens.refresh_token),false);
   assert.ok(app.values.has('ytGrant:UC_owned_channel'));
 });
+
+test('registration explains known failures without returning tokens or raw upstream messages',async()=>{
+  const app=setup();
+  for(const [code,expected] of [
+    ['choose-the-classroom-channel','소유 채널과 다릅니다'],
+    ['youtube-api-disabled','YouTube Data API를 활성화'],
+    ['youtube-scope-required','YouTube 관리 권한을 선택'],
+    ['private-upstream-body-with-a-token','잠시 후 다시 시도']
+  ]) {
+    app.plane.replayJobs.register=async()=>{throw new Error(code)};
+    const response=await app.plane.fetch(new Request('https://internal/youtube/register',{method:'POST',body:JSON.stringify({email:'owner@example.com',roomId:'m112',tokens:{access_token:'private-fixture'}})}));
+    assert.equal(response.status,400);
+    const message=await response.text();
+    assert.ok(message.includes(expected));
+    assert.ok(!message.includes('private-'));
+  }
+});

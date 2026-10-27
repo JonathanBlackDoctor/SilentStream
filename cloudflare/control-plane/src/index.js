@@ -895,7 +895,20 @@ export class ControlPlane {
       case "/youtube/register": {
         if(!normalizeRoom(body.roomId)||await this.role(body.email,body.roomId)!=="admin")return error("관리자 권한이 필요합니다.",403);
         try{return json(await this.replayJobs.register(body.tokens,body.roomId));}
-        catch{return error("YouTube 편집 권한과 오프라인 연결을 확인해 주세요.",400);}
+        catch(failure){
+          const messages={
+            'offline-authorization-required':'오프라인 연결 권한이 필요합니다. YouTube 연결을 다시 시작해 주세요.',
+            'youtube-scope-required':'YouTube 관리 권한을 선택한 뒤 연결해 주세요.',
+            'channel-selection-required':'YouTube 채널을 하나 선택해 연결해 주세요.',
+            'room-playlist-required':'호실 재생목록이 아직 동기화되지 않았습니다. 동기화 후 다시 연결해 주세요.',
+            'choose-the-classroom-channel':'선택한 채널이 호실 재생목록의 소유 채널과 다릅니다. 강의가 올라가는 채널을 선택해 주세요.',
+            'youtube-api-disabled':'Google Cloud 프로젝트에서 YouTube Data API를 활성화한 뒤 다시 연결해 주세요.',
+            'youtube-permission-required':'YouTube 관리 권한이 허용되지 않았습니다. 해당 권한을 선택해 다시 연결해 주세요.',
+            'youtube-channel-required':'선택한 계정에 YouTube 채널이 없습니다. 강의 채널을 선택해 주세요.',
+            'youtube-api-403':'YouTube API 접근이 거절되었습니다. 프로젝트의 API 사용 설정과 채널 권한을 확인해 주세요.'
+          };
+          return error(messages[failure?.message]||'YouTube 연결을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.',400);
+        }
       }
       case "/members": return request.method === "GET" ? error("Method Not Allowed", 405) : this.members(body);
       case "/members/delete": return this.deleteMember(body);

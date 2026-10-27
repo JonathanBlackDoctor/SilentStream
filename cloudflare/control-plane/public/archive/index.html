@@ -13,12 +13,25 @@
 </head>
 <body>
   <div class="shell">
-    <header><h1>M112</h1></header>
+    <header>
+      <p class="brand">SILENTSTREAM</p>
+      <div class="intro"><h1>M112</h1><p>수업 다시보기</p></div>
+    </header>
     <main>
+      <div class="section-heading"><h2>최근 재생목록</h2><span id="count" aria-hidden="true">03</span></div>
       <div id="playlists" aria-label="최근 수업 재생목록" aria-busy="true"><p class="empty">불러오는 중</p></div>
       <p id="status" role="status" hidden></p>
+      <p id="copy-status" class="sr-only" role="status"></p>
       <noscript><p class="empty">JavaScript를 켜 주세요.</p></noscript>
     </main>
   </div>
+  <dialog id="copy-dialog" aria-labelledby="copy-title" aria-describedby="copy-help">
+    <form method="dialog">
+      <h2 id="copy-title">재생목록 링크</h2>
+      <p id="copy-help">자동 복사가 허용되지 않았습니다. 링크를 선택해 복사해 주세요.</p>
+      <input id="copy-url" aria-label="복사할 재생목록 링크" readonly>
+      <button class="dialog-close">닫기</button>
+    </form>
+  </dialog>
 </body>
 </html>

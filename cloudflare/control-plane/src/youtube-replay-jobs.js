@@ -155,6 +155,14 @@ export class YouTubeReplayJobs {
     if(!response.ok) {
       if(response.status===401) throw new ApiFailure('youtube-login-required',false,true);
       if(response.status===404) throw new ApiFailure('youtube-resource-unavailable',true);
+      if(response.status===403) {
+        const body=await response.json().catch(()=>null);
+        const reasons=(body?.error?.errors||[]).map(e=>e?.reason);
+        if(reasons.includes('accessNotConfigured')||body?.error?.details?.some(d=>d.reason==='SERVICE_DISABLED'))
+          throw new ApiFailure('youtube-api-disabled',true);
+        if(reasons.includes('insufficientPermissions'))throw new ApiFailure('youtube-permission-required',true,true);
+        if(reasons.includes('youtubeSignupRequired'))throw new ApiFailure('youtube-channel-required',true);
+      }
       throw new ApiFailure('youtube-api-'+response.status);
     }
     return response.status===204?{}:response.json();
