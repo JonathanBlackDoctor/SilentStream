@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerUpdateIdentity, authorizeUpdate, releaseAsset, downloadReleaseAsset, privateUpdateResponse } from "../src/private-updates.js";
+import worker from "../src/index.js";
 const hex = data => Buffer.from(data).toString("hex");
 async function setup() {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -63,5 +64,21 @@ test("private release proxy strips the GitHub credential before following a sign
     assert.equal(manifest.assets[0].url,"https://agent.silentstream.win/api/updates/SilentStream-Central-Installer-v0.9.9.exe");
     await assert.rejects(()=>releaseAsset(env,"https://other.invalid/file.exe"));
     assert.equal((await privateUpdateResponse(new Request("https://agent.silentstream.win/api/updates/unrelated.txt"),env)).status,404);
+  } finally {globalThis.fetch=original;}
+});
+
+test("readiness never certifies private distribution through the temporary public bridge", async () => {
+  const original=globalThis.fetch; let publicHeads=0;
+  globalThis.fetch=async(url,init)=>{
+    if(init.method==='HEAD'){publicHeads++;return new Response(null,{headers:{'content-length':'3'}});}
+    return new Response(null,{status:403});
+  };
+  const env={PUBLIC_BASE_URI:'https://admin.silentstream.win',DEVICE_BASE_URI:'https://agent.silentstream.win',
+    GOOGLE_CLIENT_ID:'test',GOOGLE_CLIENT_SECRET:'test',GITHUB_RELEASE_READ_TOKEN:'test',ENABLE_DEVELOPMENT_IDENTITY:'true',
+    PACKAGE_KEY:'p',PACKAGE_LENGTH:'3',PACKAGE_SHA256:'a'.repeat(64),PACKAGE_URL:'https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.9.6/package.zip',
+    INSTALLER_KEY:'i',INSTALLER_LENGTH:'3',INSTALLER_SHA256:'a'.repeat(64),INSTALLER_URL:'https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.9.6/installer.exe',
+    CONTROL:{idFromName:()=> 'global',get:()=>({fetch:async()=>new Response(null,{status:200})})}};
+  try {const response=await worker.fetch(new Request('https://admin.silentstream.win/ready',{headers:{'x-silentstream-dev-email':'owner@example.com'}}),env);
+    assert.equal(response.status,503);assert.deepEqual((await response.json()).missing,['prepared package','bootstrap installer']);assert.equal(publicHeads,0);
   } finally {globalThis.fetch=original;}
 });

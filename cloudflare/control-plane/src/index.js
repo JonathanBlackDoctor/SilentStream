@@ -367,9 +367,12 @@ async function artifactIdentity(env, key, expectedLength, expectedHash, external
     if (env.GITHUB_RELEASE_READ_TOKEN) {
       try {
         const asset = await releaseAsset(env, externalUrl);
-        if (asset.size !== configuredLength || asset.digest !== `sha256:${expectedHash}`) return null;
+        if (asset.size !== configuredLength || asset.digest !== `sha256:${expectedHash}`) throw new Error("Artifact metadata mismatch");
         return { key, length: configuredLength, hash: String(expectedHash).toLowerCase() };
-      } catch { return null; }
+      } catch (failure) {
+        console.warn("Private release metadata check:", failure.message);
+        if (env.PRIVATE_DISTRIBUTION_REQUIRED === "true") return null;
+      }
     }
     let url;
     try { url = new URL(externalUrl); } catch { return null; }
@@ -381,9 +384,11 @@ async function artifactIdentity(env, key, expectedLength, expectedHash, external
 }
 
 async function readinessResponse(env) {
+  // Do not mistake the temporary public bridge for verified private distribution.
+  const releaseEnv = env.GITHUB_RELEASE_READ_TOKEN ? { ...env, PRIVATE_DISTRIBUTION_REQUIRED: "true" } : env;
   const [packageInfo, installerInfo, durable] = await Promise.all([
-    artifactIdentity(env, env.PACKAGE_KEY, env.PACKAGE_LENGTH, env.PACKAGE_SHA256, env.PACKAGE_URL),
-    artifactIdentity(env, env.INSTALLER_KEY, env.INSTALLER_LENGTH, env.INSTALLER_SHA256, env.INSTALLER_URL),
+    artifactIdentity(releaseEnv, env.PACKAGE_KEY, env.PACKAGE_LENGTH, env.PACKAGE_SHA256, env.PACKAGE_URL),
+    artifactIdentity(releaseEnv, env.INSTALLER_KEY, env.INSTALLER_LENGTH, env.INSTALLER_SHA256, env.INSTALLER_URL),
     callControl(env, "/ready", undefined, { method: "GET" })
   ]);
   const missing = [];
@@ -400,6 +405,7 @@ async function serveArtifact(request, env, key, externalUrl, fileName, contentTy
   const requestedRange = request.headers.has("range");
   if (!env.ARTIFACTS) {
     if (env.GITHUB_RELEASE_READ_TOKEN) {
+      try {
       const asset = await releaseAsset(env, externalUrl);
       if (request.method === "HEAD") return new Response(null, { headers: { "content-length": String(asset.size) } });
       const upstream = await downloadReleaseAsset(env, asset, request.headers.get("range"));
@@ -409,6 +415,10 @@ async function serveArtifact(request, env, key, externalUrl, fileName, contentTy
       headers.set("cache-control", "private, no-store");
       headers.delete("set-cookie"); headers.delete("location");
       return new Response(upstream.body, { status: upstream.status, headers });
+      } catch (failure) {
+        console.warn("Private release download check:", failure.message);
+        if (env.PRIVATE_DISTRIBUTION_REQUIRED === "true") throw failure;
+      }
     }
     let source;
     try { source = new URL(externalUrl); } catch { return error("배포 파일 주소가 올바르지 않습니다.", 503); }

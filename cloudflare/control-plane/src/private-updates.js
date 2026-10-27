@@ -67,9 +67,9 @@ export async function githubRelease(env, version = "latest") {
   const route = version === "latest" ? "latest" : `tags/v${version}`;
   const response = await fetch(`https://api.github.com/repos/${repository}/releases/${route}`, {
     headers: { authorization: `Bearer ${env.GITHUB_RELEASE_READ_TOKEN}`, accept: "application/vnd.github+json",
-      "user-agent": "SilentStream-Private-Distribution", "x-github-api-version": "2022-11-28" }, redirect: "error"
+      "user-agent": "SilentStream-Private-Distribution", "x-github-api-version": "2022-11-28" }, redirect: "manual"
   });
-  if (!response.ok) throw new Error("Private release is unavailable");
+  if (!response.ok) throw new Error(`Private release is unavailable (${response.status})`);
   const value = await response.json();
   if (!/^v0\.\d+\.\d+$/.test(value.tag_name || "") || value.draft || value.prerelease || !Array.isArray(value.assets))
     throw new Error("Invalid production release");
@@ -96,7 +96,7 @@ export async function downloadReleaseAsset(env, asset, range) {
   if (response.status === 302) {
     const target = new URL(response.headers.get("location"));
     if (target.protocol !== "https:" || target.hostname !== "release-assets.githubusercontent.com") throw new Error("Invalid artifact redirect");
-    response = await fetch(target, { headers: range ? { range } : {}, redirect: "error" });
+    response = await fetch(target, { headers: range ? { range } : {}, redirect: "manual" });
   }
   if (!response.ok && response.status !== 206) throw new Error("Private artifact is unavailable");
   return response;
