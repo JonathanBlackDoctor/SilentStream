@@ -76,13 +76,34 @@ test("redirects protected paths on apex and www to the admin portal without cont
   }
 });
 
-test("keeps machine health probes on the device-only hostname", async () => {
+test("device health probes require a valid device credential", async () => {
+  for (const path of ["/health", "/ready"]) {
+    for (const method of ["GET", "HEAD"]) {
+      const denied = await worker.fetch(new Request(`https://agent.silentstream.win${path}`, { method }), productionEnv);
+      assert.equal(denied.status, 401);
+      assert.equal(await denied.text(), "");
+      assert.equal(denied.headers.get("cache-control"), "no-store");
+    }
+  }
+  const authorization = "Device m112:device-test:device-secret-at-least-twenty-characters";
+  const authenticatedEnv = { ...productionEnv, CONTROL: {
+    idFromName: name => name, get: () => ({ fetch: async request => {
+      assert.equal(new URL(request.url).pathname, "/auth");
+      assert.deepEqual(await request.json(), { authorization });
+      return new Response(null, { status: 200 });
+    } })
+  } };
   const response = await worker.fetch(
-    new Request("https://agent.silentstream.win/health"),
-    productionEnv
+    new Request("https://agent.silentstream.win/health", { headers: { authorization } }),
+    authenticatedEnv
   );
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { status: "ok", runtime: "cloudflare-workers" });
+  const invalidEnv = { ...authenticatedEnv, CONTROL: { idFromName: name => name,
+    get: () => ({ fetch: async () => new Response(null, { status: 401 }) }) } };
+  const denied = await worker.fetch(new Request("https://agent.silentstream.win/ready", { headers: { authorization } }), invalidEnv);
+  assert.equal(denied.status, 401);
+  assert.equal(await denied.text(), "");
 });
 
 test("normalizes only known rooms", () => {
@@ -95,11 +116,18 @@ test("normalizes only known rooms", () => {
 });
 
 test("serves a distinct install manifest from every room origin", async () => {
+  const roomAssetEnv = { ...productionEnv, ENABLE_DEVELOPMENT_IDENTITY: "true", CONTROL: {
+    idFromName: name => name, get: () => ({ fetch: async request => {
+      assert.equal(new URL(request.url).pathname, "/authorize-room");
+      return Response.json({ allowed: true });
+    } })
+  } };
+  const headers = { "x-silentstream-dev-email": "manager@example.com" };
   const expectedNames = { m111: "M111", m112: "M112", m113: "M113", baek202: "백202" };
   for (const [room, displayName] of Object.entries(expectedNames)) {
     const response = await worker.fetch(
-      new Request(`https://${room}.silentstream.win/manifest.webmanifest`),
-      productionEnv
+      new Request(`https://${room}.silentstream.win/manifest.webmanifest`, { headers }),
+      roomAssetEnv
     );
     assert.equal(response.status, 200, room);
     assert.match(response.headers.get("content-type"), /^application\/manifest\+json/, room);
@@ -113,8 +141,10 @@ test("serves a distinct install manifest from every room origin", async () => {
   }
   for (const path of ["/manifest.webmanifest", "/service-worker.js", "/icons/icon-192.png?v=1"]) {
     const assets = { fetch: request => new Response(null, { status: 200, headers: { "content-type": request.url.endsWith(".js") ? "text/javascript" : "image/png" } }) };
-    const response = await worker.fetch(new Request(`https://m112.silentstream.win${path}`, { method: "HEAD" }), { ...productionEnv, ASSETS: assets });
+    const response = await worker.fetch(new Request(`https://m112.silentstream.win${path}`, { method: "HEAD", headers }), { ...roomAssetEnv, ASSETS: assets });
     assert.equal(response.status, 200, `HEAD ${path}`);
+    assert.equal(await response.text(), "");
+    assert.equal(response.headers.get("cache-control"), "no-store");
   }
 });
 
@@ -304,7 +334,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const app = await readFile(new URL("../public/room/app.js", import.meta.url), "utf8");
   const document = await readFile(new URL("../public/room/index.html", import.meta.url), "utf8");
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
-  assert.match(document, /rel="manifest"/);
+  assert.match(document, /<link\b[^>]*rel="manifest"[^>]*crossorigin="use-credentials"/);
   assert.match(document, /apple-touch-icon/);
   assert.match(document, /\/app\.js\?v=19/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);

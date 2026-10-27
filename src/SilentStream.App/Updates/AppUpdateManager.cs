@@ -1,6 +1,8 @@
 using SilentStream.Core.Contracts;
+using System.Net.Http;
 using Velopack;
 using Velopack.Sources;
+using SilentStream.Inspection.Installer;
 
 namespace SilentStream.App.Updates;
 
@@ -11,13 +13,15 @@ namespace SilentStream.App.Updates;
 /// </summary>
 public sealed class AppUpdateManager(ILogService log) : IDisposable
 {
-    // GitHub Releases 피드(공개 리포라 토큰 불필요). CI의 `vpk upload github` 가 게시하는 릴리스를 읽는다.
-    private const string RepoUrl = "https://github.com/JonathanBlackDoctor/SilentStream";
+    // The enrolled coordinator registers this PC's public key; GitHub credentials stay on the server.
+    private static UpdateManager CreateManager() => new(new SimpleWebSource(PrivateUpdateIdentity.BaseUrl, new PrivateUpdateDownloader()));
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
     private CancellationTokenSource? _cts;
     private string? _stagedVersion; // 이미 내려받아 적용 예약한 버전 — 중복 다운로드/대기 프로세스 방지.
     private DateTimeOffset? _lastCheckUtc;
+    private int _registrationRetries;
+    private bool _awaitingRegistration;
 
     /// <summary>
     /// 새 버전을 내려받아 다음 종료/재시작 때 적용되도록 예약한 직후 발생(인자 = 적용 예정 버전, 예 "0.3.0").
@@ -37,7 +41,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
         {
             if (_lastCheckUtc is { } last)
             {
-                var remaining = CheckInterval - (DateTimeOffset.UtcNow - last);
+                var remaining = (_awaitingRegistration ? TimeSpan.FromSeconds(30) : CheckInterval) - (DateTimeOffset.UtcNow - last);
                 if (remaining > TimeSpan.Zero)
                 {
                     try { await Task.Delay(remaining, ct).ConfigureAwait(false); }
@@ -47,7 +51,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
             await CheckOnceAsync(ct).ConfigureAwait(false);
             try
             {
-                await Task.Delay(CheckInterval, ct).ConfigureAwait(false);
+                await Task.Delay(_awaitingRegistration ? TimeSpan.FromSeconds(30) : CheckInterval, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -66,7 +70,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
     {
         try
         {
-            var manager = new UpdateManager(new GithubSource(RepoUrl, accessToken: null, prerelease: false));
+            var manager = CreateManager();
             if (!manager.IsInstalled)
             {
                 return false;
@@ -97,6 +101,13 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
             log.Info($"부팅 업데이트 준비 완료: v{version} 적용 후 앱을 자동으로 다시 시작합니다.");
             return true;
         }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            _lastCheckUtc = DateTimeOffset.UtcNow;
+            _awaitingRegistration = true;
+            log.Info("기기 업데이트 인증 등록을 기다립니다. 현재 버전으로 시작합니다.");
+            return false;
+        }
         catch (TimeoutException)
         {
             _lastCheckUtc = DateTimeOffset.UtcNow;
@@ -122,13 +133,14 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
         try
         {
             _lastCheckUtc = DateTimeOffset.UtcNow;
-            var manager = new UpdateManager(new GithubSource(RepoUrl, accessToken: null, prerelease: false));
+            var manager = CreateManager();
             if (!manager.IsInstalled)
             {
                 return; // 개발 실행(Velopack 설치본 아님) — 업데이트 대상 없음
             }
 
             var update = await manager.CheckForUpdatesAsync().ConfigureAwait(false);
+            _awaitingRegistration = false;
             if (update is null)
             {
                 return; // 최신 상태
@@ -147,8 +159,13 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
             log.Info($"업데이트 다운로드 완료: v{version} — PC를 끄거나 앱을 재시작하면 적용됩니다.");
             UpdateStaged?.Invoke(version);
         }
+        catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized && _registrationRetries++ < 4)
+        {
+            _awaitingRegistration = true;
+        }
         catch (Exception ex)
         {
+            _awaitingRegistration = false;
             log.Warn($"업데이트 확인 실패(다음 주기에 재시도): {ex.Message}");
         }
     }

@@ -1,5 +1,6 @@
 import {mergeUploads} from "./offline-history.js";
 import {YouTubeReplayJobs, YOUTUBE_SCOPE} from "./youtube-replay-jobs.js";
+import { registerUpdateIdentity, authorizeUpdate, updateProof, privateUpdateResponse, releaseAsset, downloadReleaseAsset } from "./private-updates.js";
 const ROOM_DEFINITIONS = Object.freeze({
   m111: Object.freeze({ displayName: "M111" }),
   m112: Object.freeze({ displayName: "M112" }),
@@ -26,7 +27,7 @@ const APP_STATUS_FIELDS = Object.freeze([
   "appVersion", "updatedAtUtc", "shutdownScheduleControl", "quietShutdownControl", "shutdownSchedule",
   "windowsShutdownPending", "remoteShutdownScheduleCommands", "state", "badge", "live",
   "liveReplay", "liveReplays", "room", "dailyPlaylist", "playlists", "recovery", "automation", "settingsLock",
-  "quality", "audio", "metrics", "recording", "today", "diagnostics", "queue"
+  "quality", "audio", "metrics", "recording", "today", "diagnostics", "queue", "updateIdentity"
 ]);
 
 export function normalizeAppStatus(value) {
@@ -104,7 +105,7 @@ export function recentPublicPlaylists(device, now = new Date()) {
     room: "m112",
     updatedAtUtc: device?.lastSeenAtUtc || null,
     items: (history?.items || []).filter(item => item.date <= today && item.status === "ready" && item.url)
-      .slice(0, 3).map(({ date, url }) => ({ date, status: "ready", url }))
+      .slice(0, 5).map(({ date, url }) => ({ date, status: "ready", url }))
   };
 }
 
@@ -363,6 +364,13 @@ async function artifactIdentity(env, key, expectedLength, expectedHash, external
     const head = await env.ARTIFACTS.head(key);
     if (!head || head.size !== configuredLength) return null;
   } else {
+    if (env.GITHUB_RELEASE_READ_TOKEN) {
+      try {
+        const asset = await releaseAsset(env, externalUrl);
+        if (asset.size !== configuredLength || asset.digest !== `sha256:${expectedHash}`) return null;
+        return { key, length: configuredLength, hash: String(expectedHash).toLowerCase() };
+      } catch { return null; }
+    }
     let url;
     try { url = new URL(externalUrl); } catch { return null; }
     if (url.protocol !== "https:") return null;
@@ -391,6 +399,17 @@ async function readinessResponse(env) {
 async function serveArtifact(request, env, key, externalUrl, fileName, contentType) {
   const requestedRange = request.headers.has("range");
   if (!env.ARTIFACTS) {
+    if (env.GITHUB_RELEASE_READ_TOKEN) {
+      const asset = await releaseAsset(env, externalUrl);
+      if (request.method === "HEAD") return new Response(null, { headers: { "content-length": String(asset.size) } });
+      const upstream = await downloadReleaseAsset(env, asset, request.headers.get("range"));
+      const headers = new Headers(upstream.headers);
+      headers.set("content-type", contentType);
+      headers.set("content-disposition", `attachment; filename="${fileName}"`);
+      headers.set("cache-control", "private, no-store");
+      headers.delete("set-cookie"); headers.delete("location");
+      return new Response(upstream.body, { status: upstream.status, headers });
+    }
     let source;
     try { source = new URL(externalUrl); } catch { return error("배포 파일 주소가 올바르지 않습니다.", 503); }
     if (source.protocol !== "https:") return error("배포 파일 주소가 안전하지 않습니다.", 503);
@@ -430,12 +449,6 @@ function installPage(room) {
   return new Response(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${display} 자동 설치</title><style>body{font-family:system-ui;margin:0;background:#f3f6fb;color:#172033}.card{max-width:620px;margin:10vh auto;background:#fff;border:1px solid #dfe6f1;border-radius:20px;padding:32px;box-shadow:0 12px 40px #17203318}h1{margin-top:0}a{display:inline-block;padding:14px 20px;background:#1769e0;color:#fff;border-radius:10px;text-decoration:none;font-weight:800}.sub{color:#68758a;line-height:1.65}.plain{display:inline;padding:0;background:none;color:#1769e0;font-weight:600}.card{box-sizing:border-box}@media(max-width:680px){.card{margin:24px 12px;padding:24px}}</style></head><body><main class="card"><h1>${display} 자동 설치</h1><p class="sub">파일 실행 후 Windows 권한 요청에 <b>예</b>를 누르세요. 기존 설정·YouTube 인증은 유지됩니다.</p><p><a href="/install/${room}/download">설치파일 다운로드</a></p><p class="sub">자동 방송·교시 영상·재생목록·마이크 제어를 제공합니다. PC 종료·예약은 관리자 전용입니다.</p><p class="sub"><a class="plain" href="https://${room}.silentstream.win/">${display} 원격 제어</a> · <a class="plain" href="https://silentstream.win/guide.html#remote">사용 안내</a></p></main></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
 }
 
-function pwaAsset(response, maximumAge = 86400) {
-  const secured = security(response);
-  secured.headers.set("cache-control", `public, max-age=${maximumAge}`);
-  return secured;
-}
-
 export function roomManifest(roomId) {
   const room = normalizeRoom(roomId);
   if (!room) return error("호실을 찾을 수 없습니다.", 404);
@@ -461,31 +474,30 @@ export function roomManifest(roomId) {
   }), { headers: { "content-type": "application/manifest+json; charset=utf-8" } });
 }
 
-async function roomStaticAsset(request, env, url, assetPath, maximumAge = 86400) {
+async function roomStaticAsset(request, env, url, assetPath) {
   const assetUrl = new URL(assetPath, url);
   const response = await env.ASSETS.fetch(new Request(assetUrl, request));
-  return pwaAsset(response, maximumAge);
+  return security(request.method === "HEAD" ? new Response(null, response) : response);
 }
 
 async function handleRoomHost(request, env, url, room) {
   const staticRead = request.method === "GET" || request.method === "HEAD";
-  if (staticRead && url.pathname === "/manifest.webmanifest")
-    return pwaAsset(roomManifest(room), 300);
-  if (staticRead && url.pathname === "/service-worker.js") {
-    const response = await roomStaticAsset(request, env, url, "/room/service-worker.js", 300);
-    response.headers.set("service-worker-allowed", "/");
+  // Only the M112 archive and its filtered, read-only feed are public.
+  if (url.pathname === "/archive" || url.pathname.startsWith("/archive/")) {
+    if (room !== "m112") return security(new Response(null, { status: 404 }));
+    if (!staticRead) return security(new Response(null, { status: 405, headers: { allow: "GET, HEAD" } }));
+    if (url.pathname === "/archive") return redirect(new URL("/archive/", url));
+    if (url.pathname === "/archive/playlists.json") {
+      const source = await callControl(env, "/archive-playlists", {});
+      return security(request.method === "HEAD" ? new Response(null, source) : source);
+    }
+    const path = { "/archive/": "index.html", "/archive/index.html": "index.html", "/archive/style.css": "style.css",
+      "/archive/app.js": "app.js", "/archive/data.mjs": "data.mjs", "/archive/icon.svg": "icon.svg" }[url.pathname];
+    if (!path) return security(new Response(null, { status: 404 }));
+    const response = security(await env.ASSETS.fetch(new Request(new URL("/archive/" + path, url), request)));
+    response.headers.set("content-security-policy", "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; connect-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'");
     return response;
   }
-  if (staticRead && url.pathname === "/app.js")
-    return roomStaticAsset(request, env, url, "/room/app.js", 300);
-  if (staticRead && url.pathname === "/upload-view.js")
-    return roomStaticAsset(request, env, url, "/room/upload-view.js", 300);
-  if (staticRead && url.pathname === "/icons/apple-touch-icon.png")
-    return roomStaticAsset(request, env, url, `/room/icons/${room}/apple-touch-icon.png`, 31536000);
-  const icon = url.pathname.match(/^\/icons\/(icon-(?:192|512|maskable)\.png)$/);
-  if (staticRead && icon)
-    return roomStaticAsset(request, env, url, `/room/icons/${room}/${icon[1]}`, 31536000);
-
   if (url.pathname === "/auth/handoff" && request.method === "GET") {
     const code = url.searchParams.get("code") || "";
     if (!safeSecret(code)) return security(error("호실 로그인 인계 요청이 올바르지 않습니다.", 400));
@@ -524,19 +536,29 @@ async function handleRoomHost(request, env, url, room) {
   const allowed = await callControl(env, "/authorize-room", { email, roomId: room });
   if (!allowed.ok) return security(allowed);
 
+  // Room metadata, scripts and icons have the same session and room-permission gate as the UI.
+  if (staticRead && url.pathname === "/manifest.webmanifest") {
+    const manifest = roomManifest(room);
+    return security(request.method === "HEAD" ? new Response(null, manifest) : manifest);
+  }
+  if (staticRead && url.pathname === "/service-worker.js") {
+    const response = await roomStaticAsset(request, env, url, "/room/service-worker.js");
+    response.headers.set("service-worker-allowed", "/");
+    return response;
+  }
+  if (staticRead && url.pathname === "/app.js")
+    return roomStaticAsset(request, env, url, "/room/app.js");
+  if (staticRead && url.pathname === "/upload-view.js")
+    return roomStaticAsset(request, env, url, "/room/upload-view.js");
+  if (staticRead && url.pathname === "/icons/apple-touch-icon.png")
+    return roomStaticAsset(request, env, url, `/room/icons/${room}/apple-touch-icon.png`);
+  const icon = url.pathname.match(/^\/icons\/(icon-(?:192|512|maskable)\.png)$/);
+  if (staticRead && icon)
+    return roomStaticAsset(request, env, url, `/room/icons/${room}/${icon[1]}`);
+
   if (url.pathname === "/api/room/playlist-links" && request.method === "GET") {
     if (room !== "m112") return security(new Response(null,{status:404}));
     return security(await callControl(env,"/room-playlists",{email,roomId:room}));
-  }
-  if (staticRead && url.pathname.startsWith("/archive")) {
-    if (room !== "m112") return security(new Response(null,{status:404}));
-    const path={"/archive/":"index.html","/archive/index.html":"index.html","/archive/style.css":"style.css",
-      "/archive/app.js":"app.js","/archive/data.mjs":"data.mjs","/archive/icon.svg":"icon.svg","/archive/playlists.json":"playlists.json"}[url.pathname];
-    if(url.pathname==="/archive")return redirect(new URL("/archive/",url));
-    if(!path)return security(new Response(null,{status:404}));
-    const response=security(await env.ASSETS.fetch(new Request(new URL("/archive/"+path,url),request)));
-    response.headers.set("content-security-policy","default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; img-src 'self' data:; connect-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'");
-    return response;
   }
 
   if (request.method === "GET" && ["/", "/index.html", "/control", "/control/"].includes(url.pathname))
@@ -582,14 +604,34 @@ export default {
       const url = new URL(request.url);
       const agentHost = isAgentHost(url, env);
       const devicePath = url.pathname.startsWith("/api/device/");
+      const updatePath = url.pathname.startsWith("/api/updates/");
       const localDevelopment = String(env.ENABLE_DEVELOPMENT_IDENTITY) === "true";
-      if (!localDevelopment && ((agentHost && !devicePath && !["/health", "/ready"].includes(url.pathname)) || (!agentHost && devicePath)))
+      if (!localDevelopment && ((agentHost && !devicePath && !updatePath && !["/health", "/ready"].includes(url.pathname)) || (!agentHost && (devicePath || updatePath))))
         return security(new Response("Not Found", { status: 404 }));
 
-      // Machine probes remain available only on the device-only hostname. On every human-facing
-      // hostname these endpoints pass through the same login gate as the control portal.
-      if (agentHost && url.pathname === "/health") return security(json({ status: "ok", runtime: "cloudflare-workers" }));
-      if (agentHost && url.pathname === "/ready") return readinessResponse(env);
+      if (agentHost && updatePath) {
+        const authorized = await callControl(env, "/private-update-authorize", updateProof(request));
+        if (!authorized.ok) return security(new Response(null, { status: authorized.status }));
+        try {
+          const response = await privateUpdateResponse(request, env);
+          return security(request.method === "HEAD" ? new Response(null, response) : response);
+        } catch { return security(new Response(null, { status: 503 })); }
+      }
+
+      // Device probes disclose runtime/readiness only to an authenticated device.
+      if (agentHost && ["/health", "/ready"].includes(url.pathname)) {
+        if (!localDevelopment) {
+          const authorization = request.headers.get("authorization") || "";
+          if (!parseDeviceAuthorization(authorization)) return security(new Response(null, { status: 401 }));
+          const authenticated = await callControl(env, "/auth", { authorization });
+          if (!authenticated.ok) return security(new Response(null, { status: 401 }));
+        }
+        if (!["GET", "HEAD"].includes(request.method))
+          return security(new Response(null, { status: 405, headers: { allow: "GET, HEAD" } }));
+        const response = url.pathname === "/health"
+          ? security(json({ status: "ok", runtime: "cloudflare-workers" })) : await readinessResponse(env);
+        return request.method === "HEAD" ? security(new Response(null, response)) : response;
+      }
 
       if (url.pathname === "/api/device/enroll" && request.method === "POST") {
         const packageInfo = await artifactIdentity(env, env.PACKAGE_KEY, env.PACKAGE_LENGTH, env.PACKAGE_SHA256, env.PACKAGE_URL);
@@ -632,23 +674,13 @@ export default {
         response.headers.set("access-control-allow-origin", "*");
         return response;
       }
-      const publicSitePath = {
-        "/": "/site/index.html",
-        "/index.html": "/site/index.html",
-        "/guide.html": "/site/guide.html",
-        "/assets/site.css": "/site/assets/site.css",
-        "/assets/site.js": "/site/assets/site.js"
-      }[url.pathname];
-      if ([zone, `www.${zone}`].includes(url.hostname) && publicSitePath && ["GET", "HEAD"].includes(request.method)) {
-        const response = security(await env.ASSETS.fetch(new Request(new URL(publicSitePath, url), request)));
-        response.headers.set("cache-control", "public, max-age=0, must-revalidate");
-        return response;
-      }
       const aliasRoom = roomForHostname(url.hostname, env);
       if (url.hostname !== publicBase.hostname) {
         if (aliasRoom) return handleRoomHost(request, env, url, aliasRoom);
         const destination = new URL(env.PUBLIC_BASE_URI);
-        destination.pathname = url.pathname === "/" ? "/control/" : url.pathname;
+        destination.pathname = url.pathname === "/"
+          ? ([zone, `www.${zone}`].includes(url.hostname) ? "/index.html" : "/control/")
+          : url.pathname;
         destination.search = url.search;
         return redirect(destination);
       }
@@ -725,6 +757,18 @@ export default {
           return redirect(new URL(`/auth/login?returnTo=${encodeURIComponent(url.pathname + url.search)}`, publicBase));
         }
         throw failure;
+      }
+
+      // Serve downloads and guidance on the session-cookie host, after human authentication.
+      const sitePath = {
+        "/index.html": "/site/index.html",
+        "/guide.html": "/site/guide.html",
+        "/assets/site.css": "/site/assets/site.css",
+        "/assets/site.js": "/site/assets/site.js"
+      }[url.pathname];
+      if (sitePath && ["GET", "HEAD"].includes(request.method)) {
+        const asset = await env.ASSETS.fetch(new Request(new URL(sitePath, url), request));
+        return security(request.method === "HEAD" ? new Response(null, asset) : asset);
       }
 
       if (url.pathname === "/auth/room" && request.method === "GET") {
@@ -884,6 +928,8 @@ export class ControlPlane {
           .map(c=>({action:c.action,state:c.state,statusCode:c.statusCode,requestedAtUtc:c.requestedAtUtc,completedAtUtc:c.completedAtUtc,error:c.error||null})));
       }
       case "/public-playlists": return this.publicPlaylists();
+      case "/private-update-authorize": return authorizeUpdate(this.state.storage, body);
+      case "/archive-playlists": return this.publicPlaylists(true);
       case "/room-playlists": {
         if(body.roomId!=="m112"||await this.role(body.email,"m112")==="none")return error("권한이 없습니다.",403);
         return this.publicPlaylists(true);
@@ -1285,6 +1331,7 @@ export class ControlPlane {
         playlists: playlists ?? device.playlists ?? null,
         uploads: mergeUploads(mergeUploads(device.uploads,device.app,device.lastSeenAtUtc), snapshot.app, snapshot.capturedAtUtc)
       });
+      await registerUpdateIdentity(this.state.storage, device, snapshot.app?.updateIdentity);
       await this.deliverShutdownRequest(socket, {...device,app:snapshot.app});
       await this.replayJobs.observe({...device,deviceId:attachment.deviceId,app:normalizeAppStatus(snapshot.app)});
     } else if (envelope.type === "hello") {

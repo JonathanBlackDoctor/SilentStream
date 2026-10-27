@@ -1503,6 +1503,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         {
             updatedAtUtc = nowUtc,
             appVersion = typeof(RemoteControlServer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+            updateIdentity = SilentStream.Inspection.Installer.PrivateUpdateIdentity.PublicInfo(),
             shutdownScheduleControl = true,
             quietShutdownControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,

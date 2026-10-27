@@ -9,7 +9,8 @@ internal static class VerifiedDownload
 {
     // Retry only idempotent downloads. Authentication and certificate failures fail closed.
     public static async Task RunAsync(HttpClient client, Uri uri, string destination, long length, string sha256,
-        CancellationToken cancellationToken = default, TimeSpan? retryDelay = null)
+        CancellationToken cancellationToken = default, TimeSpan? retryDelay = null,
+        Func<Uri, HttpRequestMessage>? requestFactory = null)
     {
         if (length <= 0 || sha256.Length != 64 || !sha256.All(Uri.IsHexDigit))
             throw new InvalidDataException("설치 패키지 검증 정보가 올바르지 않습니다.");
@@ -19,7 +20,8 @@ internal static class VerifiedDownload
             deadline.CancelAfter(TimeSpan.FromMinutes(15));
             try
             {
-                using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
+                using var request = requestFactory?.Invoke(uri) ?? new HttpRequestMessage(HttpMethod.Get, uri);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
                 response.EnsureSuccessStatusCode();
                 if (response.Content.Headers.ContentLength is long declared && declared != length)
                     throw new InvalidDataException("설치 패키지 크기가 중앙 서버 기록과 일치하지 않습니다.");

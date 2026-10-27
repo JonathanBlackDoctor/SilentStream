@@ -20,18 +20,50 @@ function setup(){
     method,headers:{...(user?{'x-silentstream-dev-email':user}:{}),...(origin?{origin}:{}),...(body?{'content-type':'application/x-www-form-urlencoded'}:{})},body}),env);
   return {values,plane,env,request};
 }
-test('archive HTML, source and feed require room-bound login and never become public assets',async()=>{
+test('M112 archive HTML, assets and latest feed are public without exposing management or a static history',async()=>{
   const app=setup();
-  assert.equal((await app.request('/archive/',{host:'m112.silentstream.win',user:null})).status,302);
-  assert.equal((await app.request('/api/room/playlist-links',{host:'m112.silentstream.win',user:null})).status,401);
-  const page=await app.request('/archive/',{host:'m112.silentstream.win',user:'manager@example.com'});
-  assert.equal(page.status,200);assert.equal(await page.text(),'/archive/index.html');
-  assert.equal(page.headers.get('cache-control'),'no-store');
+  const publicRequest=(path,options={})=>app.request(path,{host:'m112.silentstream.win',user:null,...options});
+  for(const [path,asset] of [['/archive/','index.html'],['/archive/index.html','index.html'],['/archive/style.css','style.css'],
+    ['/archive/app.js','app.js'],['/archive/data.mjs','data.mjs'],['/archive/icon.svg','icon.svg']]){
+    const response=await publicRequest(path);
+    assert.equal(response.status,200,path);assert.equal(await response.text(),'/archive/'+asset);
+    assert.equal(response.headers.get('cache-control'),'no-store');assert.equal(response.headers.get('set-cookie'),null);
+  }
+  assert.equal((await publicRequest('/archive')).headers.get('location'),'https://m112.silentstream.win/archive/');
+  const response=await publicRequest('/archive/playlists.json');
+  assert.equal(response.status,200);assert.equal(response.headers.get('access-control-allow-origin'),null);
+  const payload=await response.json();
+  assert.deepEqual(Object.keys(payload).sort(),['items','room','updatedAtUtc']);
+  assert.deepEqual(Object.keys(payload.items[0]).sort(),['date','status','url']);
+  assert.equal(payload.items[0].url,'https://www.youtube.com/playlist?list=PL_owned');
+  assert.equal(JSON.stringify(payload).includes('device-one'),false);
+  const head=await publicRequest('/archive/playlists.json',{method:'HEAD'});
+  assert.equal(head.status,200);assert.equal(await head.text(),'');
+  for(const method of ['POST','PUT','DELETE','OPTIONS']){
+    const response=await publicRequest('/archive/playlists.json',{method});
+    assert.equal(response.status,405);assert.equal(response.headers.get('allow'),'GET, HEAD');
+  }
+  assert.equal((await publicRequest('/archive/private.json')).status,404);
+  app.values.get('device:device-one').playlists=null;
+  assert.equal((await publicRequest('/archive/playlists.json')).status,503);
+});
+
+test('public archive leaves room and administrator authentication boundaries in place',async()=>{
+  const app=setup();
+  for(const host of ['m111.silentstream.win','m112.silentstream.win','m113.silentstream.win','baek202.silentstream.win']){
+    for(const path of ['/','/control/']) assert.equal((await app.request(path,{host,user:null})).status,302);
+    for(const path of ['/api/control/session','/api/control/rooms','/api/room/playlist-links'])
+      assert.equal((await app.request(path,{host,user:null})).status,401);
+    assert.equal((await app.request('/api/control/rooms/m112/actions/app.restart',{host,user:null,method:'POST'})).status,401);
+    if(host!=='m112.silentstream.win') assert.equal((await app.request('/archive/playlists.json',{host,user:null})).status,404);
+  }
   const feed=await app.request('/api/room/playlist-links',{host:'m112.silentstream.win',user:'manager@example.com'});
   assert.equal(feed.status,200);assert.equal(feed.headers.get('access-control-allow-origin'),null);
   assert.equal((await feed.json()).room,'m112');
-  assert.equal((await app.request('/archive/playlists.json',{host:'m111.silentstream.win'})).status,404);
-  assert.equal((await app.request('/archive/playlists.json',{host:'silentstream.win'})).status,302);
+  for(const host of ['silentstream.win','admin.silentstream.win','agent.silentstream.win']){
+    assert.notEqual((await app.request('/archive/playlists.json',{host,user:null})).status,200);
+    assert.notEqual((await app.request('/archive-playlists',{host,user:null})).status,200);
+  }
   assert.equal((await app.request('/api/public/m112/playlists',{host:'silentstream.win'})).status,404);
 });
 test('only administrators can connect a YouTube grant; ordinary room management is insufficient',async()=>{

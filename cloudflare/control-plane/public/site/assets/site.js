@@ -1,7 +1,7 @@
 const SITE_CONFIG = {
   brandName: "SilentStream",
   version: "최신 릴리스",
-  repoUrl: "https://github.com/JonathanBlackDoctor/SilentStream",
+  repoUrl: "https://github.com/JonathanBlackDoctor/SilentStream/tree/claude/relaxed-davinci-qmmjwl",
   releasesPageUrl: "https://github.com/JonathanBlackDoctor/SilentStream/releases",
   downloadSetupUrl: "https://github.com/JonathanBlackDoctor/SilentStream/releases/latest/download/MediaCaptureHelper-win-Setup.exe",
 };

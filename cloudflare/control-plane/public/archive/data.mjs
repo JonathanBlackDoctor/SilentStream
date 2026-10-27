@@ -1,5 +1,5 @@
 export const FEED_URL = typeof location !== 'undefined' && location.hostname === 'm112.silentstream.win'
-  ? '/api/room/playlist-links' : 'https://silentstream.win/api/public/m112/playlists';
+  ? '/archive/playlists.json' : 'https://silentstream.win/api/public/m112/playlists';
 export function koreaToday(now = new Date()) {
   return new Date(now.valueOf() + 9 * 3600000).toISOString().slice(0, 10);
 }
@@ -14,5 +14,5 @@ export function selectRecent(payload, now = new Date()) {
     return true;
   }).sort((a,b) => b.date.localeCompare(a.date)).filter(item => {
     if (seen.has(item.date)) return false; seen.add(item.date); return true;
-  }).slice(0, 3).map(item => ({date:item.date, url:item.url}));
+  }).slice(0, 5).map(item => ({date:item.date, url:item.url}));
 }

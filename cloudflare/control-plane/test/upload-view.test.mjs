@@ -45,12 +45,21 @@ test('slot labels are escaped, video links only exist for completed transfers',(
   assert.doesNotMatch(html,/<script>|href=/);assert.match(html,/&lt;script&gt;/);
   assert.match(view.render({queue:{items:[{...job,status:'completed',videoId:'abc'}]}},{date}),/https:\/\/youtu.be\/abc/);
 });
-test('shared renderer is served as a room asset without granting API access',async()=>{
+test('shared renderer requires a room login and is served without public caching',async()=>{
   let path;
   const env={PUBLIC_BASE_URI:'https://admin.silentstream.win',DEVICE_BASE_URI:'https://agent.silentstream.win',
+    GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',ENABLE_DEVELOPMENT_IDENTITY:'true',
+    CONTROL:{idFromName:()=> 'global',get:()=>({fetch:async request=>{
+      assert.equal(new URL(request.url).pathname,'/authorize-room');return new Response(null,{status:200});
+    }})},
     ASSETS:{fetch:async request=>{path=new URL(request.url).pathname;return new Response(source,{headers:{'content-type':'text/javascript'}})}}};
-  const response=await worker.fetch(new Request('https://m112.silentstream.win/upload-view.js?v=1'),env);
+  const denied=await worker.fetch(new Request('https://m112.silentstream.win/upload-view.js?v=1'),env);
+  assert.equal(denied.status,302);assert.equal(path,undefined);
+  const response=await worker.fetch(new Request('https://m112.silentstream.win/upload-view.js?v=1',{
+    headers:{'x-silentstream-dev-email':'manager@example.com'}
+  }),env);
   assert.equal(response.status,200);assert.equal(path,'/room/upload-view.js');
+  assert.equal(response.headers.get('cache-control'),'no-store');
   assert.match(await response.text(),/UploadView/);
 });
 test('legacy lunch without slot identity matches its timetable and never duplicates a row',()=>{

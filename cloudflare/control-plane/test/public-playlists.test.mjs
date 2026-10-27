@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker, {ControlPlane, recentPublicPlaylists} from '../src/index.js';
 const row=(date,extra={})=>({date,status:'ready',playlistId:'PL_'+date.replaceAll('-',''),...extra});
-const device={roomId:'m112',deviceId:'device-1',lastSeenAtUtc:'2026-10-27T02:11:00Z',secretHash:'never-share',machineName:'never-share',playlists:{room:'m112',items:['2026-10-28','2026-10-27','2026-10-26','2026-10-23','2026-10-22'].map(x=>row(x))}};
+const device={roomId:'m112',deviceId:'device-1',lastSeenAtUtc:'2026-10-27T02:11:00Z',secretHash:'never-share',machineName:'never-share',playlists:{room:'m112',items:['2026-10-28','2026-10-27','2026-10-26','2026-10-23','2026-10-22','2026-10-21','2026-10-20'].map(x=>row(x))}};
 function setup(enabled=true, selected=device) {
   const values=new Map([['roomDevices:m112',['device-1']],['device:device-1',selected]]);
   const env={PUBLIC_BASE_URI:'https://admin.silentstream.win',DEVICE_BASE_URI:'https://agent.silentstream.win',GOOGLE_CLIENT_ID:'test-client',GOOGLE_CLIENT_SECRET:'test-secret',PUBLIC_M112_PLAYLISTS:enabled?'true':'false'};
@@ -10,9 +10,9 @@ function setup(enabled=true, selected=device) {
   env.CONTROL={idFromName:()=> 'global',get:()=>({fetch:request=>plane.fetch(request)})};
   return {env,plane,values,request:(path='/api/public/m112/playlists',method='GET',host='silentstream.win')=>worker.fetch(new Request(`https://${host}${path}`,{method}),env)};
 }
-test('feed shares only three ready nonfuture M112 links and source time',()=>{
+test('feed shares only five ready nonfuture M112 links and source time',()=>{
   const result=recentPublicPlaylists(device,new Date('2026-10-27T02:30:00Z'));
-  assert.deepEqual(result.items.map(x=>x.date),['2026-10-27','2026-10-26','2026-10-23']);
+  assert.deepEqual(result.items.map(x=>x.date),['2026-10-27','2026-10-26','2026-10-23','2026-10-22','2026-10-21']);
   assert.deepEqual(Object.keys(result).sort(),['items','room','updatedAtUtc']);
   assert.deepEqual(Object.keys(result.items[0]).sort(),['date','status','url']);
   assert.equal(JSON.stringify(result).includes('never-share'),false);

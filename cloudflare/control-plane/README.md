@@ -11,7 +11,8 @@ Production deployment order:
    private R2 binding named `ARTIFACTS` can be added later; the deployment uses GitHub Releases when
    that binding is absent.
 2. Deploy the Worker and its Custom Domains, including the apex and `www` hostnames. Both redirect
-   without content to the protected admin portal.
+   without content to the protected admin portal. The apex home opens `/index.html` there;
+   downloads, `/guide.html`, and their CSS/JS assets are served only after login with `no-store`.
 3. Create a Google OAuth Web client with `https://admin.silentstream.win/auth/callback` as its redirect,
    set `GOOGLE_CLIENT_ID`, and store `GOOGLE_CLIENT_SECRET` with `wrangler secret put`. Cloudflare
    Access remains an optional alternative through `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`.
@@ -19,8 +20,9 @@ Production deployment order:
 5. Open `https://admin.silentstream.win/control/`. The first successfully authenticated Access user
    becomes the non-removable owner and can assign admin or room-manager access in the portal.
 
-`/health` and `/ready` are public only on the device-only hostname for machine probes. On every
-human-facing hostname they require the same login as the portal. All protected responses are marked
+`/health` and `/ready` on the device-only hostname require a valid device credential. On every
+human-facing hostname they require the same login as the portal. Room manifests, service workers,
+scripts and icons also require a valid room session and permission. All protected responses are marked
 `no-store`, unauthenticated APIs return a bodyless `401`, and unauthenticated pages redirect directly
 to login. The device API uses a one-time enrollment code followed by a random per-device secret; it
 never trusts Access user headers and is unavailable on the human hostnames.

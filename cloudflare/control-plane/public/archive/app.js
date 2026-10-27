@@ -3,7 +3,8 @@ const list = document.querySelector('#playlists'), status = document.querySelect
 const copyStatus = document.querySelector('#copy-status');
 const copyDialog = document.querySelector('#copy-dialog'), copyUrl = document.querySelector('#copy-url');
 let loading = false, current = null, renderedSignature = null;
-const playIcon = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.3v11.4L13 8z"/></svg>';
+const youtubeIcon = '<svg class="youtube-icon" viewBox="0 0 24 18" aria-hidden="true"><rect width="24" height="18" rx="5" fill="#ff0033"/><path d="m10 5 7 4-7 4z" fill="#fff"/></svg>';
+const externalIcon = '<svg class="external-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3h8v8M13 3 3 13"/></svg>';
 const copyIcon = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="7" width="10" height="11" rx="2"/><path d="M12 7V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>';
 async function copyLink(item, button) {
   if (button.disabled) return;
@@ -45,10 +46,10 @@ function render(payload) {
     copy.innerHTML = `${copyIcon}<span>복사</span>`;
     copy.setAttribute('aria-label', `${item.date} 재생목록 링크 복사`);
     copy.addEventListener('click', () => copyLink(item, copy));
-    const link = document.createElement('a'); link.className = 'play';
+    const link = document.createElement('a'); link.className = 'youtube';
     link.href = item.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
     link.setAttribute('aria-label', `${item.date} ${day} M112 재생목록 — YouTube에서 새 창으로 열기`);
-    link.innerHTML = playIcon;
+    link.innerHTML = `${youtubeIcon}<span class="youtube-label"><span>YouTube</span><span>에서 보기</span></span>${externalIcon}`;
     actions.append(copy, link); list.append(row);
   }
   if (!items.length) { const message = document.createElement('p'); message.className = 'empty'; message.textContent = '아직 재생목록이 없습니다.'; list.append(message); }

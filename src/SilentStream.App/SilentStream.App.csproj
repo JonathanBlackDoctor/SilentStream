@@ -24,6 +24,7 @@
 
   <ItemGroup>
     <Compile Include="..\SilentStream.Inspection.Installer\OfficialRelease.cs" Link="Updates\OfficialRelease.cs" />
+    <Compile Include="..\SilentStream.Inspection.Installer\PrivateUpdateIdentity.cs" Link="Updates\PrivateUpdateIdentity.cs" />
     <Compile Include="..\SilentStream.Inspection.Installer\VerifiedDownload.cs" Link="Updates\VerifiedDownload.cs" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
     <!-- Microsoft.Win32.TaskScheduler wrapper (plan §5) -->

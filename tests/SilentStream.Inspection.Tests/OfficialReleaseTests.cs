@@ -10,7 +10,7 @@ public class OfficialReleaseTests
     public async Task Matching_immutable_release_returns_bounded_verified_asset()
     {
         using var client = Client();
-        var asset = await OfficialRelease.FindAsync(client, "0.4.11", false);
+        var asset = await OfficialRelease.FindAsync(client, "0.4.11", false, requestFactory: (method, uri) => new HttpRequestMessage(method, uri));
         Assert.Equal(123, asset.Length);
         Assert.Equal(new string('a', 64), asset.Sha256);
     }
@@ -28,29 +28,28 @@ public class OfficialReleaseTests
     [InlineData("hash")]
     [InlineData("size")]
     [InlineData("tag")]
-    [InlineData("draft")]
     [InlineData("duplicate")]
     public async Task Invalid_release_is_rejected(string mutation)
     {
         using var client = Client(mutation);
-        await Assert.ThrowsAsync<InvalidDataException>(() => OfficialRelease.FindAsync(client, "0.4.11", false));
+        await Assert.ThrowsAsync<InvalidDataException>(() => OfficialRelease.FindAsync(client, "0.4.11", false, requestFactory: (method, uri) => new HttpRequestMessage(method, uri)));
     }
     private static HttpClient Client(string mutation = "") => new(new Handler(mutation));
     private sealed class Handler(string mutation) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            Assert.Equal("https://api.github.com/repos/JonathanBlackDoctor/SilentStream/releases/tags/v0.4.11", request.RequestUri!.AbsoluteUri);
+            Assert.Equal("https://agent.silentstream.win/api/updates/v0.4.11/manifest.json", request.RequestUri!.AbsoluteUri);
             Assert.NotEmpty(request.Headers.UserAgent);
             var asset = new {
                 name = "SilentStream-Central-Installer-v0.4.11.exe",
-                browser_download_url = mutation == "url" ? "https://other.invalid/update.exe"
-                    : "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.11/SilentStream-Central-Installer-v0.4.11.exe",
-                digest = mutation == "hash" ? "sha256:bad" : "sha256:" + new string('a',64),
-                size = mutation == "size" ? 2L * 1024 * 1024 * 1024 : 123
+                url = mutation == "url" ? "https://other.invalid/update.exe"
+                    : "https://agent.silentstream.win/api/updates/SilentStream-Central-Installer-v0.4.11.exe",
+                sha256 = mutation == "hash" ? "bad" : new string('a',64),
+                length = mutation == "size" ? 2L * 1024 * 1024 * 1024 : 123
             };
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(
-                JsonSerializer.Serialize(new {tag_name = mutation == "tag" ? "v0.4.10" : "v0.4.11",
+                JsonSerializer.Serialize(new {version = mutation == "tag" ? "0.4.10" : "0.4.11",
                     draft = mutation == "draft", prerelease = false,
                     assets = mutation == "duplicate" ? new[] {asset,asset} : new[] {asset}})) });
         }
