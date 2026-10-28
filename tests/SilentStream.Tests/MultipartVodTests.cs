@@ -65,6 +65,33 @@ public sealed class MultipartVodTests : IDisposable
     }
 
     [Fact]
+    public async Task Pruning_completed_queue_jobs_does_not_reupload_durable_successful_parts()
+    {
+        MakeFiles();
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        foreach(var asset in _assets.Items.Values.ToArray())
+            _assets.Items[asset.Id]=asset with {VideoId="existing-"+asset.Id};
+        _queue.Jobs.Clear(); // equivalent to bounded terminal-history pruning
+        _runner.Calls.Clear();
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        Assert.Empty(_queue.Jobs);
+        Assert.Empty(_runner.Calls);
+        Assert.Equal(2,_assets.Items.Count);
+    }
+
+    [Fact]
+    public async Task An_asset_without_a_success_receipt_does_not_hide_lost_pending_work()
+    {
+        MakeFiles();
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        _queue.Jobs.Clear();
+        _runner.Calls.Clear();
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        Assert.Equal(2,_queue.Jobs.Count);
+        Assert.Equal(2,_runner.Calls.Count);
+    }
+
+    [Fact]
     public async Task Missing_part_does_not_block_an_available_part_and_is_recovered_when_it_returns()
     {
         MakeFiles(first: false);

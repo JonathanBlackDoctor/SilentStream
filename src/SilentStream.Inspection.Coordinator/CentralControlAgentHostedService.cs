@@ -297,6 +297,7 @@ public sealed class CentralControlAgentHostedService : BackgroundService
             "live.stopBroadcast" => ("POST", "/api/live/stop-broadcast"),
             "live.stopAll" => ("POST", "/api/live/stop"),
             "app.restart" => ("POST", "/api/app/restart"),
+            "uploads.retry" => ("POST", "/api/uploads/retry"),
             "inspection.rerun" => ("POST", "/inspect/internal/v1/startup/rerun"),
             "system.shutdown" => ("POST", "/api/system/shutdown"),
             "system.shutdown.schedule" => ("POST", "/api/system/shutdown/schedule"),

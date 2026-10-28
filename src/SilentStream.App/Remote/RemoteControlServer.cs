@@ -944,6 +944,18 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 message = ok ? "송출 복구를 요청했습니다." : "현재 상태에서는 송출 복구를 요청할 수 없습니다."
             }, Json, statusCode: ok ? StatusCodes.Status202Accepted : StatusCodes.Status409Conflict);
         });
+        app.MapPost("/api/uploads/retry", async (HttpContext ctx) =>
+        {
+            var body = await ReadJsonAsync<UploadRetryRequest>(ctx).ConfigureAwait(false);
+            if (body?.Ids is not { Length: > 0 and <= 50 } ||
+                body.Ids.Any(id => string.IsNullOrWhiteSpace(id) || id.Length > 128))
+                return Results.Json(new { ok = false, message = "재시도할 영상 1~50개를 선택하세요." },
+                    Json, statusCode: StatusCodes.Status400BadRequest);
+            var requeued = _uploadQueue.RetryFailed(body.Ids);
+            return Results.Json(new { ok = true, requeued,
+                message = requeued > 0 ? $"실패한 영상 {requeued}건의 재업로드를 요청했습니다." :
+                    "재시도할 파일이 없습니다. 최신 상태와 PC 녹화 파일을 확인하세요." }, Json);
+        });
         app.MapPost("/api/app/restart", () =>
         {
             var ok = _appRestart.RequestRestart();
@@ -1579,6 +1591,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
                 periods = ToDtos(_scheduleStore.ResolveForDate(today))
             },
             diagnostics = BuildDiagnostics(now),
+            uploadRetryControl = true,
             queue = UploadQueueRemote.Build(jobs, DateTimeOffset.UtcNow, _uploadQueue.PausedUntilUtc)
         };
     }

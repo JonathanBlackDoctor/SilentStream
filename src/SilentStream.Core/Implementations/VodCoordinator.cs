@@ -91,11 +91,18 @@ public sealed class VodCoordinator
             await _workGate.WaitAsync(ct).ConfigureAwait(false);
             entered = true;
             var known = _queue.Snapshot();
+            // The bounded upload queue prunes completed jobs. The durable asset catalogue
+            // remains the upload receipt, otherwise seven-day recovery repeatedly uploads them.
+            var uploaded = _assets.Snapshot().Where(asset => !string.IsNullOrWhiteSpace(asset.VideoId)).ToArray();
             // A legacy, unkeyed upload cannot be matched safely to one historical source part.
             if (known.Any(job => job.Date == boundary.Date && job.ResolvedSlotId == boundary.ResolvedSlotId
-                && job.SourceKey is null)) return;
+                && job.SourceKey is null) ||
+                uploaded.Any(asset => asset.Date == boundary.Date && asset.ResolvedSlotId == boundary.ResolvedSlotId
+                    && asset.SourceKey is null)) return;
             var queuedParts = known.Where(job => job.SourceKey is not null)
-                .Select(job => job.SourceKey!).ToHashSet(StringComparer.Ordinal);
+                .Select(job => job.SourceKey!)
+                .Concat(uploaded.Where(asset => asset.SourceKey is not null).Select(asset => asset.SourceKey!))
+                .ToHashSet(StringComparer.Ordinal);
             var clips = await _vod.ExtractPeriodPartsAsync(boundary, queuedParts, ct).ConfigureAwait(false);
             if (clips.Count == 0)
             {

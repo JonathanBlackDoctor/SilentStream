@@ -33,7 +33,7 @@ test('legacy explicit dates are preserved; unknown dates never become today',()=
 });
 test('quota, retries, failed and overdue estimates remain honest',()=>{
   const quota=view.render({...app,queue:{...app.queue,pausedUntilUtc:'2026-10-17T07:00:00Z'}},{date,fresh:true,now});
-  assert.match(quota,/한도 초기화 대기/);assert.doesNotMatch(quota,/10:40/);
+  assert.match(quota,/한도 초과 재시도/);assert.doesNotMatch(quota,/10:40/);
   const retry=view.render({queue:{items:[{...job,status:'pending',attempts:1,estimatedCompletedAtUtc:null}]}},{date,fresh:true,now});
   assert.match(retry,/재시도 대기/);
   assert.match(view.render({queue:{items:[{...job,status:'failed'}]}},{date,fresh:true,now}),/실패 원인/);

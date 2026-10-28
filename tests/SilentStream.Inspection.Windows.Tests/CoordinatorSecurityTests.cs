@@ -18,6 +18,44 @@ public sealed class CoordinatorSecurityTests : IDisposable
     public void Dispose(){Environment.SetEnvironmentVariable("SILENTSTREAM_INSPECTION_ROOT",null);SqliteConnection.ClearAllPools();try{Directory.Delete(_root,true);}catch{}}
 
     [Fact]
+    public async Task Upload_retry_only_targets_the_authenticated_loopback_endpoint()
+    {
+        _options.Update(o=>o.AppApiTokenMachineEnc=CoordinatorOptionsStore.ProtectMachine("unit-app-token"));
+        var handler=new RetryHandler();
+        var clients=new RetryClients(new HttpClient(handler));
+        using var service=new CentralControlAgentHostedService(_options,_store,new StartupUpdateGate(),clients,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<CentralControlAgentHostedService>.Instance);
+        var execute=typeof(CentralControlAgentHostedService).GetMethod("ExecuteCommandAsync",
+            System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+        async Task<CentralCommandResult> Send(string path) => await (Task<CentralCommandResult>)execute.Invoke(service,
+            new object[]{new CentralCommandDispatch("retry-test","uploads.retry",
+                JsonSerializer.SerializeToElement(new {method="POST",path,body=new {ids=new[]{"failed-id"}}}),
+                "manager@example.com",DateTimeOffset.UtcNow),CancellationToken.None})!;
+        Assert.Equal(400,(await Send("https://outside.example/api/uploads/retry")).StatusCode);
+        Assert.Equal(0,handler.Calls);
+        Assert.True((await Send("/api/uploads/retry")).Ok);
+        Assert.Equal(1,handler.Calls);
+        Assert.Equal("http://127.0.0.1:8787/api/uploads/retry",handler.Uri);
+        Assert.Equal("Bearer unit-app-token",handler.Authorization);
+        Assert.Contains("failed-id",handler.Body);
+    }
+
+    private sealed class RetryClients(HttpClient client):IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name)=>client;
+    }
+    private sealed class RetryHandler:HttpMessageHandler
+    {
+        public int Calls; public string? Uri,Authorization,Body;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken token)
+        {
+            Calls++; Uri=request.RequestUri!.AbsoluteUri; Authorization=request.Headers.Authorization?.ToString();
+            Body=await request.Content!.ReadAsStringAsync(token);
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new StringContent("{\"ok\":true,\"requeued\":1}")};
+        }
+    }
+
+    [Fact]
     public void SingleControllerLeaseRejectsSecondOwner()
     {
         var leases=new ControlLeaseManager(_store);var first=leases.Acquire("one");Assert.NotNull(first);Assert.Null(leases.Acquire("two"));Assert.True(leases.Release(first!.LeaseId,"one"));Assert.NotNull(leases.Acquire("two"));

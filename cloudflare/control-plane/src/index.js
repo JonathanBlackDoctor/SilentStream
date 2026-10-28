@@ -17,6 +17,7 @@ const ACTIONS = Object.freeze({
   "live.stopBroadcast": { method: "POST", path: "/api/live/stop-broadcast", role: "manager" },
   "live.stopAll": { method: "POST", path: "/api/live/stop", role: "admin" },
   "app.restart": { method: "POST", path: "/api/app/restart", role: "manager" },
+  "uploads.retry": { method: "POST", path: "/api/uploads/retry", role: "manager" },
   "inspection.rerun": { method: "POST", path: "/inspect/internal/v1/startup/rerun", role: "manager" },
   "system.shutdown": { method: "POST", path: "/api/system/shutdown", role: "admin" },
   "system.shutdown.schedule": { method: "POST", path: "/api/system/shutdown/schedule", role: "admin" },
@@ -27,7 +28,7 @@ const APP_STATUS_FIELDS = Object.freeze([
   "appVersion", "updatedAtUtc", "shutdownScheduleControl", "quietShutdownControl", "shutdownSchedule",
   "windowsShutdownPending", "remoteShutdownScheduleCommands", "state", "badge", "live",
   "liveReplay", "liveReplays", "room", "dailyPlaylist", "playlists", "recovery", "automation", "settingsLock",
-  "quality", "audio", "metrics", "recording", "today", "diagnostics", "queue", "updateIdentity"
+  "quality", "audio", "metrics", "recording", "today", "diagnostics", "queue", "updateIdentity", "uploadRetryControl"
 ]);
 
 export function normalizeAppStatus(value) {

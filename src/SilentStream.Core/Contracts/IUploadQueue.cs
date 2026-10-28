@@ -13,6 +13,9 @@ public interface IUploadQueue
     /// <summary>Current snapshot of all jobs (pending, uploading, completed, failed).</summary>
     IReadOnlyList<UploadJob> Snapshot();
 
+    /// <summary>Explicitly retries selected failed jobs; completed/active/missing-file jobs stay untouched.</summary>
+    int RetryFailed(IReadOnlyCollection<string> ids) => 0;
+
     /// <summary>Known quota pause, if any. Does not start or mutate the worker.</summary>
     DateTimeOffset? PausedUntilUtc => null;
 

@@ -48,10 +48,23 @@ let session=null,device=null,installPrompt=null,playlistHistoryOpen=false,playli
 const openSections=new Set();
 function kstTime(value,date=false){return UploadView.time(value,date)}
 function controllerFresh(value){return !actionPending&&UploadView.fresh(value)}
+function uploadRetryIds(value,date){
+  const v=String(value?.agentVersion||"").split(/[.+-]/).slice(0,3).map(Number);
+  const supported=v.length===3&&v.every(Number.isFinite)&&(v[0]>0||v[1]>4||v[1]===4&&v[2]>=22);
+  if(!supported||!value?.app?.uploadRetryControl||!controllerFresh(value))return [];
+  return (value.app.queue?.items||[]).filter(j=>j.date===date&&j.status==="failed"&&!j.videoId)
+    .map(j=>j.id).filter(Boolean).slice(0,50);
+}
+async function retryUploads(){
+  const date=uploadDate||koreaToday(),ids=uploadRetryIds(device,date);
+  if(!ids.length)return;
+  await act("uploads.retry",date+"의 실패 영상 "+ids.length+"건을 다시 업로드할까요? 완료된 영상은 유지합니다.",{ids});
+}
 function uploadPanel(value){
   if(!value.registered)return "";
   const date=uploadDate||koreaToday(),app=archivedApp(value,date),data=UploadView.model(app,{date});
-  return `<details class="section-card uploads" data-disclosure="uploads" aria-label="교시별 영상 업로드" ${openSections.has("uploads")?"open":""}><summary>교시별 업로드 <span>완료·대기·예상 시간</span></summary><div class="fold-body"><div class="playlist-heading"><div><p class="section-kicker">CLASS VIDEOS</p><h2>교시별 업로드</h2></div><label class="upload-date-label" for="uploadDate">날짜<input id="uploadDate" type="date" max="${koreaToday()}" value="${esc(date)}"></label></div>${data.latest&&data.latest!==date?`<button class="text-button latest-upload" data-upload-latest="${esc(data.latest)}">최근 기록 ${esc(data.latest)} 보기 ↗</button>`:""}${UploadView.render(app,{date,fresh:UploadView.fresh(value)})}</div></details>`;
+  const retry=uploadRetryIds(value,date).length?'<button data-upload-retry>이 날짜의 실패 영상 재시도</button>':"";
+  return `<details class="section-card uploads" data-disclosure="uploads" aria-label="교시별 영상 업로드" ${openSections.has("uploads")?"open":""}><summary>교시별 업로드 <span>완료·대기·예상 시간</span></summary><div class="fold-body"><div class="playlist-heading"><div><p class="section-kicker">CLASS VIDEOS</p><h2>교시별 업로드</h2></div><label class="upload-date-label" for="uploadDate">날짜<input id="uploadDate" type="date" max="${koreaToday()}" value="${esc(date)}"></label></div>${data.latest&&data.latest!==date?`<button class="text-button latest-upload" data-upload-latest="${esc(data.latest)}">최근 기록 ${esc(data.latest)} 보기 ↗</button>`:""}${UploadView.render(app,{date,fresh:UploadView.fresh(value)})}${retry}</div></details>`;
 }
 function archivedApp(value,date){
   const app=value.app||{},saved=value.uploads;
@@ -142,6 +155,7 @@ $("copyInstallAddress").addEventListener("click",async()=>{try{await navigator.c
 $("closeInstallHelp").addEventListener("click",()=>$("installHelp").close());
 roomEl.addEventListener("click",event=>{const button=event.target.closest("button");if(!button)return;if(button.dataset.uploadLatest){uploadDate=button.dataset.uploadLatest;render()}else if(button.hasAttribute("data-refresh"))load();else if(button.hasAttribute("data-mic-select"))act("audio.select",null,{deviceId:$("microphoneDevice").value});else if(button.dataset.copyReplay)copyReplay(button.dataset.copyReplay);else if(button.dataset.copyPlaylist)copyPlaylist(button.dataset.copyPlaylist,button.dataset.playlistDate);else if(button.hasAttribute("data-playlist-history")){playlistHistoryOpen=!playlistHistoryOpen;if(playlistHistoryOpen&&!playlistHistoryAnchor)playlistHistoryAnchor=defaultHistoryDate();render()}else if(button.hasAttribute("data-playlist-search")){const selected=$("playlistDate")?.value;selectPlaylistDate(selected)}else if(button.hasAttribute("data-playlist-older")||button.hasAttribute("data-playlist-newer")){const items=playlistItems(),page=historyPage(items),next=button.hasAttribute("data-playlist-older")?page.start+HISTORY_PAGE_SIZE:Math.max(0,page.start-HISTORY_PAGE_SIZE);if(items[next])playlistHistoryAnchor=items[next].date;render()}else if(button.hasAttribute("data-detail")){$("detailTitle").textContent=`${roomName()} 상세 상태`;$("detailBody").textContent=JSON.stringify(device,null,2);detail.showModal()}else if(button.dataset.action)act(button.dataset.action,button.dataset.confirm)});
 roomEl.addEventListener("change",event=>{if(event.target.id==="playlistDate")selectPlaylistDate(event.target.value);else if(event.target.id==="uploadDate"){uploadDate=event.target.value;render()}});
+roomEl.addEventListener("click",event=>{if(event.target.closest("[data-upload-retry]"))retryUploads()});
 $("closeDetail").addEventListener("click",()=>detail.close());
 addEventListener("pagehide",()=>document.body.classList.add("auth-pending"));
 addEventListener("pageshow",event=>{if(event.persisted)location.reload()});

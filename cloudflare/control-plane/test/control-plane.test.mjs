@@ -327,7 +327,7 @@ test("room manager app prioritizes today's link and explicitly browses earlier d
   assert.match(app, /document\.execCommand\("copy"\)/);
   assert.match(document, /playlist-history-toggle/);
   assert.doesNotMatch(document, /app\.js\?v=3/);
-  assert.match(document, /app\.js\?v=19/);
+  assert.match(document, /app\.js\?v=20/);
 });
 
 test("room PWA assets include install guidance, a safe offline page, and valid PNG sizes", async () => {
@@ -336,7 +336,7 @@ test("room PWA assets include install guidance, a safe offline page, and valid P
   const serviceWorker = await readFile(new URL("../public/room/service-worker.js", import.meta.url), "utf8");
   assert.match(document, /<link\b[^>]*rel="manifest"[^>]*crossorigin="use-credentials"/);
   assert.match(document, /apple-touch-icon/);
-  assert.match(document, /\/app\.js\?v=19/);
+  assert.match(document, /\/app\.js\?v=20/);
   assert.match(document, /id="installButton">앱 설치<\/button>/);
   assert.doesNotMatch(document, /id="installButton" hidden/);
   assert.match(app, /beforeinstallprompt/);

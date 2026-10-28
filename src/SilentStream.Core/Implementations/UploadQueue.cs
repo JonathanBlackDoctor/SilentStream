@@ -141,11 +141,45 @@ public sealed class UploadQueue : IUploadQueue
             {
                 var state = LoadLocked();
                 var now = _now();
-                return state.QuotaPtDate == PacificDateString(now) && state.QuotaCount >= _maxPerDay
+                DateTimeOffset? apiPause = state.QuotaPtDate == PacificDateString(now) && state.QuotaCount >= _maxPerDay
                     ? new DateTimeOffset(NextResetLocal(now)).ToUniversalTime()
                     : null;
+                var channelPause = state.UploadLimitUntilUtc > UtcNow() ? state.UploadLimitUntilUtc : null;
+                return apiPause is { } api && (channelPause is null || api > channelPause) ? api : channelPause;
             }
         }
+    }
+
+    public int RetryFailed(IReadOnlyCollection<string> ids)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        if (ids.Count is 0 or > 50) throw new ArgumentException("재시도는 1~50개 항목을 선택하세요.", nameof(ids));
+        var selected = ids.ToHashSet(StringComparer.Ordinal);
+        var count = 0;
+        lock (_gate)
+        {
+            var state = LoadLocked();
+            for (var i = 0; i < state.Jobs.Count; i++)
+            {
+                var job = state.Jobs[i];
+                if (!selected.Contains(job.Id) || job.Status != UploadJobStatus.Failed ||
+                    !string.IsNullOrWhiteSpace(job.VideoId) || !Media.Mp4MediaSamples.HasSamples(job.FilePath))
+                    continue;
+                state.Jobs[i] = job with
+                {
+                    Status = UploadJobStatus.Pending, Attempts = 0, UploadStartedAtUtc = null,
+                    UploadCompletedAtUtc = null, UploadDurationSeconds = null
+                };
+                count++;
+            }
+            if (count > 0) PersistLocked();
+        }
+        if (count > 0)
+        {
+            _log.Info($"선택한 실패 업로드 {count}건을 재시도 큐에 보존했습니다.");
+            _signal.TrySetResult();
+        }
+        return count;
     }
 
     public void Start(CancellationToken ct)
@@ -192,10 +226,9 @@ public sealed class UploadQueue : IUploadQueue
             }
 
             ResetQuotaWindowIfNewDay();
-            if (QuotaSpent())
+            if (PausedUntilUtc is { } resumeAt)
             {
-                var resumeAt = NextResetLocal(_now());
-                _log.Info($"일일 업로드 한도({_maxPerDay}건) 도달 — {resumeAt:yyyy-MM-dd HH:mm}(현지) 리셋까지 대기.");
+                _log.Info($"YouTube 업로드 한도 대기 — {resumeAt.ToLocalTime():yyyy-MM-dd HH:mm} 이후 재시도.");
                 if (!await DelayUntilAsync(resumeAt, ct).ConfigureAwait(false))
                 {
                     return;
@@ -262,11 +295,19 @@ public sealed class UploadQueue : IUploadQueue
             TryDeleteCutFile(job.FilePath);
             PruneTerminal();
         }
-        catch (QuotaExceededException)
+        catch (QuotaExceededException ex)
         {
             // Keep the job pending and force a pause until the next reset (D7).
             UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Pending });
-            SetQuotaSpent();
+            if (ex.RetryAfter is { } delay)
+            {
+                lock (_gate)
+                {
+                    LoadLocked().UploadLimitUntilUtc = UtcNow().Add(delay);
+                    PersistLocked();
+                }
+            }
+            else SetQuotaSpent();
             _log.Warn($"{job.PeriodNumber}교시 업로드 quota 초과 — 큐에 보존하고 리셋 후 자동 재개합니다.");
         }
         catch (OperationCanceledException)
@@ -406,11 +447,6 @@ public sealed class UploadQueue : IUploadQueue
         }
     }
 
-    private bool QuotaSpent()
-    {
-        lock (_gate) { return LoadLocked().QuotaCount >= _maxPerDay; }
-    }
-
     private void IncrementQuota()
     {
         lock (_gate)
@@ -446,9 +482,9 @@ public sealed class UploadQueue : IUploadQueue
         return true;
     }
 
-    private async Task<bool> DelayUntilAsync(DateTime resumeAtLocal, CancellationToken ct)
+    private async Task<bool> DelayUntilAsync(DateTimeOffset resumeAtUtc, CancellationToken ct)
     {
-        var span = resumeAtLocal - _now();
+        var span = resumeAtUtc - UtcNow();
         if (span <= TimeSpan.Zero)
         {
             return true;
@@ -561,6 +597,7 @@ public sealed class UploadQueue : IUploadQueue
 
     private sealed class QueueState
     {
+        public DateTimeOffset? UploadLimitUntilUtc { get; set; }
         public List<UploadJob> Jobs { get; set; } = [];
 
         /// <summary>Pacific-time date ("yyyy-MM-dd") the quota counter currently belongs to.</summary>

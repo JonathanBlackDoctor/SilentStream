@@ -27,7 +27,7 @@
       else if (job.status === "failed") detail = "PC에서 실패 원인 확인 필요";
       else if (!online) detail = "마지막 수신 상태 · 예상 시각 확인 불가";
       else if (queue.pausedUntilUtc && new Date(queue.pausedUntilUtc).getTime() > now)
-        detail = time(queue.pausedUntilUtc, true) + " 이후 한도 초기화 대기";
+        detail = time(queue.pausedUntilUtc, true) + " 이후 한도 초과 재시도";
       else if (job.estimatedCompletedAtUtc && new Date(job.estimatedCompletedAtUtc).getTime() > now)
         detail = "약 " + time(job.estimatedCompletedAtUtc, day(new Date(job.estimatedCompletedAtUtc)) !== date) + " 업로드 완료 예상";
       else detail = job.attempts > 0 ? "재시도 대기 · 예상 시각 미정" : "예상 시각 산정 중";

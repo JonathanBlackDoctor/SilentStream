@@ -110,6 +110,9 @@ public sealed class VodSegmentService : IVodSegmentService
             // still being written and shorter than requested, copy stops at EOF (best-effort).
             $"-ss {Seconds(startOffset)}",
             $"-i \"{session.FilePath}\"",
+            // Stream-copy input seeking can preserve packets before the seek target, even
+            // beyond EOF. Discard those negative-time packets before normalizing timestamps.
+            "-ss 0",
             $"-t {Seconds(duration)}",
             "-c copy", "-avoid_negative_ts make_zero", "-movflags +faststart",
             $"\"{outputPath}\"");
@@ -121,7 +124,8 @@ public sealed class VodSegmentService : IVodSegmentService
             var (exitCode, output) = await _processRunner
                 .RunAsync(FfmpegLocator.Resolve(), args, CutTimeout, ct).ConfigureAwait(false);
 
-            if (exitCode != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0)
+            if (exitCode != 0 || !File.Exists(outputPath) || new FileInfo(outputPath).Length == 0 ||
+                output.Contains("Output file is empty", StringComparison.OrdinalIgnoreCase))
             {
                 _log.Warn($"{fileBaseLabel} 컷 실패 (exit={exitCode}). {Tail(output)}");
                 TryDelete(outputPath);

@@ -47,6 +47,7 @@ public class VodSegmentServiceTests : IDisposable
         Assert.Equal(60d, ParseArg(_runner.LastArgs, "-ss"), 3);
         Assert.Equal(3000d, ParseArg(_runner.LastArgs, "-t"), 3);
         Assert.Contains("-c copy", _runner.LastArgs);
+        Assert.Contains($"-i \"{sessionFile}\" -ss 0", _runner.LastArgs);
         Assert.Contains(sessionFile, _runner.LastArgs);
     }
 
@@ -183,6 +184,18 @@ public class VodSegmentServiceTests : IDisposable
         Assert.Null(await service.ExtractPeriodAsync(period, CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Empty_output_warning_is_rejected_even_when_ffmpeg_exits_successfully()
+    {
+        _runner.OutputText = "Output file is empty, nothing was encoded";
+        var sessionFile = MakeSessionFile();
+        var service = Create(new RecordingSession(sessionFile, new DateTime(2026, 6, 14, 8, 59, 0)));
+        var period = new PeriodBoundary(new DateOnly(2026, 6, 14), 1,
+            new DateTime(2026, 6, 14, 9, 0, 0), new DateTime(2026, 6, 14, 9, 50, 0));
+        Assert.Null(await service.ExtractPeriodAsync(period, CancellationToken.None));
+        Assert.Empty(Directory.GetFiles(_outputDir));
+    }
+
     private static double ParseArg(string args, string flag)
     {
         var m = Regex.Match(args, Regex.Escape(flag) + @"\s+([0-9.]+)");
@@ -204,6 +217,7 @@ public class VodSegmentServiceTests : IDisposable
         public List<string> Calls { get; } = [];
         public bool WasCalled;
         public bool SimulateFailure;
+        public string OutputText = "ok";
 
         public Task<(int ExitCode, string Output)> RunAsync(
             string fileName, string arguments, TimeSpan timeout, CancellationToken ct)
@@ -220,7 +234,7 @@ public class VodSegmentServiceTests : IDisposable
             var quoted = Regex.Matches(arguments, "\"([^\"]+)\"");
             var outputPath = quoted[^1].Groups[1].Value;
             File.WriteAllBytes(outputPath, new byte[2048]);
-            return Task.FromResult((0, "ok"));
+            return Task.FromResult((0, OutputText));
         }
     }
 }
