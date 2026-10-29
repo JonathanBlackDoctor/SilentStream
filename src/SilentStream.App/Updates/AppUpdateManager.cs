@@ -8,23 +8,32 @@ namespace SilentStream.App.Updates;
 
 /// <summary>
 /// Velopack 자동 업데이트 (plan §3.11): GitHub Releases 피드를 6시간마다 확인하고, 새 버전이 있으면
-/// 백그라운드로 내려받아 <b>다음 종료/재시작 시 적용</b>되도록 예약한다(라이브 송출 중에는 강제 재시작하지
-/// 않는다). 개발 실행(미설치)·네트워크 실패는 조용히 건너뛴다. Clowd.Squirrel의 후속작 Velopack 사용.
+/// 백그라운드에서는 내려받기만 하고 <b>다음 정상 시작 시 적용</b>한다. 운영 중에는 updater를 실행하지
+/// 않는다. 개발 실행(미설치)·네트워크 실패는 조용히 건너뛴다. Clowd.Squirrel의 후속작 Velopack 사용.
 /// </summary>
-public sealed class AppUpdateManager(ILogService log) : IDisposable
+public sealed class AppUpdateManager : IDisposable
 {
     // The enrolled coordinator registers this PC's public key; GitHub credentials stay on the server.
-    private static UpdateManager CreateManager() => new(new SimpleWebSource(PrivateUpdateIdentity.BaseUrl, new PrivateUpdateDownloader()));
+    private readonly ILogService log;
+    private readonly Func<IAppUpdateClient> _createManager;
+
+    public AppUpdateManager(ILogService log) : this(log, () => new VelopackUpdateClient()) { }
+
+    internal AppUpdateManager(ILogService log, Func<IAppUpdateClient> createManager)
+    {
+        this.log = log;
+        _createManager = createManager;
+    }
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
     private CancellationTokenSource? _cts;
-    private string? _stagedVersion; // 이미 내려받아 적용 예약한 버전 — 중복 다운로드/대기 프로세스 방지.
+    private string? _stagedVersion; // 이미 내려받은 버전 — 중복 다운로드 방지.
     private DateTimeOffset? _lastCheckUtc;
     private int _registrationRetries;
     private bool _awaitingRegistration;
 
     /// <summary>
-    /// 새 버전을 내려받아 다음 종료/재시작 때 적용되도록 예약한 직후 발생(인자 = 적용 예정 버전, 예 "0.3.0").
+    /// 새 버전을 내려받아 다음 정상 시작 때 적용할 준비가 된 직후 발생(인자 = 적용 예정 버전, 예 "0.3.0").
     /// 제어창 상태바가 "재시작 시 적용" 안내를 띄우는 데 쓴다. UI 스레드 마샬링은 구독자(App→ViewModel)가 담당.
     /// </summary>
     public event Action<string>? UpdateStaged;
@@ -70,7 +79,7 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
     {
         try
         {
-            var manager = CreateManager();
+            var manager = _createManager();
             if (!manager.IsInstalled)
             {
                 return false;
@@ -128,12 +137,12 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
         }
     }
 
-    private async Task CheckOnceAsync(CancellationToken ct)
+    internal async Task CheckOnceAsync(CancellationToken ct)
     {
         try
         {
             _lastCheckUtc = DateTimeOffset.UtcNow;
-            var manager = CreateManager();
+            var manager = _createManager();
             if (!manager.IsInstalled)
             {
                 return; // 개발 실행(Velopack 설치본 아님) — 업데이트 대상 없음
@@ -149,14 +158,16 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
             var version = update.TargetFullRelease.Version.ToString();
             if (version == _stagedVersion)
             {
-                return; // 이미 내려받아 적용 대기 중 — 다음 종료 때 반영된다.
+                return; // 이미 내려받아 적용 대기 중 — 다음 정상 시작 때 반영된다.
             }
 
             await manager.DownloadUpdatesAsync(update, cancelToken: ct).ConfigureAwait(false);
-            // 라이브 송출을 끊지 않도록 즉시 재시작하지 않고, 앱/PC가 다음에 종료될 때 적용되도록 예약한다.
-            manager.WaitExitThenApplyUpdates(update, silent: true, restart: false);
+            // Do NOT call WaitExitThenApplyUpdates here: Velopack waits only 60 seconds,
+            // then kills the app and its installed child processes. Downloading already
+            // persists UpdatePendingRestart; Program.Main/PrepareStartupUpdateAsync applies
+            // it on the next normal launch, before capture begins.
             _stagedVersion = version;
-            log.Info($"업데이트 다운로드 완료: v{version} — PC를 끄거나 앱을 재시작하면 적용됩니다.");
+            log.Info($"업데이트 다운로드 완료: v{version} — 녹화를 유지하며 다음 앱 시작 시 적용합니다.");
             UpdateStaged?.Invoke(version);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized && _registrationRetries++ < 4)
@@ -175,4 +186,27 @@ public sealed class AppUpdateManager(ILogService log) : IDisposable
         _cts?.Cancel();
         _cts?.Dispose();
     }
+}
+
+// Keep lifecycle decisions testable without launching the real updater or terminating the test host.
+internal interface IAppUpdateClient
+{
+    bool IsInstalled { get; }
+    VelopackAsset? UpdatePendingRestart { get; }
+    Task<UpdateInfo?> CheckForUpdatesAsync();
+    Task DownloadUpdatesAsync(UpdateInfo update, CancellationToken cancelToken);
+    void WaitExitThenApplyUpdates(VelopackAsset asset, bool silent, bool restart);
+}
+
+internal sealed class VelopackUpdateClient : IAppUpdateClient
+{
+    private readonly UpdateManager _manager = new(new SimpleWebSource(
+        PrivateUpdateIdentity.BaseUrl, new PrivateUpdateDownloader()));
+    public bool IsInstalled => _manager.IsInstalled;
+    public VelopackAsset? UpdatePendingRestart => _manager.UpdatePendingRestart;
+    public Task<UpdateInfo?> CheckForUpdatesAsync() => _manager.CheckForUpdatesAsync();
+    public Task DownloadUpdatesAsync(UpdateInfo update, CancellationToken cancelToken) =>
+        _manager.DownloadUpdatesAsync(update, cancelToken: cancelToken);
+    public void WaitExitThenApplyUpdates(VelopackAsset asset, bool silent, bool restart) =>
+        _manager.WaitExitThenApplyUpdates(asset, silent: silent, restart: restart);
 }
