@@ -63,7 +63,8 @@ public sealed record RemoteDiagnosticsDto(
     DateTime ServerLocalTime,
     RemoteTimelineDto Timeline,
     IReadOnlyList<RemoteHealthDto> ActiveHealth,
-    IReadOnlyList<string> RecentIssues);
+    IReadOnlyList<string> RecentIssues,
+    DiagnosticHistorySnapshot? History = null);
 
 public sealed record RemoteTimelineDto(
     string State,

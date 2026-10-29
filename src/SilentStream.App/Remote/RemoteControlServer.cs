@@ -65,6 +65,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly InspectionRemoteStore _inspection;
     private readonly IReadOnlyList<INotifier> _notifiers;
     private readonly ILogService _log;
+    private readonly LocalDiagnosticHistory _diagnosticHistory;
 
     private readonly object _socketsGate = new();
     private readonly List<SocketChannel> _sockets = [];
@@ -142,6 +143,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _inspection = inspection;
         _notifiers = notifiers.ToArray();
         _log = log;
+        _diagnosticHistory = new LocalDiagnosticHistory(configStore, AppPaths.LogsDir, AppPaths.VodDir,
+            SilentStream.Platform.Windows.WindowsDiagnosticHistory.Read, DiagnosticMediaProbe.Read);
         _cloudflared = new CloudflaredManager(log);
         _html = LoadEmbeddedHtml();
         _uploadView = LoadEmbeddedText("upload-view.js");
@@ -1446,7 +1449,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
             nowLocal,
             _scheduleStore.ResolveForDate(DateOnly.FromDateTime(nowLocal)),
             _health.ActiveEvents,
-            InMemoryLogSink.Snapshot());
+            InMemoryLogSink.Snapshot()) with { History = _diagnosticHistory.GetSnapshot() };
 
     private object BuildAutomation() => new
     {
