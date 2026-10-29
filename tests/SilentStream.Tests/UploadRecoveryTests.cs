@@ -163,6 +163,73 @@ public sealed class UploadRecoveryTests : IDisposable
         Assert.Equal(pause, queue.PausedUntilUtc);
     }
 
+    [Fact]
+    public void Legacy_quota_migration_repairs_only_latest_class_with_valid_unuploaded_media_once()
+    {
+        var config = new ConfigStore(Path.Combine(_dir, "migration-config.json"));
+        config.Save(AppConfig.CreateDefault());
+        var valid = Path.Combine(_dir, "migration-valid.mp4");
+        var empty = Path.Combine(_dir, "migration-empty.mp4");
+        File.WriteAllBytes(valid, Mp4(1, true));
+        File.WriteAllBytes(empty, Mp4(0, false));
+        var now = new DateTime(2026, 10, 29, 9, 0, 0, DateTimeKind.Utc);
+        var pause = new DateTimeOffset(now).AddHours(23);
+        var job = new UploadJob("recover", valid, "clip", new DateOnly(2026, 10, 28), 1, "failed", 5, null);
+        var jobs = new[] { job, job with { Id = "older", Date = job.Date.AddDays(-1) },
+            job with { Id = "today", Date = job.Date.AddDays(1) }, job with { Id = "empty", FilePath = empty },
+            job with { Id = "missing", FilePath = Path.Combine(_dir, "missing.mp4") },
+            job with { Id = "completed", Status = "completed", VideoId = "existing" },
+            job with { Id = "receipt" }, job with { Id = "receipt-source", SourceKey = "already-uploaded" },
+            job with { Id = "pending", Status = "pending" } };
+        var file = Path.Combine(_dir, "migration-queue.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new { uploadLimitUntilUtc = pause, jobs }));
+        var assets = new PeriodAssetCatalog(Path.Combine(_dir, "migration-assets.json"));
+        assets.Upsert(new PeriodAsset("receipt", job.Date, 1, "receipt", VideoId: "known"));
+        assets.Upsert(new PeriodAsset("different-id", job.Date, 1, "receipt", VideoId: "known-source", SourceKey: "already-uploaded"));
+        var uploader = new Uploader();
+        UploadQueue Open() => new(uploader, config, new LogService(), file, () => now, Task.Delay,
+            int.MaxValue, 5, assetCatalog: assets);
+        var queue = Open();
+        queue.Start(new CancellationToken(true));
+        Assert.Equal(pause, queue.PausedUntilUtc);
+        Assert.Equal(0, uploader.Calls);
+        var repaired = queue.Snapshot().Single(j => j.Id == "recover");
+        Assert.Equal("pending", repaired.Status);
+        Assert.Equal(0, repaired.Attempts);
+        foreach (var id in new[] { "older", "today", "empty", "missing", "receipt", "receipt-source" })
+            Assert.Equal("failed", queue.Snapshot().Single(j => j.Id == id).Status);
+        Assert.Equal("existing", queue.Snapshot().Single(j => j.Id == "completed").VideoId);
+        var saved = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
+        Assert.Equal(1, saved["quotaRecoveryVersion"]!.GetValue<int>());
+        saved["jobs"]!.AsArray().Single(j => j!["id"]!.GetValue<string>() == "recover")!["status"] = "failed";
+        File.WriteAllText(file, saved.ToJsonString());
+        var restarted = Open();
+        restarted.Start(new CancellationToken(true));
+        Assert.Equal("failed", restarted.Snapshot().Single(j => j.Id == "recover").Status);
+        Assert.Equal(pause, restarted.PausedUntilUtc);
+    }
+
+    [Theory]
+    [InlineData(false, true, 1)]
+    [InlineData(true, false, 1)]
+    [InlineData(true, true, 8)]
+    public void Legacy_quota_migration_requires_quota_evidence_receipts_and_recent_class(bool quota, bool catalogue, int age)
+    {
+        var config = new ConfigStore(Path.Combine(_dir, "guard-config.json"));
+        config.Save(AppConfig.CreateDefault());
+        var valid = Path.Combine(_dir, "guard-valid.mp4");
+        File.WriteAllBytes(valid, Mp4(1, true));
+        var now = new DateTime(2026, 10, 29, 9, 0, 0, DateTimeKind.Utc);
+        var job = new UploadJob("failed", valid, "clip", DateOnly.FromDateTime(now).AddDays(-age), 1, "failed", 5, null);
+        var file = Path.Combine(_dir, "guard-queue.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new {
+            uploadLimitUntilUtc = quota ? (DateTimeOffset?)new DateTimeOffset(now).AddHours(1) : null, jobs = new[] { job } }));
+        var queue = new UploadQueue(new Uploader(), config, new LogService(), file, () => now, Task.Delay,
+            int.MaxValue, 5, assetCatalog: catalogue ? new PeriodAssetCatalog(Path.Combine(_dir, "guard-assets.json")) : null);
+        queue.Start(new CancellationToken(true));
+        Assert.Equal("failed", Assert.Single(queue.Snapshot()).Status);
+    }
+
     private sealed class Uploader : IYouTubeUploadService
     {
         public int Calls;

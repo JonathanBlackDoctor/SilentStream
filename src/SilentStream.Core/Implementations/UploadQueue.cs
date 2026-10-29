@@ -192,6 +192,7 @@ public sealed class UploadQueue : IUploadQueue
             }
             // Crash recovery: a job left mid-upload by a previous run returns to the queue.
             var state = LoadLocked();
+            RecoverLegacyQuotaFailuresLocked(state);
             var requeued = 0;
             for (var i = 0; i < state.Jobs.Count; i++)
             {
@@ -208,6 +209,47 @@ public sealed class UploadQueue : IUploadQueue
             PruneTerminalLocked();
             _worker = WorkerAsync(ct);
         }
+    }
+
+    // Releases before 0.4.22 exhausted the retry budget on YouTube quota responses. Repair
+    // the latest prior class day once, when a persisted channel-limit pause proves that this
+    // queue encountered that outage. Keep the pause and successful-upload receipts intact.
+    private void RecoverLegacyQuotaFailuresLocked(QueueState state)
+    {
+        if (state.QuotaRecoveryVersion >= 1) return;
+        var today = DateOnly.FromDateTime(_now());
+        var date = state.Jobs.Where(j => j.Date < today && j.Date >= today.AddDays(-7))
+            .Select(j => (DateOnly?)j.Date).Max();
+        var recovered = 0;
+        if (state.UploadLimitUntilUtc is not null && date is not null && _assets is not null)
+        {
+            IReadOnlyList<Models.PeriodAsset> assets;
+            try { assets = _assets.Snapshot(); }
+            catch (Exception ex)
+            {
+                _log.Warn($"기존 한도 실패 복구를 보류합니다. 업로드 완료 기록 확인 실패: {ex.Message}");
+                return;
+            }
+            var completedIds = assets.Where(a => !string.IsNullOrWhiteSpace(a.VideoId))
+                .Select(a => a.Id).Concat(state.Jobs.Where(j => !string.IsNullOrWhiteSpace(j.VideoId)).Select(j => j.Id))
+                .ToHashSet(StringComparer.Ordinal);
+            var completedSources = assets.Where(a => !string.IsNullOrWhiteSpace(a.VideoId)).Select(a => a.SourceKey)
+                .Concat(state.Jobs.Where(j => !string.IsNullOrWhiteSpace(j.VideoId)).Select(j => j.SourceKey))
+                .Where(key => !string.IsNullOrWhiteSpace(key)).ToHashSet(StringComparer.Ordinal);
+            for (var i = 0; i < state.Jobs.Count; i++)
+            {
+                var job = state.Jobs[i];
+                if (job.Date != date || job.Status != UploadJobStatus.Failed || completedIds.Contains(job.Id) ||
+                    (!string.IsNullOrWhiteSpace(job.SourceKey) && completedSources.Contains(job.SourceKey)) ||
+                    !Media.Mp4MediaSamples.HasSamples(job.FilePath)) continue;
+                state.Jobs[i] = job with { Status = UploadJobStatus.Pending, Attempts = 0,
+                    UploadStartedAtUtc = null, UploadCompletedAtUtc = null, UploadDurationSeconds = null };
+                recovered++;
+            }
+        }
+        state.QuotaRecoveryVersion = 1;
+        PersistLocked();
+        if (recovered > 0) _log.Info($"기존 한도 실패 {recovered}건을 {date:yyyy-MM-dd} 재시도 큐로 1회 복구했습니다. 한도 대기는 유지합니다.");
     }
 
     private async Task WorkerAsync(CancellationToken ct)
@@ -597,6 +639,7 @@ public sealed class UploadQueue : IUploadQueue
 
     private sealed class QueueState
     {
+        public int QuotaRecoveryVersion { get; set; }
         public DateTimeOffset? UploadLimitUntilUtc { get; set; }
         public List<UploadJob> Jobs { get; set; } = [];
 
