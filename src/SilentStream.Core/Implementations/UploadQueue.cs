@@ -163,7 +163,7 @@ public sealed class UploadQueue : IUploadQueue
             {
                 var job = state.Jobs[i];
                 if (!selected.Contains(job.Id) || job.Status != UploadJobStatus.Failed ||
-                    !string.IsNullOrWhiteSpace(job.VideoId) || !Media.Mp4MediaSamples.HasSamples(job.FilePath))
+                    !string.IsNullOrWhiteSpace(job.VideoId) || !Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath))
                     continue;
                 state.Jobs[i] = job with
                 {
@@ -254,7 +254,7 @@ public sealed class UploadQueue : IUploadQueue
                 if (job.Date != date || job.Status != UploadJobStatus.Failed || job.Attempts < _maxAttempts ||
                     completedIds.Contains(job.Id) ||
                     (!string.IsNullOrWhiteSpace(job.SourceKey) && completedSources.Contains(job.SourceKey)) ||
-                    !Media.Mp4MediaSamples.HasSamples(job.FilePath)) continue;
+                    !Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath)) continue;
                 // Version 1 only repaired past dates, so an attempt after the class day may
                 // already be its retry. Unknown timestamps on migrated queues are ambiguous:
                 // leave them for explicit review instead of automatically granting more attempts.
@@ -377,6 +377,13 @@ public sealed class UploadQueue : IUploadQueue
         catch (OperationCanceledException)
         {
             UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Pending });
+        }
+        catch (InvalidDataException ex)
+        {
+            // The same invalid local media cannot improve through network retries. Preserve
+            // it for inspection, fail once and let other valid recordings continue.
+            UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Failed, Attempts = job.Attempts + 1 });
+            _log.Error($"{job.ResolvedSlotLabel} 영상 검증 실패 — 원본 확인 필요(자동 재시도 중지).", ex);
         }
         catch (Exception ex)
         {

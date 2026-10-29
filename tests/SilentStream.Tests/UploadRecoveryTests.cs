@@ -93,6 +93,42 @@ public sealed class UploadRecoveryTests : IDisposable
     }
 
     [Fact]
+    public async Task Invalid_local_media_fails_once_preserves_file_and_does_not_block_next_job()
+    {
+        var config = new ConfigStore(Path.Combine(_dir, "invalid-config.json"));
+        config.Save(AppConfig.CreateDefault());
+        var invalid = Path.Combine(_dir, "invalid.mp4");
+        var valid = Path.Combine(_dir, "valid-next.mp4");
+        File.WriteAllBytes(invalid, new byte[1217]);
+        File.WriteAllBytes(valid, Mp4(3, true));
+        var uploader = new InvalidThenValidUploader(invalid);
+        var queue = new UploadQueue(uploader, config, new LogService(), Path.Combine(_dir, "invalid-queue.json"),
+            () => DateTime.Now, Task.Delay, int.MaxValue, 5);
+        queue.Enqueue(new UploadJob("invalid", invalid, "bad", DateOnly.FromDateTime(DateTime.Now), 1, "pending", 0, null));
+        queue.Enqueue(new UploadJob("valid-next", valid, "good", DateOnly.FromDateTime(DateTime.Now), 2, "pending", 0, null));
+        using var stop = new CancellationTokenSource();
+        queue.Start(stop.Token);
+        for (var i = 0; i < 200 && queue.Snapshot().Single(j => j.Id == "valid-next").Status != "completed"; i++)
+            await Task.Delay(10);
+        stop.Cancel();
+        Assert.Equal(1, uploader.InvalidCalls);
+        Assert.Equal("failed", queue.Snapshot().Single(j => j.Id == "invalid").Status);
+        Assert.Equal("completed", queue.Snapshot().Single(j => j.Id == "valid-next").Status);
+        Assert.True(File.Exists(invalid));
+    }
+
+    private sealed class InvalidThenValidUploader(string invalid) : IYouTubeUploadService
+    {
+        public int InvalidCalls;
+        public Task<string> UploadAsync(string path, string title, string privacy, CancellationToken ct)
+        {
+            if (path != invalid) return Task.FromResult("valid-video");
+            Interlocked.Increment(ref InvalidCalls);
+            throw new InvalidDataException("no video samples");
+        }
+    }
+
+    [Fact]
     public void Mp4_requires_both_media_samples_and_data_and_rejects_truncated_boxes()
     {
         var valid = Path.Combine(_dir, "valid.mp4");
@@ -333,10 +369,8 @@ public sealed class UploadRecoveryTests : IDisposable
         static byte[] Box(string name, byte[] body) =>
             BitConverter.GetBytes(System.Net.IPAddress.HostToNetworkOrder(body.Length + 8))
                 .Concat(Encoding.ASCII.GetBytes(name)).Concat(body).ToArray();
-        var table = new byte[12];
-        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(table.AsSpan(8), samples);
-        return Box("moov", Box("trak", Box("mdia", Box("minf", Box("stbl", Box("stsz", table))))))
-            .Concat(Box("mdat", data ? new byte[] { 1, 2, 3 } : [])).ToArray();
+        return Box("moov", Mp4VideoValidationTests.Track(1, "vide", (uint)samples))
+            .Concat(Box("mdat", data ? new byte[4096] : [])).ToArray();
     }
 
     public void Dispose() => Directory.Delete(_dir, true);

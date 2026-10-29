@@ -35,8 +35,11 @@ public sealed class YouTubeUploadService(
         {
             throw new FileNotFoundException("업로드할 교시 파일이 없습니다.", filePath);
         }
-        if (!Media.Mp4MediaSamples.HasSamples(filePath))
-            throw new InvalidDataException("영상 데이터가 없는 MP4 파일입니다. 녹화 원본을 확인하세요.");
+        // Keep the same read-only handle across validation, authentication and upload so a
+        // later path replacement/write cannot substitute different bytes after the check.
+        await using var fileStream = File.OpenRead(filePath);
+        if (!Media.Mp4MediaSamples.HasUploadableVideo(fileStream))
+            throw new InvalidDataException("업로드할 비디오 샘플이 없거나 파일이 너무 작습니다. 녹화 원본을 확인하세요.");
 
         var service = await EnsureServiceAsync(ct).ConfigureAwait(false);
 
@@ -50,7 +53,6 @@ public sealed class YouTubeUploadService(
             }
         };
 
-        await using var fileStream = File.OpenRead(filePath);
         var throttle = configStore.Load().Periods.UploadTiming == "immediate-throttled";
         Stream uploadStream = throttle
             ? new ThrottledStream(fileStream, ThrottleBytesPerSecond)
