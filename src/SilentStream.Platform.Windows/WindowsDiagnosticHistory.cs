@@ -14,7 +14,7 @@ public static class WindowsDiagnosticHistory
         var truncated = false;
         var accessible = true;
         var timer = Stopwatch.StartNew();
-        var start = DateTime.Today.AddDays(-2).ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
+        var start = DateTime.Today.AddDays(1 - LocalDiagnosticHistory.HistoryDays).ToUniversalTime().ToString("o", CultureInfo.InvariantCulture);
         foreach (var (log, ids) in new[]
         {
             ("Application", "EventID=1000 or EventID=1001 or EventID=1002 or EventID=1026"),

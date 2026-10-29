@@ -200,13 +200,95 @@ public sealed class UploadRecoveryTests : IDisposable
             Assert.Equal("failed", queue.Snapshot().Single(j => j.Id == id).Status);
         Assert.Equal("existing", queue.Snapshot().Single(j => j.Id == "completed").VideoId);
         var saved = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
-        Assert.Equal(1, saved["quotaRecoveryVersion"]!.GetValue<int>());
+        Assert.Equal(2, saved["quotaRecoveryVersion"]!.GetValue<int>());
         saved["jobs"]!.AsArray().Single(j => j!["id"]!.GetValue<string>() == "recover")!["status"] = "failed";
         File.WriteAllText(file, saved.ToJsonString());
         var restarted = Open();
         restarted.Start(new CancellationToken(true));
         Assert.Equal("failed", restarted.Snapshot().Single(j => j.Id == "recover").Status);
         Assert.Equal(pause, restarted.PausedUntilUtc);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Delayed_reboot_repairs_missed_failures_without_touching_newer_work(int migrationVersion)
+    {
+        var config = new ConfigStore(Path.Combine(_dir, "delayed-config.json"));
+        config.Save(AppConfig.CreateDefault());
+        var valid = Path.Combine(_dir, "delayed-valid.mp4");
+        File.WriteAllBytes(valid, Mp4(1, true));
+        var now = new DateTime(2026, 10, 30, 0, 0, 0, DateTimeKind.Utc);
+        var observed = new DateTimeOffset(2026, 10, 29, 7, 53, 46, TimeSpan.Zero);
+        var job = new UploadJob("missed", valid, "clip", new DateOnly(2026, 10, 28), 6,
+            UploadJobStatus.Failed, 5, null,
+            UploadStartedAtUtc: new DateTimeOffset(2026, 10, 28, 16, 0, 0, TimeSpan.Zero));
+        var pending = job with { Id = "newer-pending", Date = job.Date.AddDays(1), Status = "pending", Attempts = 0 };
+        var jobs = new[] { job, pending,
+            job with { Id = "older", Date = job.Date.AddDays(-1) },
+            job with { Id = "newer-failure", Date = job.Date.AddDays(1), UploadStartedAtUtc = observed.AddHours(1) },
+            job with { Id = "already-retried", UploadStartedAtUtc = observed.AddHours(1) },
+            job with { Id = "retried-before-renewed-pause", UploadStartedAtUtc = observed.AddHours(-1) },
+            job with { Id = "unknown-attempt", UploadStartedAtUtc = null },
+            job with { Id = "incomplete-budget", Attempts = 1 },
+            job with { Id = "queue-receipt", Status = "completed", VideoId = "existing", SourceKey = "known-source" },
+            job with { Id = "receipt-copy", SourceKey = "known-source" } };
+        var file = Path.Combine(_dir, "delayed-queue.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new
+        { quotaRecoveryVersion = migrationVersion, uploadLimitUntilUtc = observed.AddHours(24), jobs }));
+        var assets = new PeriodAssetCatalog(Path.Combine(_dir, "delayed-assets.json"));
+        var uploader = new Uploader();
+        var queue = new UploadQueue(uploader, config, new LogService(), file, () => now, Task.Delay,
+            int.MaxValue, 5, assetCatalog: assets);
+        queue.Start(new CancellationToken(true));
+        var snapshot = queue.Snapshot();
+        Assert.Equal("pending", snapshot.Single(j => j.Id == "missed").Status);
+        Assert.Equal(0, snapshot.Single(j => j.Id == "missed").Attempts);
+        Assert.Null(snapshot.Single(j => j.Id == "missed").UploadStartedAtUtc);
+        Assert.Equal(pending, snapshot.Single(j => j.Id == pending.Id));
+        foreach (var id in new[] { "older", "newer-failure", "already-retried", "incomplete-budget", "receipt-copy" })
+            Assert.Equal("failed", snapshot.Single(j => j.Id == id).Status);
+        Assert.Equal(migrationVersion == 0 ? "pending" : "failed", snapshot.Single(j => j.Id == "unknown-attempt").Status);
+        Assert.Equal(migrationVersion == 0 ? "pending" : "failed", snapshot.Single(j => j.Id == "retried-before-renewed-pause").Status);
+        Assert.Equal("existing", snapshot.Single(j => j.Id == "queue-receipt").VideoId);
+        Assert.Equal(observed.AddHours(24), queue.PausedUntilUtc);
+        Assert.Equal(0, uploader.Calls);
+        var saved = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
+        Assert.Equal(2, saved["quotaRecoveryVersion"]!.GetValue<int>());
+        var repaired = saved["jobs"]!.AsArray().Single(j => j!["id"]!.GetValue<string>() == "missed")!;
+        repaired["status"] = "failed";
+        repaired["attempts"] = 5;
+        File.WriteAllText(file, saved.ToJsonString());
+        var restarted = new UploadQueue(uploader, config, new LogService(), file, () => now.AddDays(1), Task.Delay,
+            int.MaxValue, 5, assetCatalog: assets);
+        restarted.Start(new CancellationToken(true));
+        Assert.Equal("failed", restarted.Snapshot().Single(j => j.Id == "missed").Status);
+        Assert.Equal(5, restarted.Snapshot().Single(j => j.Id == "missed").Attempts);
+        Assert.Equal(observed.AddHours(24), System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!["uploadLimitUntilUtc"]!.GetValue<DateTimeOffset>());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void Recovery_does_not_fall_back_to_older_days_when_latest_failure_has_no_media(int version)
+    {
+        var config = new ConfigStore(Path.Combine(_dir, "no-fallback-config.json"));
+        config.Save(AppConfig.CreateDefault());
+        var valid = Path.Combine(_dir, "older-valid.mp4");
+        File.WriteAllBytes(valid, Mp4(1, true));
+        var now = new DateTime(2026, 10, 30, 9, 0, 0, DateTimeKind.Utc);
+        var job = new UploadJob("latest-missing", Path.Combine(_dir, "missing.mp4"), "clip", new DateOnly(2026, 10, 28),
+            1, "failed", 5, null, UploadStartedAtUtc: new DateTimeOffset(2026, 10, 28, 8, 0, 0, TimeSpan.Zero));
+        var file = Path.Combine(_dir, "no-fallback-queue.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            quotaRecoveryVersion = version, uploadLimitUntilUtc = new DateTimeOffset(now).AddHours(-1),
+            jobs = new[] { job, job with { Id = "older", Date = job.Date.AddDays(-1), FilePath = valid } }
+        }));
+        var queue = new UploadQueue(new Uploader(), config, new LogService(), file, () => now, Task.Delay,
+            int.MaxValue, 5, assetCatalog: new PeriodAssetCatalog(Path.Combine(_dir, "no-fallback-assets.json")));
+        queue.Start(new CancellationToken(true));
+        Assert.All(queue.Snapshot(), j => Assert.Equal("failed", j.Status));
     }
 
     [Theory]
@@ -223,11 +305,20 @@ public sealed class UploadRecoveryTests : IDisposable
         var job = new UploadJob("failed", valid, "clip", DateOnly.FromDateTime(now).AddDays(-age), 1, "failed", 5, null);
         var file = Path.Combine(_dir, "guard-queue.json");
         File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new {
-            uploadLimitUntilUtc = quota ? (DateTimeOffset?)new DateTimeOffset(now).AddHours(1) : null, jobs = new[] { job } }));
+            uploadLimitUntilUtc = quota ? (DateTimeOffset?)new DateTimeOffset(now).AddHours(24) : null, jobs = new[] { job } }));
         var queue = new UploadQueue(new Uploader(), config, new LogService(), file, () => now, Task.Delay,
             int.MaxValue, 5, assetCatalog: catalogue ? new PeriodAssetCatalog(Path.Combine(_dir, "guard-assets.json")) : null);
         queue.Start(new CancellationToken(true));
         Assert.Equal("failed", Assert.Single(queue.Snapshot()).Status);
+        if (quota && !catalogue)
+        {
+            var saved = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!;
+            Assert.Null(saved["quotaRecoveryVersion"]);
+            var available = new UploadQueue(new Uploader(), config, new LogService(), file, () => now, Task.Delay,
+                int.MaxValue, 5, assetCatalog: new PeriodAssetCatalog(Path.Combine(_dir, "available-assets.json")));
+            available.Start(new CancellationToken(true));
+            Assert.Equal("pending", Assert.Single(available.Snapshot()).Status);
+        }
     }
 
     private sealed class Uploader : IYouTubeUploadService

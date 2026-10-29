@@ -13,6 +13,9 @@ public sealed class LocalDiagnosticHistory(IConfigStore config, string logsDirec
     Func<DiagnosticSystemEvents>? readSystemEvents = null,
     Func<string, DiagnosticMediaProbeResult>? probeMedia = null)
 {
+    // Match the default recording retention so a later reboot does not hide the incident day.
+    public const int HistoryDays = 7;
+
     private readonly object _gate = new();
     private DiagnosticHistorySnapshot _snapshot = new("collecting", null, [], [], false);
     private bool _collecting;
@@ -45,7 +48,7 @@ public sealed class LocalDiagnosticHistory(IConfigStore config, string logsDirec
         Func<string, DiagnosticMediaProbeResult>? probeMedia = null)
     {
         var timer = Stopwatch.StartNew();
-        var days = Enumerable.Range(0, 3).Select(i => DateOnly.FromDateTime(nowLocal).AddDays(-i)).ToArray();
+        var days = Enumerable.Range(0, HistoryDays).Select(i => DateOnly.FromDateTime(nowLocal).AddDays(-i)).ToArray();
         var dates = days.Select(d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).ToArray();
         var logs = days.Select(day => ReadDay(logsDirectory, day, timer)).ToArray();
         var files = new List<DiagnosticMediaFile>();

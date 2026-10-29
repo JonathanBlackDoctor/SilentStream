@@ -17,7 +17,7 @@ public sealed class LocalDiagnosticHistoryTests : IDisposable
         var logs = Folder("logs"); var recordings = Folder("recordings"); var clips = Folder("clips");
         var original = Path.Combine(recordings, "MediaCaptureHelper_REC_2026-10-27_0753.mp4");
         File.WriteAllBytes(original, new byte[1217]);
-        File.WriteAllText(Path.Combine(recordings, "MediaCaptureHelper_REC_2026-10-26_0753.mp4"), "old");
+        File.WriteAllText(Path.Combine(recordings, "MediaCaptureHelper_REC_2026-10-22_0753.mp4"), "old");
         File.WriteAllText(Path.Combine(clips, "2026-10-27_6교시.mp4"), "cut");
         var log = Path.Combine(logs, "MediaCaptureHelper_2026-10-27.log");
         var body = "2026-10-27 13:53:00.000 [WARN] FFmpeg stopped\n2026-10-27 14:00:00.000 [INFO] 녹화 파일 삭제(공간): old.mp4\n";
@@ -28,6 +28,38 @@ public sealed class LocalDiagnosticHistoryTests : IDisposable
         Assert.Contains(result.Files, f => f.Kind == "recording" && f.Bytes == 1217);
         Assert.Equal(2, result.Logs.Single(l => l.Date == "2026-10-27").Lines.Count);
         Assert.Equal(body, File.ReadAllText(log)); Assert.Equal(1217, new FileInfo(original).Length);
+    }
+
+    [Theory]
+    [InlineData(2026, 10, 30, true)]
+    [InlineData(2026, 10, 31, true)]
+    [InlineData(2026, 11, 2, true)]
+    [InlineData(2026, 11, 3, false)]
+    public void Later_reboot_keeps_incident_within_recording_retention(int year, int month, int day, bool included)
+    {
+        var logs = Folder("logs"); var recordings = Folder("recordings");
+        File.WriteAllText(Path.Combine(logs, "MediaCaptureHelper_2026-10-27.log"), "[WARN] incident\n");
+        File.WriteAllText(Path.Combine(recordings, "MediaCaptureHelper_REC_2026-10-27_0753.mp4"), "original");
+        var result = LocalDiagnosticHistory.Collect(recordings, logs, Folder("clips"), new DateTime(year, month, day));
+        Assert.Equal(7, result.Logs.Count);
+        Assert.Equal(included, result.Logs.Any(l => l.Date == "2026-10-27" && l.Exists));
+        Assert.Equal(included, result.Files.Any(f => f.Name.Contains("2026-10-27", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void Seven_busy_days_stay_within_authenticated_status_budget()
+    {
+        var logs = Folder("logs");
+        for (var day = 0; day < 7; day++)
+        {
+            var date = Now.AddDays(-day).ToString("yyyy-MM-dd");
+            var lines = Enumerable.Range(0, 100).Select(i => $"[WARN] FFmpeg {i:D3} " + new string('녹', 1800));
+            File.WriteAllLines(Path.Combine(logs, $"MediaCaptureHelper_{date}.log"), lines);
+        }
+        var result = LocalDiagnosticHistory.Collect(Folder("recordings"), logs, Folder("clips"), Now);
+        Assert.True(result.Truncated);
+        Assert.All(result.Logs, log => { Assert.True(log.Exists); Assert.NotEmpty(log.Lines); });
+        Assert.True(JsonSerializer.SerializeToUtf8Bytes(result).Length <= 240_000);
     }
 
     [Fact]

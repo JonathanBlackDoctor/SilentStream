@@ -212,17 +212,29 @@ public sealed class UploadQueue : IUploadQueue
     }
 
     // Releases before 0.4.22 exhausted the retry budget on YouTube quota responses. Repair
-    // the latest prior class day once, when a persisted channel-limit pause proves that this
-    // queue encountered that outage. Keep the pause and successful-upload receipts intact.
+    // one prior failed class day when a persisted channel-limit pause proves this queue saw
+    // the outage. Version 1 selected the newest date across ALL jobs, so newer pending work
+    // could hide the failures. Version 2 must also handle those already-marked queues without
+    // resetting jobs that version 1 retried on a later day and that failed for another reason.
     private void RecoverLegacyQuotaFailuresLocked(QueueState state)
     {
-        if (state.QuotaRecoveryVersion >= 1) return;
-        var today = DateOnly.FromDateTime(_now());
-        var date = state.Jobs.Where(j => j.Date < today && j.Date >= today.AddDays(-7))
+        if (state.QuotaRecoveryVersion >= 2) return;
+        var now = _now();
+        var today = DateOnly.FromDateTime(now);
+        DateOnly LocalDate(DateTimeOffset value) => DateOnly.FromDateTime(
+            now.Kind == DateTimeKind.Utc ? value.UtcDateTime : value.LocalDateTime);
+        // Only 0.4.22+ writes this 24-hour pause. Failures from its observation day or later
+        // are not evidence of the old quota-classification bug. Never clear even an expired pause.
+        var quotaObserved = state.UploadLimitUntilUtc?.AddHours(-24);
+        var quotaDate = quotaObserved is { } observed ? LocalDate(observed) : today;
+        var date = state.Jobs.Where(j => j.Status == UploadJobStatus.Failed &&
+                j.Date < today && j.Date < quotaDate && j.Date >= today.AddDays(-7))
             .Select(j => (DateOnly?)j.Date).Max();
         var recovered = 0;
-        if (state.UploadLimitUntilUtc is not null && date is not null && _assets is not null)
+        if (quotaObserved is not null && date is not null)
         {
+            // Missing/unreadable receipts defer the migration instead of consuming it.
+            if (_assets is null) return;
             IReadOnlyList<Models.PeriodAsset> assets;
             try { assets = _assets.Snapshot(); }
             catch (Exception ex)
@@ -239,15 +251,25 @@ public sealed class UploadQueue : IUploadQueue
             for (var i = 0; i < state.Jobs.Count; i++)
             {
                 var job = state.Jobs[i];
-                if (job.Date != date || job.Status != UploadJobStatus.Failed || completedIds.Contains(job.Id) ||
+                if (job.Date != date || job.Status != UploadJobStatus.Failed || job.Attempts < _maxAttempts ||
+                    completedIds.Contains(job.Id) ||
                     (!string.IsNullOrWhiteSpace(job.SourceKey) && completedSources.Contains(job.SourceKey)) ||
                     !Media.Mp4MediaSamples.HasSamples(job.FilePath)) continue;
+                // Version 1 only repaired past dates, so an attempt after the class day may
+                // already be its retry. Unknown timestamps on migrated queues are ambiguous:
+                // leave them for explicit review instead of automatically granting more attempts.
+                if (job.UploadStartedAtUtc is { } attempted)
+                {
+                    if (attempted >= quotaObserved || (state.QuotaRecoveryVersion == 1 && LocalDate(attempted) > job.Date))
+                        continue;
+                }
+                else if (state.QuotaRecoveryVersion == 1) continue;
                 state.Jobs[i] = job with { Status = UploadJobStatus.Pending, Attempts = 0,
                     UploadStartedAtUtc = null, UploadCompletedAtUtc = null, UploadDurationSeconds = null };
                 recovered++;
             }
         }
-        state.QuotaRecoveryVersion = 1;
+        state.QuotaRecoveryVersion = 2;
         PersistLocked();
         if (recovered > 0) _log.Info($"기존 한도 실패 {recovered}건을 {date:yyyy-MM-dd} 재시도 큐로 1회 복구했습니다. 한도 대기는 유지합니다.");
     }
