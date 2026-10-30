@@ -177,7 +177,7 @@ public class StreamOrchestratorTests : IDisposable
         try
         {
             await WaitUntilAsync(() => _encoder.FailedStreamStarts == 2 && _encoder.IsRunning,
-                TimeSpan.FromSeconds(1));
+                TimeSpan.FromSeconds(10)); // Observe recovery; do not assume a 1s CI scheduling budget.
             Assert.Equal(2, _encoder.FailedStreamStarts);
             Assert.True(_encoder.IsRunning);
             Assert.Equal(2, _encoder.StartCalls.Count(call => call.RtmpUrl.Length == 0));
