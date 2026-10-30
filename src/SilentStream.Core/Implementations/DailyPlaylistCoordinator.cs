@@ -81,7 +81,9 @@ public sealed class DailyPlaylistCoordinator
         await _maintenanceGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (IsQuotaPaused) return;
             await MaintainPlaylistsAsync(ct).ConfigureAwait(false);
+            if (IsQuotaPaused) return;
             await MaintainReplaysAsync(ct).ConfigureAwait(false);
         }
         finally { _maintenanceGate.Release(); }
@@ -93,6 +95,7 @@ public sealed class DailyPlaylistCoordinator
         var localToday = DateOnly.FromDateTime(KoreaNow().DateTime);
         for (var offset = -7; offset <= 7; offset++)
         {
+            if (IsQuotaPaused) return;
             var date = localToday.AddDays(offset);
             if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
             await _playlists.EnsurePlaylistAsync(room, date, ct).ConfigureAwait(false);
@@ -111,6 +114,7 @@ public sealed class DailyPlaylistCoordinator
 
         foreach (var (date, videoId) in videos)
         {
+            if (IsQuotaPaused) return;
             if (date.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
             await _playlists.AddVideoAsync(room, date, videoId, ct).ConfigureAwait(false);
         }
@@ -132,6 +136,7 @@ public sealed class DailyPlaylistCoordinator
         for (var i = 0; i < count; i++)
         {
             ct.ThrowIfCancellationRequested();
+            if (IsQuotaPaused) return;
             if (budget.Elapsed > TimeSpan.FromMinutes(2)) break;
             _replayCursor = (start + i + 1) % pending.Length;
             var replay = pending[(start + i) % pending.Length];
@@ -156,6 +161,12 @@ public sealed class DailyPlaylistCoordinator
                     _replays.MarkPlaylistAdded(replay.BroadcastId, _utcNow());
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (UploadErrorClassifier.IsDailyQuota(ex))
+            {
+                _playlists.DeferUntilApiQuotaReset();
+                _log.Warn($"라이브 재생목록 API 한도 대기: {_playlists.ApiQuotaRetryAtUtc:O} 이후 재확인.");
+                return;
+            }
             catch (Exception ex)
             {
                 _log.Warn($"라이브 재생목록 편입 대기: {date:yyyy-MM-dd} / {replay.BroadcastId} ({ex.GetType().Name}).");
@@ -184,6 +195,12 @@ public sealed class DailyPlaylistCoordinator
                 }
             }
 
+            // API quota is shared across dates and replay checks, and survives app restarts.
+            // A reset deadline allows a new check; it does not promise server-side recovery.
+            var quotaNow = _utcNow();
+            if (_playlists.ApiQuotaRetryAtUtc is { } until && until > quotaNow)
+                wait = until - quotaNow;
+
             try
             {
                 await _delay(wait, ct).ConfigureAwait(false);
@@ -210,6 +227,8 @@ public sealed class DailyPlaylistCoordinator
     }
 
     private DateTimeOffset KoreaNow() => TimeZoneInfo.ConvertTime(_utcNow(), _koreaTimeZone);
+
+    private bool IsQuotaPaused => _playlists.ApiQuotaRetryAtUtc is { } until && until > _utcNow();
 
     private string ResolveRoom()
     {

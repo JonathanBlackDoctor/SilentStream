@@ -3,12 +3,14 @@ using Google;
 using Google.Apis.Auth.OAuth2.Responses;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Models;
+using SilentStream.Core.YouTube;
 
 namespace SilentStream.Core.Implementations;
 
 /// <summary>Crash-safe room/date playlist state and idempotent YouTube mutations.</summary>
 public sealed class YouTubePlaylistService : IYouTubePlaylistService
 {
+    private static readonly Lazy<TimeZoneInfo?> PacificZone = new(ResolvePacificZone);
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -50,6 +52,39 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
         }
     }
 
+    public DateTimeOffset? ApiQuotaRetryAtUtc
+    {
+        get { lock (_stateGate) return LoadLocked().ApiQuotaRetryAtUtc; }
+    }
+
+    public void DeferUntilApiQuotaReset()
+    {
+        lock (_stateGate)
+        {
+            var state = LoadLocked();
+            var now = _utcNow();
+            if (state.ApiQuotaRetryAtUtc > now) return;
+            var zone = PacificZone.Value;
+            if (zone is null)
+            {
+                // Missing zone data must not turn UTC midnight into an early quota reset.
+                state.ApiQuotaRetryAtUtc = now.AddDays(1);
+            }
+            else
+            {
+                var local = TimeZoneInfo.ConvertTime(now, zone);
+                var midnight = DateTime.SpecifyKind(local.Date.AddDays(1).AddSeconds(1), DateTimeKind.Unspecified);
+                state.ApiQuotaRetryAtUtc = new DateTimeOffset(midnight, zone.GetUtcOffset(midnight)).ToUniversalTime();
+            }
+            PersistLocked();
+        }
+    }
+
+    private bool IsQuotaPaused => ApiQuotaRetryAtUtc is { } until && until > _utcNow();
+
+    private string QuotaWaitMessage() =>
+        $"YouTube API 일일 한도 대기: {ApiQuotaRetryAtUtc:O} 이후 다시 확인합니다. 한도 해제는 보장되지 않습니다.";
+
     public async Task<DailyPlaylistRecord> EnsurePlaylistAsync(string room, DateOnly date, CancellationToken ct)
     {
         room = NormalizeRoom(room);
@@ -68,6 +103,9 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
                 return existing;
             }
 
+            if (IsQuotaPaused)
+                return Failure(room, date, DailyPlaylistStatus.Failed, QuotaWaitMessage());
+
             var title = $"{room} | {date:yyyy-MM-dd}";
             Save(new DailyPlaylistRecord(room, date, title, existing?.PlaylistId, existing?.Url,
                 DailyPlaylistStatus.Creating, _utcNow(), null));
@@ -85,6 +123,14 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (GoogleApiException ex) when (UploadErrorClassifier.IsDailyQuota(ex))
+        {
+            DeferUntilApiQuotaReset();
+            var failed = Failure(room, date, DailyPlaylistStatus.Failed, QuotaWaitMessage());
+            Save(failed);
+            _log.Warn($"날짜별 재생목록 API 한도 대기: {room} {date:yyyy-MM-dd} - {failed.Error}");
+            return failed;
         }
         catch (YouTubeAuthorizationRequiredException ex)
         {
@@ -139,6 +185,7 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if (IsQuotaPaused) return;
             if (!await _gateway.ContainsVideoAsync(playlist.PlaylistId, videoId, ct).ConfigureAwait(false))
             {
                 await _gateway.AddVideoAsync(playlist.PlaylistId, videoId, ct).ConfigureAwait(false);
@@ -150,6 +197,17 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
         catch (OperationCanceledException)
         {
             throw;
+        }
+        catch (GoogleApiException ex) when (UploadErrorClassifier.IsDailyQuota(ex))
+        {
+            DeferUntilApiQuotaReset();
+            Save(playlist with
+            {
+                Status = DailyPlaylistStatus.Failed,
+                LastAttemptAtUtc = _utcNow(),
+                Error = QuotaWaitMessage()
+            });
+            _log.Warn($"재생목록 영상 편입 API 한도 대기: {playlist.Title} - {QuotaWaitMessage()}");
         }
         catch (YouTubeAuthorizationRequiredException ex)
         {
@@ -319,8 +377,19 @@ public sealed class YouTubePlaylistService : IYouTubePlaylistService
     private static string SafeError(Exception ex) =>
         string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message;
 
+    private static TimeZoneInfo? ResolvePacificZone()
+    {
+        foreach (var id in new[] { "Pacific Standard Time", "America/Los_Angeles" })
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+            catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException) { }
+        }
+        return null;
+    }
+
     private sealed class PlaylistState
     {
+        public DateTimeOffset? ApiQuotaRetryAtUtc { get; set; }
         public List<DailyPlaylistRecord> Items { get; set; } = [];
         public Dictionary<string, List<string>> AddedVideoIds { get; set; } =
             new(StringComparer.OrdinalIgnoreCase);

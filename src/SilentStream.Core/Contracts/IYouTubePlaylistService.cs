@@ -12,6 +12,11 @@ public interface IYouTubePlaylistService
 
     bool HasRetryableFailures { get; }
 
+    /// <summary>Durable daily API quota deadline shared by playlist and replay maintenance.</summary>
+    DateTimeOffset? ApiQuotaRetryAtUtc => null;
+
+    void DeferUntilApiQuotaReset() { }
+
     bool IsVideoAdded(string room, DateOnly date, string videoId) => false;
 }
 public interface IYouTubePlaylistGateway
