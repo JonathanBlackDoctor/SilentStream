@@ -28,6 +28,9 @@ public interface IPeriodAssetCatalog
     /// </summary>
     bool MarkUploaded(string id, string videoId);
 
+    /// <summary>Also retains evidence that the local upload video passed the current media gate.</summary>
+    bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion) => MarkUploaded(id, videoId);
+
     /// <summary>
     /// Records the completed local M4A path without replacing concurrently-updated YouTube or
     /// caption metadata. Returns false when no asset has the id.

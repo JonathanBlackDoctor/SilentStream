@@ -52,7 +52,7 @@ public static class UploadQueueRemote
                 j.UploadStartedAtUtc, j.UploadCompletedAtUtc, j.UploadDurationSeconds,
                 j.Status == UploadJobStatus.Uploading && j.UploadStartedAtUtc is { } began
                     ? Math.Max(0, (now - began).TotalSeconds) : null,
-                estimates.GetValueOrDefault(j.Id))).ToArray(), jobs.Count - retained.Length);
+                estimates.GetValueOrDefault(j.Id), j.NeedsUploadReconciliation)).ToArray(), jobs.Count - retained.Length);
     }
 }
 
@@ -63,4 +63,5 @@ public sealed record UploadQueueView(int Pending, int Uploading, int Completed, 
 public sealed record UploadItemView(string Id, string Date, int Period, string SlotId,
     string SlotLabel, int SlotOrder, string Title, string Status, int Attempts, string? VideoId,
     long? FileSizeBytes, DateTimeOffset? UploadStartedAtUtc, DateTimeOffset? UploadCompletedAtUtc,
-    double? UploadDurationSeconds, double? UploadElapsedSeconds, DateTimeOffset? EstimatedCompletedAtUtc);
+    double? UploadDurationSeconds, double? UploadElapsedSeconds, DateTimeOffset? EstimatedCompletedAtUtc,
+    bool NeedsUploadReconciliation = false);

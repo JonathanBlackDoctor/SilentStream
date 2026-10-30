@@ -54,6 +54,11 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
             var index = FindIndex(state.Assets, stamped.Id);
             if (index >= 0)
             {
+                var existing = state.Assets[index];
+                if (!string.IsNullOrWhiteSpace(existing.VideoId))
+                    stamped = stamped with { VideoId = existing.VideoId, SourceKey = existing.SourceKey,
+                        UploadedFileSizeBytes = existing.UploadedFileSizeBytes,
+                        UploadValidationVersion = existing.UploadValidationVersion };
                 state.Assets[index] = stamped;
             }
             else
@@ -92,7 +97,9 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
         }
     }
 
-    public bool MarkUploaded(string id, string videoId)
+    public bool MarkUploaded(string id, string videoId) => MarkUploaded(id, videoId, null, 0);
+
+    public bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion)
     {
         var normalizedId = RequireValue(id, nameof(id));
         var normalizedVideoId = RequireValue(videoId, nameof(videoId));
@@ -109,6 +116,8 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
             state.Assets[index] = state.Assets[index] with
             {
                 VideoId = normalizedVideoId,
+                UploadedFileSizeBytes = fileSizeBytes ?? state.Assets[index].UploadedFileSizeBytes,
+                UploadValidationVersion = Math.Max(validationVersion, state.Assets[index].UploadValidationVersion),
                 UpdatedAtUtc = UtcNow()
             };
             PersistLocked();
@@ -181,14 +190,16 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
         try
         {
             var json = File.ReadAllText(_catalogFile);
-            _state = JsonSerializer.Deserialize<CatalogState>(json, JsonOptions) ?? new CatalogState();
-            _state.Assets ??= [];
+            _state = JsonSerializer.Deserialize<CatalogState>(json, JsonOptions)
+                ?? throw new JsonException("Asset catalog is null.");
+            if (_state.Assets is null) { _state = null; throw new JsonException("Assets are null."); }
             return _state;
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
             BackupMalformedCatalog();
-            return _state = new CatalogState();
+            _state = null;
+            throw new InvalidDataException("영상 영수증 목록이 손상되었습니다. 복구 전 재업로드/원본 정리를 보류합니다.", ex);
         }
     }
 
@@ -205,7 +216,11 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
         var temporaryFile = _catalogFile + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            File.WriteAllText(temporaryFile, JsonSerializer.Serialize(_state, JsonOptions));
+            using (var stream = new FileStream(temporaryFile, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream, _state, JsonOptions);
+                stream.Flush(flushToDisk: true);
+            }
             File.Move(temporaryFile, _catalogFile, overwrite: true);
         }
         finally

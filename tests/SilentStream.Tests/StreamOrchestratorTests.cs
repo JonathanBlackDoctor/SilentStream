@@ -165,6 +165,181 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Audit_backup_restarts_after_each_failed_tee_start()
+    {
+        _encoder.StreamFailuresBeforeSuccess = 2;
+        _encoder.OnStreamStartFailure = () =>
+        {
+            if (_encoder.FailedStreamStarts == 2) _youtube.AuthenticationUnavailable = true;
+        };
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _encoder.FailedStreamStarts == 2 && _encoder.IsRunning,
+                TimeSpan.FromSeconds(1));
+            Assert.Equal(2, _encoder.FailedStreamStarts);
+            Assert.True(_encoder.IsRunning);
+            Assert.Equal(2, _encoder.StartCalls.Count(call => call.RtmpUrl.Length == 0));
+            Assert.False(start.IsCompleted); // streaming remains offline, but the backup is alive
+        }
+        finally
+        {
+            await orchestrator.StopAsync();
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Audit_initialization_retries_transient_capture_or_retention_failure(bool retentionFailure)
+    {
+        if (retentionFailure) _recording.InitialFailuresBeforeSuccess = 1;
+        else _capture.FailuresBeforeSuccess = 1;
+        var orchestrator = CreateOrchestrator();
+        try
+        {
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_capture.Started);
+            Assert.True(_recording.RetentionRuns >= 2);
+            if (!retentionFailure)
+            {
+                Assert.Equal(2, _capture.StartCalls);
+                Assert.True(_capture.StopCalls >= 1); // a partially initialized capture was released
+            }
+        }
+        finally { await orchestrator.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Audit_recording_only_alive_stall_restarts_without_reconnecting_youtube()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await orchestrator.StopStreamingKeepRecordingAsync();
+            _recording.ActiveRecordingLength = 1000;
+            _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+            await WaitUntilAsync(() => _encoder.StartCalls.Count >= 3, TimeSpan.FromSeconds(1));
+            Assert.Equal(3, _encoder.StartCalls.Count);
+            Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+            Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
+            Assert.Equal(1, _youtube.CreateCalls);
+        }
+        finally { await orchestrator.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Audit_recording_only_growth_keeps_a_quiet_encoder_running()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await orchestrator.StopStreamingKeepRecordingAsync();
+            _recording.GrowOnSample = true;
+            _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+            await Task.Delay(450);
+            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
+        }
+        finally { await orchestrator.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Audit_late_cancelled_start_does_not_stop_a_new_live_session()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOld = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var starts = 0;
+        _capture.StartOverride = async token =>
+        {
+            if (Interlocked.Increment(ref starts) != 1) return;
+            entered.TrySetResult();
+            try { await Task.Delay(Timeout.InfiniteTimeSpan, token); }
+            catch (OperationCanceledException)
+            {
+                cancelled.TrySetResult();
+                await releaseOld.Task; // an old driver operation finishes cancellation late
+                throw;
+            }
+        };
+        var orchestrator = CreateOrchestrator();
+        var oldStart = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync();
+            await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            releaseOld.TrySetResult();
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_capture.Started);
+            Assert.True(_encoder.IsRunning);
+            Assert.Single(_encoder.StartCalls);
+        }
+        finally
+        {
+            releaseOld.TrySetResult();
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Audit_full_stop_during_recording_only_stall_does_not_start_a_late_encoder()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var flush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            await orchestrator.StopStreamingKeepRecordingAsync();
+            _encoder.StopGate = flush;
+            _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+            await WaitUntilAsync(() => !_encoder.IsRunning, TimeSpan.FromSeconds(1));
+            Assert.False(_encoder.IsRunning); // watchdog owns the stalled encoder's delayed flush
+            var stopping = orchestrator.StopAsync();
+            flush.TrySetResult();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Idle, orchestrator.State);
+            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.False(_encoder.IsRunning);
+        }
+        finally
+        {
+            flush.TrySetResult();
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Audit_stop_cancels_initialization_retries_without_a_later_restart(bool retentionFailure)
+    {
+        if (retentionFailure) _recording.InitialFailuresBeforeSuccess = int.MaxValue;
+        else _capture.FailuresBeforeSuccess = int.MaxValue;
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        await WaitUntilAsync(() => _recording.RetentionRuns >= 1, TimeSpan.FromSeconds(1));
+        await orchestrator.StopAsync();
+        await start.WaitAsync(TimeSpan.FromSeconds(2));
+        var attempts = _recording.RetentionRuns;
+        await Task.Delay(100);
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Equal(attempts, _recording.RetentionRuns);
+        Assert.False(_capture.Started);
+        Assert.Empty(_encoder.StartCalls);
+    }
+
+    [Fact]
     public async Task Stop_finalises_encoder_then_completes_broadcast_then_idles()
     {
         var orchestrator = CreateOrchestrator();
@@ -740,11 +915,12 @@ public class StreamOrchestratorTests : IDisposable
     {
         public int FailuresBeforeSuccess;
         public int CreateCalls;
+        public bool AuthenticationUnavailable;
         public int CompleteCalls;
         public int CompleteFailuresBeforeSuccess;
         public string? CompletedBroadcastId;
 
-        public Task<bool> AuthenticateAsync(CancellationToken ct) => Task.FromResult(true);
+        public Task<bool> AuthenticateAsync(CancellationToken ct) => Task.FromResult(!AuthenticationUnavailable);
 
         public Task<LiveSession> CreateBroadcastAsync(CancellationToken ct)
         {
@@ -774,6 +950,9 @@ public class StreamOrchestratorTests : IDisposable
     {
         public List<EncoderStartOptions> StartCalls { get; } = [];
         public bool Stopped;
+        public int StreamFailuresBeforeSuccess;
+        public int FailedStreamStarts;
+        public Action? OnStreamStartFailure;
         private bool _running;
 
         public bool IsRunning => _running;
@@ -794,7 +973,15 @@ public class StreamOrchestratorTests : IDisposable
 
         public Task StartAsync(EncoderStartOptions options, CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
             StartCalls.Add(options);
+            if (options.RtmpUrl.Length > 0 && StreamFailuresBeforeSuccess-- > 0)
+            {
+                FailedStreamStarts++;
+                _running = false;
+                OnStreamStartFailure?.Invoke();
+                throw new IOException("simulated tee start failure");
+            }
             _running = true;
             TimeSinceProgress = TimeSpan.Zero; // a fresh start clears any prior stall
             if (!KeepRtmpLegDownOnStart)
@@ -827,6 +1014,7 @@ public class StreamOrchestratorTests : IDisposable
     private sealed class FakeRecording : IRecordingManager
     {
         public int RetentionRuns;
+        public int InitialFailuresBeforeSuccess;
         public bool ThrowOnSweep; // throws on periodic sweeps (not the boot sweep)
         public long ActiveRecordingLength; // current recording-file size the watchdog samples
         public bool GrowOnSample; // simulate ffmpeg writing: grows on each sample (keyed to sampling, not wall-clock)
@@ -849,6 +1037,7 @@ public class StreamOrchestratorTests : IDisposable
         public Task EnforceRetentionAsync(CancellationToken ct)
         {
             RetentionRuns++;
+            if (InitialFailuresBeforeSuccess-- > 0) throw new IOException("simulated initial retention failure");
             if (ThrowOnSweep && RetentionRuns >= 2)
             {
                 throw new IOException("simulated retention sweep failure");
@@ -890,6 +1079,9 @@ public class StreamOrchestratorTests : IDisposable
     {
         public bool Started;
         public int StartCalls;
+        public int FailuresBeforeSuccess;
+        public int StopCalls;
+        public Func<CancellationToken, Task>? StartOverride;
         public bool IsCapturing => Started;
         public int Width => 1920;
         public int Height => 1080;
@@ -904,12 +1096,14 @@ public class StreamOrchestratorTests : IDisposable
         public Task StartAsync(CancellationToken ct)
         {
             StartCalls++;
-            Started = true;
-            return Task.CompletedTask;
+            Started = true; // initialize a resource before a simulated failure
+            if (FailuresBeforeSuccess-- > 0) throw new IOException("simulated capture initialization failure");
+            return StartOverride?.Invoke(ct) ?? Task.CompletedTask;
         }
 
         public Task StopAsync()
         {
+            StopCalls++;
             Started = false;
             return Task.CompletedTask;
         }

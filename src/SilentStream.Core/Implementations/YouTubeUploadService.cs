@@ -66,11 +66,14 @@ public sealed class YouTubeUploadService(
             var progress = await request.UploadAsync(ct).ConfigureAwait(false);
             if (progress.Status != UploadStatus.Completed)
             {
+                if (progress.Exception is null or HttpRequestException or IOException or TimeoutException ||
+                    progress.Exception is GoogleApiException apiError && (int)apiError.HttpStatusCode >= 500)
+                    throw new UploadOutcomeUnknownException("업로드 응답을 확정하지 못했습니다. 실제 완료 여부 확인이 필요합니다.", progress.Exception);
                 throw Classify(progress.Exception, title);
             }
 
             var videoId = request.ResponseBody?.Id
-                          ?? throw new InvalidOperationException("업로드는 완료됐으나 videoId를 받지 못했습니다.");
+                          ?? throw new UploadOutcomeUnknownException("업로드는 완료됐으나 videoId를 받지 못했습니다.");
             log.Info($"VOD 업로드 완료: \"{title}\" → https://youtu.be/{videoId}");
             return videoId;
         }
@@ -78,6 +81,10 @@ public sealed class YouTubeUploadService(
             UploadErrorClassifier.IsChannelUploadLimit(ex))
         {
             throw Classify(ex, title);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or TimeoutException)
+        {
+            throw new UploadOutcomeUnknownException("업로드 응답이 끊겼습니다. 실제 완료 여부를 확인하기 전 재전송하지 않습니다.", ex);
         }
         finally
         {

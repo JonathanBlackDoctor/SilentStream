@@ -34,11 +34,11 @@ public sealed class UploadQueue : IUploadQueue
     // Keep recent terminal jobs (phone visibility / manual retry) but prune older ones so
     // upload_queue.json cannot grow without bound. Pending/Uploading jobs are never pruned.
     private readonly int _maxCompletedRetained;
-    private readonly int _maxFailedRetained;
 
     private readonly object _gate = new();
     private QueueState? _state;
     private Task? _worker;
+    private bool _persistenceDirty;
     private volatile TaskCompletionSource _signal =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -97,7 +97,6 @@ public sealed class UploadQueue : IUploadQueue
         _maxPerDay = maxPerDay;
         _maxAttempts = maxAttempts;
         _maxCompletedRetained = maxCompletedRetained;
-        _maxFailedRetained = maxFailedRetained;
         _assets = assetCatalog;
         _playlists = playlistService;
     }
@@ -118,6 +117,10 @@ public sealed class UploadQueue : IUploadQueue
         lock (_gate)
         {
             var state = LoadLocked();
+            if (state.Jobs.Any(existing => existing.Id == job.Id ||
+                (!string.IsNullOrWhiteSpace(job.SourceKey) && existing.SourceKey == job.SourceKey))) return;
+            if (_assets?.Snapshot().Any(a => !string.IsNullOrWhiteSpace(a.VideoId) &&
+                (a.Id == job.Id || (!string.IsNullOrWhiteSpace(job.SourceKey) && a.SourceKey == job.SourceKey))) == true) return;
             state.Jobs.Add(job);
             PersistLocked();
         }
@@ -162,13 +165,16 @@ public sealed class UploadQueue : IUploadQueue
             for (var i = 0; i < state.Jobs.Count; i++)
             {
                 var job = state.Jobs[i];
-                if (!selected.Contains(job.Id) || job.Status != UploadJobStatus.Failed ||
+                if (!selected.Contains(job.Id) || job.Status != UploadJobStatus.Failed || job.NeedsUploadReconciliation ||
                     !string.IsNullOrWhiteSpace(job.VideoId) || !Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath))
                     continue;
                 state.Jobs[i] = job with
                 {
-                    Status = UploadJobStatus.Pending, Attempts = 0, UploadStartedAtUtc = null,
-                    UploadCompletedAtUtc = null, UploadDurationSeconds = null
+                    Status = UploadJobStatus.Pending,
+                    Attempts = 0,
+                    UploadStartedAtUtc = null,
+                    UploadCompletedAtUtc = null,
+                    UploadDurationSeconds = null
                 };
                 count++;
             }
@@ -186,29 +192,52 @@ public sealed class UploadQueue : IUploadQueue
     {
         lock (_gate)
         {
-            if (_worker is not null)
+            if (_worker is { IsCompleted: false })
             {
                 return; // idempotent
             }
-            // Crash recovery: a job left mid-upload by a previous run returns to the queue.
-            var state = LoadLocked();
-            RecoverLegacyQuotaFailuresLocked(state);
-            var requeued = 0;
-            for (var i = 0; i < state.Jobs.Count; i++)
-            {
-                if (state.Jobs[i].Status == UploadJobStatus.Uploading)
-                {
-                    state.Jobs[i] = state.Jobs[i] with { Status = UploadJobStatus.Pending };
-                    requeued++;
-                }
-            }
-            if (requeued > 0)
-            {
-                PersistLocked();
-            }
-            PruneTerminalLocked();
-            _worker = WorkerAsync(ct);
+            var initialized = false;
+            try { InitializeQueueLocked(); initialized = true; }
+            catch (Exception ex) { _log.Error("업로드 기록을 읽지 못했습니다. 녹화는 계속하고 업로드 기록 복구를 기다립니다.", ex); }
+            _worker = WorkerAsync(ct, initialized);
         }
+    }
+
+    private void InitializeQueueLocked()
+    {
+        // Reconcile durable receipts first. A lost acknowledgement cannot safely be retried:
+        // YouTube may already have accepted the video before the local process stopped.
+        var state = LoadLocked();
+        var receipts = _assets?.Snapshot() ?? [];
+        RecoverLegacyQuotaFailuresLocked(state);
+        var requeued = 0;
+        for (var i = 0; i < state.Jobs.Count; i++)
+        {
+            var job = state.Jobs[i];
+            var videoId = job.VideoId ?? receipts.FirstOrDefault(a => !string.IsNullOrWhiteSpace(a.VideoId) &&
+                (a.Id == job.Id || (!string.IsNullOrWhiteSpace(job.SourceKey) && a.SourceKey == job.SourceKey)))?.VideoId;
+            if (!string.IsNullOrWhiteSpace(videoId) && job.Status is UploadJobStatus.Pending or UploadJobStatus.Uploading)
+            {
+                state.Jobs[i] = job with
+                {
+                    Status = UploadJobStatus.Completed,
+                    VideoId = videoId,
+                    NeedsUploadReconciliation = false
+                };
+                requeued++;
+            }
+            else if (job.Status == UploadJobStatus.Uploading)
+            {
+                state.Jobs[i] = job with { Status = UploadJobStatus.Failed, NeedsUploadReconciliation = true };
+                _log.Warn($"{job.ResolvedSlotLabel} 중단된 업로드의 완료 여부 확인 필요 — 중복 전송을 막기 위해 자동 재시도를 보류합니다.");
+                requeued++;
+            }
+        }
+        if (requeued > 0)
+        {
+            PersistLocked();
+        }
+        PruneTerminalLocked();
     }
 
     // Releases before 0.4.22 exhausted the retry budget on YouTube quota responses. Repair
@@ -264,8 +293,14 @@ public sealed class UploadQueue : IUploadQueue
                         continue;
                 }
                 else if (state.QuotaRecoveryVersion == 1) continue;
-                state.Jobs[i] = job with { Status = UploadJobStatus.Pending, Attempts = 0,
-                    UploadStartedAtUtc = null, UploadCompletedAtUtc = null, UploadDurationSeconds = null };
+                state.Jobs[i] = job with
+                {
+                    Status = UploadJobStatus.Pending,
+                    Attempts = 0,
+                    UploadStartedAtUtc = null,
+                    UploadCompletedAtUtc = null,
+                    UploadDurationSeconds = null
+                };
                 recovered++;
             }
         }
@@ -274,33 +309,51 @@ public sealed class UploadQueue : IUploadQueue
         if (recovered > 0) _log.Info($"기존 한도 실패 {recovered}건을 {date:yyyy-MM-dd} 재시도 큐로 1회 복구했습니다. 한도 대기는 유지합니다.");
     }
 
-    private async Task WorkerAsync(CancellationToken ct)
+    private async Task WorkerAsync(CancellationToken ct, bool initialized)
     {
         _log.Info("VOD 업로드 워커를 시작했습니다.");
         while (!ct.IsCancellationRequested)
         {
-            var job = NextPending();
-            if (job is null)
+            try
             {
-                if (!await WaitForSignalAsync(ct).ConfigureAwait(false))
+                if (!initialized)
                 {
-                    return;
+                    lock (_gate) InitializeQueueLocked();
+                    initialized = true;
                 }
-                continue;
-            }
+                // An acknowledged success remains terminal in memory if disk writes fail. Repair
+                // persistence before any further network operation; never turn it into a new upload.
+                lock (_gate) { if (_persistenceDirty) PersistLocked(); }
+                var job = NextPending();
+                if (job is null)
+                {
+                    if (!await WaitForSignalAsync(ct).ConfigureAwait(false))
+                    {
+                        return;
+                    }
+                    continue;
+                }
 
-            ResetQuotaWindowIfNewDay();
-            if (PausedUntilUtc is { } resumeAt)
+                ResetQuotaWindowIfNewDay();
+                if (PausedUntilUtc is { } resumeAt)
+                {
+                    _log.Info($"YouTube 업로드 한도 대기 — {resumeAt.ToLocalTime():yyyy-MM-dd HH:mm} 이후 재시도.");
+                    if (!await DelayUntilAsync(resumeAt, ct).ConfigureAwait(false))
+                    {
+                        return;
+                    }
+                    continue; // recompute window after reset
+                }
+
+                await TryUploadAsync(job, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+            catch (Exception ex)
             {
-                _log.Info($"YouTube 업로드 한도 대기 — {resumeAt.ToLocalTime():yyyy-MM-dd HH:mm} 이후 재시도.");
-                if (!await DelayUntilAsync(resumeAt, ct).ConfigureAwait(false))
-                {
-                    return;
-                }
-                continue; // recompute window after reset
+                _log.Error("업로드 상태 저장/처리 실패 — 기존 상태와 파일을 보존하고 저장 복구 후 계속합니다.", ex);
+                try { await _delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { return; }
             }
-
-            await TryUploadAsync(job, ct).ConfigureAwait(false);
         }
     }
 
@@ -315,49 +368,12 @@ public sealed class UploadQueue : IUploadQueue
             UploadDurationSeconds = null,
             FileSizeBytes = j.FileSizeBytes ?? TryGetFileSize(j.FilePath)
         });
+        string videoId;
         try
         {
             var privacy = _configStore.Load().Periods.VodPrivacy;
-            var videoId = await _uploadService
+            videoId = await _uploadService
                 .UploadAsync(job.FilePath, job.Title, privacy, ct).ConfigureAwait(false);
-
-            var completedAtUtc = UtcNow();
-            var durationSeconds = Math.Max(0, (completedAtUtc - startedAtUtc).TotalSeconds);
-            UpdateJob(job.Id, j => j with
-            {
-                Status = UploadJobStatus.Completed,
-                VideoId = videoId,
-                UploadCompletedAtUtc = completedAtUtc,
-                UploadDurationSeconds = durationSeconds
-            });
-            try
-            {
-                _assets?.MarkUploaded(job.Id, videoId);
-            }
-            catch (Exception ex)
-            {
-                // The upload already succeeded. Preserve that terminal state even if the optional
-                // download-asset metadata cannot be refreshed right now.
-                _log.Warn($"{job.PeriodNumber}교시 다운로드 자산의 YouTube 연결 저장 실패: {ex.Message}");
-            }
-            IncrementQuota();
-            if (_playlists is not null)
-            {
-                try
-                {
-                    var room = TitleTemplater.ResolveRoomName(_configStore.Load());
-                    await _playlists.AddVideoAsync(room, job.Date, videoId, ct).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    // Upload success is terminal even if playlist association is temporarily down.
-                    // DailyPlaylistCoordinator will retry from the durable asset/queue metadata.
-                    _log.Warn($"{job.ResolvedSlotLabel} 재생목록 편입 지연: {ex.Message}");
-                }
-            }
-            _log.Info($"{job.ResolvedSlotLabel} VOD 업로드 완료 — {FormatDuration(durationSeconds)}, {FormatBytes(job.FileSizeBytes ?? TryGetFileSize(job.FilePath))}.");
-            TryDeleteCutFile(job.FilePath);
-            PruneTerminal();
         }
         catch (QuotaExceededException ex)
         {
@@ -373,10 +389,13 @@ public sealed class UploadQueue : IUploadQueue
             }
             else SetQuotaSpent();
             _log.Warn($"{job.PeriodNumber}교시 업로드 quota 초과 — 큐에 보존하고 리셋 후 자동 재개합니다.");
+            return;
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or UploadOutcomeUnknownException)
         {
-            UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Pending });
+            UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Failed, NeedsUploadReconciliation = true });
+            _log.Warn($"{job.ResolvedSlotLabel} 업로드 완료 여부 미확정 — 실제 상태를 확인하기 전 재전송하지 않습니다: {ex.Message}");
+            return;
         }
         catch (InvalidDataException ex)
         {
@@ -384,6 +403,7 @@ public sealed class UploadQueue : IUploadQueue
             // it for inspection, fail once and let other valid recordings continue.
             UpdateJob(job.Id, j => j with { Status = UploadJobStatus.Failed, Attempts = job.Attempts + 1 });
             _log.Error($"{job.ResolvedSlotLabel} 영상 검증 실패 — 원본 확인 필요(자동 재시도 중지).", ex);
+            return;
         }
         catch (Exception ex)
         {
@@ -400,7 +420,45 @@ public sealed class UploadQueue : IUploadQueue
                 _log.Warn($"{job.PeriodNumber}교시 업로드 실패({attempts}/{_maxAttempts}) — 재시도 예정: {ex.Message}");
                 await BackoffAsync(attempts, ct).ConfigureAwait(false);
             }
+            return;
         }
+
+        // Nothing below this point may requeue the video: the remote service acknowledged it.
+        var completedAtUtc = UtcNow();
+        var durationSeconds = Math.Max(0, (completedAtUtc - startedAtUtc).TotalSeconds);
+        try
+        {
+            if (_assets is not null)
+            {
+                if (_assets.Find(job.Id) is null)
+                    _assets.Upsert(new Models.PeriodAsset(job.Id, job.Date, job.PeriodNumber, job.Title,
+                        SlotId: job.ResolvedSlotId, SlotLabel: job.ResolvedSlotLabel,
+                        SlotKind: job.ResolvedSlotKind, SlotOrder: job.ResolvedSlotOrder, SourceKey: job.SourceKey));
+                _assets.MarkUploaded(job.Id, videoId, job.FileSizeBytes ?? TryGetFileSize(job.FilePath),
+                    Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath) ? 1 : 0);
+            }
+        }
+        catch (Exception ex) { _log.Warn($"{job.ResolvedSlotLabel} 업로드 영수증 저장 지연: {ex.Message}"); }
+        UpdateJob(job.Id, j => j with
+        {
+            Status = UploadJobStatus.Completed,
+            VideoId = videoId,
+            UploadCompletedAtUtc = completedAtUtc,
+            UploadDurationSeconds = durationSeconds
+        });
+        IncrementQuota();
+        if (_playlists is not null)
+        {
+            try
+            {
+                var room = TitleTemplater.ResolveRoomName(_configStore.Load());
+                await _playlists.AddVideoAsync(room, job.Date, videoId, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) { _log.Warn($"{job.ResolvedSlotLabel} 재생목록 편입 지연: {ex.Message}"); }
+        }
+        _log.Info($"{job.ResolvedSlotLabel} VOD 업로드 완료 — {FormatDuration(durationSeconds)}, {FormatBytes(job.FileSizeBytes ?? TryGetFileSize(job.FilePath))}.");
+        TryDeleteCutFile(job.FilePath);
+        PruneTerminal();
     }
 
     private UploadJob? NextPending()
@@ -465,35 +523,32 @@ public sealed class UploadQueue : IUploadQueue
     }
 
     /// <summary>
-    /// Caps retained terminal jobs (most-recent <see cref="MaxCompletedRetained"/> completed and
-    /// <see cref="MaxFailedRetained"/> failed) so the queue file stays bounded. Pending/Uploading
-    /// jobs are never removed — dropping one would lose an unsent 교시. Caller holds <see cref="_gate"/>.
+    /// Caps completed history. Unresolved jobs retain their identities until explicitly reconciled;
+    /// dropping one would lose evidence or cause another upload. Caller holds <see cref="_gate"/>.
     /// </summary>
     private void PruneTerminalLocked()
     {
         var jobs = LoadLocked().Jobs; // insertion order: oldest first
         var completed = jobs.Where(j => j.Status == UploadJobStatus.Completed).ToList();
-        var failed = jobs.Where(j => j.Status == UploadJobStatus.Failed).ToList();
-        if (completed.Count <= _maxCompletedRetained && failed.Count <= _maxFailedRetained)
+        if (completed.Count <= _maxCompletedRetained)
         {
             return;
         }
 
         var drop = new HashSet<string>(StringComparer.Ordinal);
+        IReadOnlyList<Models.PeriodAsset> receipts;
+        try { receipts = _assets?.Snapshot() ?? []; }
+        catch (Exception ex) { _log.Warn($"업로드 영수증 확인 실패 — 완료 큐 기록도 보존: {ex.Message}"); return; }
         if (completed.Count > _maxCompletedRetained)
         {
             foreach (var j in completed.Take(completed.Count - _maxCompletedRetained))
             {
-                drop.Add(j.Id);
+                if (receipts.Any(a => a.Id == j.Id && !string.IsNullOrWhiteSpace(a.VideoId) && a.VideoId == j.VideoId &&
+                    (string.IsNullOrWhiteSpace(j.SourceKey) || a.SourceKey == j.SourceKey))) drop.Add(j.Id);
             }
         }
-        if (failed.Count > _maxFailedRetained)
-        {
-            foreach (var j in failed.Take(failed.Count - _maxFailedRetained))
-            {
-                drop.Add(j.Id);
-            }
-        }
+        // Failed jobs are unresolved evidence, not disposable history. Dropping their SourceKey
+        // also lets VOD recovery cut and enqueue the same failure forever.
 
         if (jobs.RemoveAll(j => drop.Contains(j.Id)) > 0)
         {
@@ -598,26 +653,35 @@ public sealed class UploadQueue : IUploadQueue
         try
         {
             var json = File.ReadAllText(_queueFile);
-            _state = JsonSerializer.Deserialize<QueueState>(json, JsonOptions) ?? new QueueState();
+            _state = JsonSerializer.Deserialize<QueueState>(json, JsonOptions)
+                ?? throw new JsonException("Upload queue is null.");
+            if (_state.Jobs is null) { _state = null; throw new JsonException("Upload jobs are null."); }
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
-            File.Copy(_queueFile, _queueFile + ".bak", overwrite: true);
-            _state = new QueueState();
+            // A blank replacement would discard quota state and receipts and upload duplicates.
+            _state = null;
+            throw new InvalidDataException("업로드 목록이 손상되었습니다. 원본을 보존하고 복구가 필요합니다.", ex);
         }
         return _state;
     }
 
     private void PersistLocked()
     {
+        _persistenceDirty = true;
         var dir = Path.GetDirectoryName(_queueFile);
         if (!string.IsNullOrEmpty(dir))
         {
             Directory.CreateDirectory(dir);
         }
         var tmp = _queueFile + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(_state, JsonOptions));
+        using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, _state, JsonOptions);
+            stream.Flush(flushToDisk: true);
+        }
         File.Move(tmp, _queueFile, overwrite: true);
+        _persistenceDirty = false;
     }
 
     private void TryDeleteCutFile(string path)

@@ -19,7 +19,9 @@ public sealed record PeriodAsset(
     string SlotLabel = "",
     string SlotKind = ScheduleSlotKinds.Period,
     int SlotOrder = 0,
-    string? SourceKey = null)
+    string? SourceKey = null,
+    long? UploadedFileSizeBytes = null,
+    int UploadValidationVersion = 0)
 {
     public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
         ? SlotId

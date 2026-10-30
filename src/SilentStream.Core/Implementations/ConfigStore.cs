@@ -24,6 +24,7 @@ public sealed class ConfigStore : IConfigStore
 
     private readonly string _configFile;
     private readonly object _gate = new();
+    private string? _lastGoodJson;
 
     public ConfigStore() : this(AppPaths.ConfigFile) { }
 
@@ -36,6 +37,8 @@ public sealed class ConfigStore : IConfigStore
         {
             if (!File.Exists(_configFile))
             {
+                var recovered = RecoverLastGood();
+                if (recovered is not null) return recovered;
                 // True fresh install: seed the room label (호실명) from the machine name so each PC
                 // starts distinguishable in a shared-channel deployment; the operator renames it in
                 // settings. Done ONLY here — never in CreateDefault() — so the corrupt-file fallback
@@ -50,6 +53,8 @@ public sealed class ConfigStore : IConfigStore
             {
                 var json = File.ReadAllText(_configFile);
                 var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
+                if (config is null) throw new JsonException("Configuration is null.");
+                _lastGoodJson = json;
                 return WithRuntimeDefaults(config ?? AppConfig.CreateDefault());
             }
             catch (Exception loadEx) when (loadEx is JsonException or IOException or UnauthorizedAccessException)
@@ -68,7 +73,11 @@ public sealed class ConfigStore : IConfigStore
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
                 }
-                return WithRuntimeDefaults(AppConfig.CreateDefault());
+                var recovered = RecoverLastGood();
+                if (recovered is not null) return recovered;
+                var unavailable = AppConfig.CreateDefault();
+                unavailable.AutomaticOperationEnabled = false;
+                return WithRuntimeDefaults(unavailable);
             }
         }
     }
@@ -85,9 +94,34 @@ public sealed class ConfigStore : IConfigStore
             }
 
             var tmp = _configFile + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(config, JsonOptions));
+            var json = JsonSerializer.Serialize(config, JsonOptions);
+            File.WriteAllText(tmp, json);
             File.Move(tmp, _configFile, overwrite: true);
+            _lastGoodJson = json;
+            // A separate validated copy survives process restart; never use the corrupt .bak as
+            // configuration. Failure to update this copy must not undo a committed primary save.
+            try
+            {
+                File.WriteAllText(_configFile + ".last-good.tmp", json);
+                File.Move(_configFile + ".last-good.tmp", _configFile + ".last-good", overwrite: true);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    private AppConfig? RecoverLastGood()
+    {
+        try
+        {
+            var json = _lastGoodJson ?? (File.Exists(_configFile + ".last-good")
+                ? File.ReadAllText(_configFile + ".last-good") : null);
+            if (json is null) return null;
+            var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions);
+            if (config is null) return null;
+            _lastGoodJson = json;
+            return WithRuntimeDefaults(config);
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException) { return null; }
     }
 
     public void Update(Action<AppConfig> mutate)

@@ -197,6 +197,7 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
         var catalogCommitted = false;
         var encodingStarted = false;
         var recoveryCompleted = false;
+        string? failureMessage = null;
 
         try
         {
@@ -225,15 +226,14 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             {
                 var message = ClassifyDownloadFailure(output);
                 _log.Warn($"YouTube 음성 복구 다운로드 실패(asset={asset.Id}, exit={exitCode}): {Tail(output)}");
-                SetStatus(job, AudioRecoveryStatus.Failed, message);
+                failureMessage = message;
                 return;
             }
 
             var sourcePath = FindDownloadedSource(temporaryDirectory);
             if (sourcePath is null)
             {
-                SetStatus(job, AudioRecoveryStatus.Failed,
-                    "YouTube에서 받은 음성 파일이 비어 있거나 형식이 올바르지 않습니다.");
+                failureMessage = "YouTube에서 받은 음성 파일이 비어 있거나 형식이 올바르지 않습니다.";
                 return;
             }
 
@@ -242,14 +242,13 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             completedAudioPath = await _audioExport.ExportAsync(sourcePath, asset.Id, ct).ConfigureAwait(false);
             if (!IsCached(completedAudioPath))
             {
-                SetStatus(job, AudioRecoveryStatus.Failed,
-                    "YouTube 음성을 다운로드용 파일로 변환하지 못했습니다.");
+                failureMessage = "YouTube 음성을 다운로드용 파일로 변환하지 못했습니다.";
                 return;
             }
 
             if (!_assets.MarkAudioPath(asset.Id, completedAudioPath!))
             {
-                SetStatus(job, AudioRecoveryStatus.Failed, "복구한 음성 파일 정보를 저장하지 못했습니다.");
+                failureMessage = "복구한 음성 파일 정보를 저장하지 못했습니다.";
                 return;
             }
 
@@ -264,19 +263,17 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
                 : encodingStarted
                     ? "다운로드한 음성 파일의 변환 시간이 초과되었습니다."
                     : $"YouTube 음성 복구가 {_downloadTimeout.TotalMinutes:0}분 제한시간을 초과했습니다.";
-            SetStatus(job, AudioRecoveryStatus.Failed, message);
+            failureMessage = message;
         }
         catch (Win32Exception ex)
         {
             _log.Warn($"YouTube 음성 복구 도구 실행 실패: {ex.Message}");
-            SetStatus(job, AudioRecoveryStatus.Failed,
-                "YouTube 음성 복구 도구가 설치되어 있지 않거나 실행할 수 없습니다.");
+            failureMessage = "YouTube 음성 복구 도구가 설치되어 있지 않거나 실행할 수 없습니다.";
         }
         catch (Exception ex)
         {
             _log.Error("YouTube 음성 복구 중 오류", ex);
-            SetStatus(job, AudioRecoveryStatus.Failed,
-                "YouTube 음성 복구 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+            failureMessage = "YouTube 음성 복구 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.";
         }
         finally
         {
@@ -288,13 +285,14 @@ public sealed class YouTubeAudioRecoveryService : IYouTubeAudioRecoveryService, 
             {
                 TryDeleteTemporaryDirectory(temporaryDirectory);
             }
-            // Available is externally observable. Publish it only after the per-job temporary
+            // Terminal states are externally observable. Publish them only after the per-job temporary
             // directory has been removed so callers never see a terminal state with cleanup
             // still pending (the race is especially visible on Linux runners).
             if (recoveryCompleted)
             {
                 SetStatus(job, AudioRecoveryStatus.Available);
             }
+            else if (failureMessage is not null) SetStatus(job, AudioRecoveryStatus.Failed, failureMessage);
             if (enteredExecutionGate)
             {
                 _executionGate.Release();

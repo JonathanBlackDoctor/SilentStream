@@ -182,6 +182,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     public async Task StartAsync(CancellationToken ct)
     {
         var resumeFromRecordingOnly = false;
+        CancellationTokenSource? startedRun = null;
         lock (_gate)
         {
             if (State == StreamState.RecordingOnly)
@@ -197,7 +198,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             }
             else
             {
-                _runCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _runCts = startedRun = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 SetState(StreamState.Warmup);
             }
         }
@@ -213,31 +214,14 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         while (_retryWakeSignal.Wait(0))
         {
         }
-        var token = _runCts!.Token;
+        // Hold this run identity; a delayed old start must never adopt a later run token.
+        var token = startedRun!.Token;
 
         try
         {
             await Task.Delay(_options.WarmupDelay, token).ConfigureAwait(false);
 
-            // Recording bookkeeping first: it must survive any streaming failure.
-            _sessionStart = DateTime.Now;
-            await _recording.EnforceRetentionAsync(token).ConfigureAwait(false);
-
-            await _capture.StartAsync(token).ConfigureAwait(false);
-            try
-            {
-                // Apply the configured multi-source mixer layout (system + N mics, per-source
-                // gain/mute/gate) before capture so headless auto-start matches the UI (plan §3.4).
-                var audioConfig = _configStore.Load().Audio;
-                _audioMixer.AutoIncludeMicrophones = audioConfig.AutoIncludeMicrophones;
-                _audioMixer.ConfigureSources(AudioConfigMapper.ToSourceSettings(audioConfig));
-                await _audioMixer.StartAsync(token).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                // §4.4: audio device trouble must not stop the show.
-                _log.Error("오디오 초기화 실패 — 영상만으로 계속합니다.", ex);
-            }
+            await InitializeCaptureUntilReadyAsync(token).ConfigureAwait(false);
 
             await ConnectUntilLiveAsync(token).ConfigureAwait(false);
 
@@ -245,7 +229,59 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         }
         catch (OperationCanceledException)
         {
-            await StopAsync().ConfigureAwait(false);
+            await StopRunAsync(startedRun).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Transient boot-time storage/capture failures must not strand the state in Warmup.</summary>
+    private async Task InitializeCaptureUntilReadyAsync(CancellationToken token)
+    {
+        var delay = _options.RetryBaseDelay;
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                // Recording bookkeeping first: it must survive any streaming failure.
+                _sessionStart = DateTime.Now;
+                await _recording.EnforceRetentionAsync(token).ConfigureAwait(false);
+
+                await _capture.StartAsync(token).ConfigureAwait(false);
+                try
+                {
+                    // Apply the configured multi-source mixer layout (system + N mics, per-source
+                    // gain/mute/gate) before capture so headless auto-start matches the UI (plan §3.4).
+                    var audioConfig = _configStore.Load().Audio;
+                    _audioMixer.AutoIncludeMicrophones = audioConfig.AutoIncludeMicrophones;
+                    _audioMixer.ConfigureSources(AudioConfigMapper.ToSourceSettings(audioConfig));
+                    await _audioMixer.StartAsync(token).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // §4.4: audio device trouble must not stop the show.
+                    _log.Error("오디오 초기화 실패 — 영상만으로 계속합니다.", ex);
+                }
+                return;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                token.ThrowIfCancellationRequested();
+                _log.Error("녹화 초기화 실패 — 부분 자원을 정리하고 다시 시도합니다.", ex);
+                try { await _capture.StopAsync().ConfigureAwait(false); }
+                catch (Exception cleanup) { _log.Warn($"캡처 초기화 정리 실패: {cleanup.Message}"); }
+                try { await _audioMixer.StopAsync().ConfigureAwait(false); }
+                catch (Exception cleanup) { _log.Warn($"오디오 초기화 정리 실패: {cleanup.Message}"); }
+                lock (_gate)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (State is StreamState.Stopping or StreamState.Idle)
+                        throw new OperationCanceledException(token);
+                    SetState(StreamState.Retrying);
+                }
+                await _retryWakeSignal.WaitAsync(delay, token).ConfigureAwait(false);
+                delay = TimeSpan.FromTicks(Math.Min(delay.Ticks * 2, _options.RetryMaxDelay.Ticks));
+            }
         }
     }
 
@@ -286,11 +322,16 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         }
     }
 
-    public async Task StopAsync()
+    public Task StopAsync() => StopRunAsync(expectedRun: null);
+
+    private async Task StopRunAsync(CancellationTokenSource? expectedRun)
     {
         CancellationTokenSource? cts;
         lock (_gate)
         {
+            // Compare and claim Stopping atomically. An old cancellation continuation
+            // cannot tear down a newer run that already returned to Live.
+            if (expectedRun is not null && !ReferenceEquals(_runCts, expectedRun)) return;
             if (State is StreamState.Idle or StreamState.Stopping)
             {
                 return;
@@ -596,12 +637,34 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         return true;
     }
 
+    private async Task<bool> RecoverRecordingOnlyEncoderAsync(CancellationToken token)
+    {
+        await _swapLock.WaitAsync(token).ConfigureAwait(false);
+        var claimed = false;
+        try
+        {
+            lock (_gate)
+            {
+                token.ThrowIfCancellationRequested();
+                if (State != StreamState.RecordingOnly || Volatile.Read(ref _encoderSwapInProgress) != 0)
+                    return false;
+                Volatile.Write(ref _encoderSwapInProgress, 1);
+                claimed = true;
+            }
+            return await RestartEncoderInPlaceAsync(string.Empty, token).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (claimed) Volatile.Write(ref _encoderSwapInProgress, 0);
+            _swapLock.Release();
+        }
+    }
+
     /// <summary>Infinite exponential-backoff connect loop (plan §4.4): 1→2→4…→60s cap.</summary>
     private async Task ConnectUntilLiveAsync(CancellationToken ct)
     {
         var delay = _options.RetryBaseDelay;
         var attempt = 0;
-        var recordingStarted = false;
 
         while (true)
         {
@@ -630,10 +693,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 // recording keeps running while streaming retries (and even if it never
                 // connects). StartStreamingOnceAsync switches it over to the RTMP+mp4 tee once
                 // a broadcast is finally created.
-                if (!recordingStarted)
-                {
-                    recordingStarted = await StartRecordingOnlyAsync(ct).ConfigureAwait(false);
-                }
+                await StartRecordingOnlyAsync(ct).ConfigureAwait(false);
 
                 // A paired operator can skip a long exponential-backoff interval from the remote
                 // controller. WaitAsync(timeout) returns false for the normal timer path and true
@@ -907,15 +967,19 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                         }
                     }
                 }
-                else if (State == StreamState.RecordingOnly && !_encoder.IsRunning &&
-                         Volatile.Read(ref _encoderSwapInProgress) == 0)
+                else if (State == StreamState.RecordingOnly &&
+                         Volatile.Read(ref _encoderSwapInProgress) == 0 &&
+                         (!_encoder.IsRunning ||
+                          (_encoder.TimeSinceProgress > _options.StallTimeout && !recordingAdvancing)))
                 {
-                    // 방송만 중지 후 남은 녹화 전용 인코더가 죽으면 녹화만 되살린다 — 스트림 재수립 금지.
-                    // (교체가 진행 중인 의도적 정지 구간은 _encoderSwapInProgress 플래그로 건너뛴다.)
-                    _log.Warn("녹화 인코더 사망 감지 — 녹화를 재시작합니다.");
-                    await StartRecordingOnlyAsync(ct).ConfigureAwait(false);
-                    lastRecordingLength = -1L;
-                    lastRecordingGrowthAt = DateTime.UtcNow;
+                    // Recording-only needs the same dead/stalled detection as Live, without
+                    // recreating a broadcast or racing an operator resume/full stop.
+                    _log.Warn("녹화 인코더 사망/스톨 감지 — 녹화를 재시작합니다.");
+                    if (await RecoverRecordingOnlyEncoderAsync(ct).ConfigureAwait(false))
+                    {
+                        lastRecordingLength = -1L;
+                        lastRecordingGrowthAt = DateTime.UtcNow;
+                    }
                 }
 
                 if (DateTime.UtcNow - lastSweep >= _options.RetentionInterval)

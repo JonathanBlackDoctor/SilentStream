@@ -229,7 +229,8 @@ public class UploadQueueTests : IDisposable
         var uploader = new FakeUploader();
         var queue = new UploadQueue(uploader, _configStore, new LogService(), _queueFile,
             () => clock.Now, clock.Delay, maxPerDay: 2, maxAttempts: 5,
-            maxCompletedRetained: 1, maxFailedRetained: 0);
+            maxCompletedRetained: 1, maxFailedRetained: 0,
+            assetCatalog: new PeriodAssetCatalog(Path.Combine(_dir, "assets.json")));
         queue.Enqueue(MakeJob(1));
         queue.Enqueue(MakeJob(2));
         queue.Enqueue(MakeJob(3));

@@ -11,6 +11,10 @@ const job={date,period:1,slotId:'period-1',slotLabel:'1교시',status:'uploading
 const app={state:'Live',recording:{file:'recording.mp4'},today:{date,periods:[
   {no:1,start:'08:25:00',end:'09:25:00',slotId:'period-1'},
   {no:2,start:'09:25:00',end:'10:25:00',slotId:'period-2'}]},queue:{items:[job],measuredCount:3,averageDurationSeconds:600}};
+test('unknown acknowledgement is visibly held instead of promised a retry',()=>{
+  const html=view.render({queue:{items:[{...job,status:'failed',needsUploadReconciliation:true}]}},{date,fresh:true,now});
+  assert.match(html,/업로드 결과 확인 필요/);assert.match(html,/중복 전송 방지/);assert.doesNotMatch(html,/10:40/);
+});
 test('current date only, exact slot matching, and measured ETA',()=>{
   const data=view.model(app,{date,fresh:true,now});
   assert.equal(data.rows.length,2);assert.match(data.rows[0].detail,/10:40/);

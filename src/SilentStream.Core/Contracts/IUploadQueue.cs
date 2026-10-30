@@ -56,7 +56,8 @@ public sealed record UploadJob(
     DateTimeOffset? UploadCompletedAtUtc = null,
     double? UploadDurationSeconds = null,
     long? FileSizeBytes = null,
-    string? SourceKey = null)
+    string? SourceKey = null,
+    bool NeedsUploadReconciliation = false)
 {
     public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
         ? SlotId

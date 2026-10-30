@@ -24,7 +24,10 @@
       let detail = "", label = ({completed:"업로드 완료",uploading:"업로드 중",pending:"업로드 대기",failed:"업로드 실패"})[job.status] || "상태 확인 필요";
       if (job.status === "completed")
         detail = job.uploadCompletedAtUtc ? time(job.uploadCompletedAtUtc, true) + " 완료" : "업로드 완료 시각 없음";
-      else if (job.status === "failed") detail = "PC에서 실패 원인 확인 필요";
+      else if (job.status === "failed") {
+        if (job.needsUploadReconciliation) { label = "업로드 결과 확인 필요"; detail = "응답이 끊겨 완료 여부 미확정 · 중복 전송 방지를 위해 재시도 보류"; }
+        else detail = "PC에서 실패 원인 확인 필요";
+      }
       else if (!online) detail = "마지막 수신 상태 · 예상 시각 확인 불가";
       else if (queue.pausedUntilUtc && new Date(queue.pausedUntilUtc).getTime() > now)
         detail = time(queue.pausedUntilUtc, true) + " 이후 한도 초과 재시도";
