@@ -21,4 +21,15 @@ for(const view of ['room','control']){
    assert.equal(calls[0].options.body,'{}');
   });
  }
+ test(`${view}: an in-flight command cannot be sent twice`,async()=>{
+  let finish;let count=0;
+  const context=vm.createContext({device:{},roomId:'m112',actionPending:false,
+    controllerFresh:()=>!context.actionPending,roomName:()=> 'M112',render(){},show(){},load:async()=>{},setTimeout(){},
+    confirm:()=>true,api:()=>{count++;return new Promise(resolve=>{finish=resolve})}});
+  vm.runInContext(code,context);
+  const first=vm.runInContext(`act(${view==='room'?'':'"m112",'}"app.restart")`,context);
+  await vm.runInContext(`act(${view==='room'?'':'"m112",'}"app.restart")`,context);
+  assert.equal(count,1);
+  finish({ok:true,body:'{}'});await first;
+ });
 }

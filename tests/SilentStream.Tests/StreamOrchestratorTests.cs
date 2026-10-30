@@ -5,7 +5,7 @@ using Xunit;
 
 namespace SilentStream.Tests;
 
-public class StreamOrchestratorTests : IDisposable
+public class StreamOrchestratorTests : IDisposable, IAsyncLifetime
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("sstream-orch-").FullName;
     private readonly ConfigStore _configStore;
@@ -16,6 +16,7 @@ public class StreamOrchestratorTests : IDisposable
     private readonly FakeMixer _mixer = new();
     private readonly FakeQuality _quality = new();
     private readonly List<StreamState> _states = [];
+    private readonly List<StreamOrchestrator> _createdOrchestrators = [];
 
     public StreamOrchestratorTests()
     {
@@ -30,10 +31,12 @@ public class StreamOrchestratorTests : IDisposable
         TimeSpan? retention = null,
         TimeSpan? liveAutoStop = null,
         TimeSpan? liveAutoStopRetry = null,
-        ILiveReplayCatalog? liveReplays = null)
+        ILiveReplayCatalog? liveReplays = null,
+        TimeSpan? broadcastCompletionTimeout = null,
+        ILogService? log = null)
     {
         var orchestrator = new StreamOrchestrator(
-            _configStore, new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
+            _configStore, log ?? new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
             new StreamOrchestratorOptions
             {
                 WarmupDelay = TimeSpan.FromMilliseconds(10),
@@ -45,11 +48,18 @@ public class StreamOrchestratorTests : IDisposable
                 RtmpLegRetryBaseDelay = TimeSpan.FromMilliseconds(100),
                 RtmpLegRetryMaxDelay = TimeSpan.FromMilliseconds(400),
                 LiveAutoStopAfter = liveAutoStop ?? TimeSpan.FromHours(10),
-                LiveAutoStopRetryAfter = liveAutoStopRetry ?? TimeSpan.FromHours(11)
+                LiveAutoStopRetryAfter = liveAutoStopRetry ?? TimeSpan.FromHours(11),
+                BroadcastCompletionTimeout = broadcastCompletionTimeout ?? TimeSpan.FromSeconds(10)
             }, liveReplays);
         orchestrator.StateChanged += (_, s) => { lock (_states) { _states.Add(s); } };
+        _createdOrchestrators.Add(orchestrator);
         return orchestrator;
     }
+
+    // Existing scenarios count transitions after the now-required initial standalone backup.
+    // Fallback_* tests explicitly verify all starts, including that first recording part.
+    private IReadOnlyList<EncoderStartOptions> StartsAfterInitialBackup => _encoder.StartCalls
+        .Skip(_configStore.Load().Recording.Enabled ? 1 : 0).ToArray();
 
     [Fact]
     public async Task Happy_path_walks_idle_warmup_connecting_live()
@@ -69,7 +79,7 @@ public class StreamOrchestratorTests : IDisposable
         Assert.True(_capture.Started);
         Assert.True(_mixer.Started);
 
-        var options = Assert.Single(_encoder.StartCalls);
+        var options = Assert.Single(StartsAfterInitialBackup);
         Assert.Equal("rtmp://ingest.example/live2/key-1", options.RtmpUrl);
         Assert.EndsWith(".mp4", options.RecordingFilePath);
         Assert.Equal(1920, options.Width);
@@ -136,7 +146,7 @@ public class StreamOrchestratorTests : IDisposable
         Assert.True(await orchestrator.ForceRetryAsync());
 
         Assert.Equal(StreamState.Live, orchestrator.State);
-        Assert.Equal(2, _encoder.StartCalls.Count);
+        Assert.Equal(2, StartsAfterInitialBackup.Count);
         Assert.Equal(1, _youtube.CreateCalls);
         await orchestrator.StopAsync();
     }
@@ -165,6 +175,479 @@ public class StreamOrchestratorTests : IDisposable
     }
 
     [Fact]
+    public async Task Fallback_normal_boot_records_before_the_live_tee_in_distinct_parts()
+    {
+        var orchestrator = CreateOrchestrator();
+        try
+        {
+            await orchestrator.StartAsync(CancellationToken.None);
+            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.Equal(string.Empty, _encoder.StartCalls[0].RtmpUrl);
+            Assert.NotEmpty(_encoder.StartCalls[1].RtmpUrl);
+            Assert.NotEqual(_encoder.StartCalls[0].RecordingFilePath, _encoder.StartCalls[1].RecordingFilePath);
+            Assert.Equal(StreamState.Live, orchestrator.State);
+        }
+        finally { await orchestrator.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Fallback_resume_does_not_hold_the_encoder_lock_during_authentication()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        await orchestrator.StopStreamingKeepRecordingAsync();
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var calls = _youtube.AuthenticateCalls;
+        var starts = _encoder.StartCalls.Count;
+        var resume = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == calls + 1, TimeSpan.FromSeconds(2));
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            _encoder.SimulateDeath();
+            await WaitUntilAsync(() => _encoder.StartCalls.Count > starts && _encoder.IsRunning, TimeSpan.FromSeconds(2));
+            Assert.True(_encoder.IsRunning);
+            Assert.True(_encoder.StartCalls.Count > starts);
+            Assert.Equal(calls + 1, _youtube.AuthenticateCalls);
+            Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+            auth.TrySetResult(true);
+            await resume.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+        }
+        finally { await orchestrator.StopAsync(); await resume.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Fact]
+    public async Task Fallback_late_authentication_result_does_not_create_a_stale_broadcast()
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => _youtube.AuthenticateCalls == 1 ? auth.Task : Task.FromResult(true);
+        var orchestrator = CreateOrchestrator();
+        var oldStart = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            var starts = _encoder.StartCalls.Count;
+            auth.TrySetResult(true);
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, _youtube.CreateCalls);
+            Assert.Equal(starts, _encoder.StartCalls.Count);
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_encoder.IsRunning);
+        }
+        finally { auth.TrySetResult(true); await oldStart.WaitAsync(TimeSpan.FromSeconds(2)); await orchestrator.StopAsync(); }
+    }
+
+    [Fact]
+    public async Task Fallback_stop_during_guard_recovery_does_not_affect_the_next_run()
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovering = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var recordingStarts = 0;
+        _encoder.StartOverride = async (options, token) =>
+        {
+            if (options.RtmpUrl.Length == 0 && Interlocked.Increment(ref recordingStarts) == 2)
+            { recovering.TrySetResult(); await release.Task.WaitAsync(token); }
+        };
+        var orchestrator = CreateOrchestrator();
+        var oldStart = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            _encoder.SimulateDeath();
+            await recovering.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            _youtube.AuthenticateOverride = null;
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            var starts = _encoder.StartCalls.Count;
+            release.TrySetResult();
+            Assert.Equal(starts, _encoder.StartCalls.Count);
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_encoder.IsRunning);
+            Assert.Equal(1, _encoder.MaxConcurrentOperations);
+        }
+        finally { release.TrySetResult(); await orchestrator.StopAsync(); await oldStart.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Fact]
+    public async Task Fallback_stop_is_not_blocked_by_a_reconnect_api_ignoring_cancellation()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task; // a provider does not honor cancellation
+        var calls = _youtube.AuthenticateCalls;
+        _encoder.SimulateDeath();
+        Task? stopping = null;
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls > calls, TimeSpan.FromSeconds(2));
+            Assert.True(_youtube.AuthenticateCalls > calls);
+            stopping = orchestrator.StopAsync();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(StreamState.Idle, orchestrator.State);
+            _youtube.AuthenticateOverride = null;
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            var starts = _encoder.StartCalls.Count;
+            auth.TrySetResult(true);
+            Assert.Equal(starts, _encoder.StartCalls.Count);
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_encoder.IsRunning);
+        }
+        finally
+        {
+            auth.TrySetResult(true);
+            if (stopping is not null) await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_retention_does_not_overlap_the_live_supervisor_sweep()
+    {
+        CancellationToken runToken = default;
+        _capture.StartOverride = token => { runToken = token; return Task.CompletedTask; };
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var active = 0;
+        var maximum = 0;
+        _recording.SweepOverride = async token =>
+        {
+            var count = Interlocked.Increment(ref active);
+            maximum = Math.Max(maximum, count);
+            try
+            {
+                if (_recording.RetentionRuns == 2)
+                { entered.TrySetResult(); await release.Task.WaitAsync(token); }
+            }
+            finally { Interlocked.Decrement(ref active); }
+        };
+        // Enter the actual common sweep boundary directly: timer order must not be a precondition.
+        // Older builds called the backend directly; that legacy path must fail the same invariant.
+        var sweep = typeof(StreamOrchestrator).GetMethod("SweepRetentionAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Task RequestSweep() => sweep is null ? _recording.EnforceRetentionAsync(runToken)
+            : Assert.IsAssignableFrom<Task>(sweep.Invoke(orchestrator, [runToken]));
+        Task? first = null;
+        Task? second = null;
+        try
+        {
+            first = RequestSweep();
+            Assert.True(entered.Task.IsCompleted);
+            second = RequestSweep();
+            Assert.False(second.IsCompleted); // a second caller cannot enter while the first owns the sweep
+            Assert.Equal(2, _recording.RetentionRuns); // boot + the held first caller
+            Assert.Equal(1, maximum);
+            release.TrySetResult();
+            await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(3, _recording.RetentionRuns);
+            Assert.Equal(1, maximum);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Task.WhenAll(new[] { first, second }.OfType<Task>()).WaitAsync(TimeSpan.FromSeconds(10));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Fallback_completion_budget_releases_stop_and_observes_a_late_fault(bool broadcastOnly)
+    {
+        var provider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var log = new LateCompletionLog();
+        _youtube.CompleteOverride = (id, token) => _youtube.CompleteCalls == 1 ? provider.Task : Task.CompletedTask;
+        var orchestrator = CreateOrchestrator(broadcastCompletionTimeout: TimeSpan.FromMilliseconds(40), log: log);
+        await orchestrator.StartAsync(CancellationToken.None);
+        Task? ending = null;
+        try
+        {
+            ending = broadcastOnly ? orchestrator.StopStreamingKeepRecordingAsync() : orchestrator.StopAsync();
+            await ending.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(provider.Task.IsCompleted);
+            Assert.Equal(broadcastOnly ? StreamState.RecordingOnly : StreamState.Idle, orchestrator.State);
+            Assert.Equal(broadcastOnly, _encoder.IsRunning);
+            provider.TrySetException(new IOException("delayed-completion-fault"));
+            await log.Observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(broadcastOnly ? StreamState.RecordingOnly : StreamState.Idle, orchestrator.State);
+        }
+        finally
+        {
+            provider.TrySetResult();
+            if (ending is not null) await ending.WaitAsync(TimeSpan.FromSeconds(5));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_pending_completion_cannot_clear_a_resumed_broadcast_clock()
+    {
+        var provider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.CompleteOverride = (id, token) => id == "bc-1" ? provider.Task : Task.CompletedTask;
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var ending = orchestrator.StopStreamingKeepRecordingAsync();
+        Task? resume = null;
+        try
+        {
+            Assert.Equal(1, _youtube.CompleteCalls); // the old completion is held while the swap is owned
+            resume = orchestrator.StartAsync(CancellationToken.None);
+            Assert.Equal(2, _youtube.CreateCalls); // the new broadcast exists before the encoder swap is released
+            var clock = typeof(StreamOrchestrator).GetField("_liveBroadcastStartedAtUtc",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            var newClock = clock.GetValue(orchestrator);
+            Assert.NotNull(newClock);
+            provider.TrySetResult();
+            await Task.WhenAll(ending, resume).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.Equal(newClock, clock.GetValue(orchestrator));
+        }
+        finally
+        {
+            provider.TrySetResult();
+            await ending.WaitAsync(TimeSpan.FromSeconds(5));
+            if (resume is not null) await resume.WaitAsync(TimeSpan.FromSeconds(5));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_failed_completion_does_not_restore_a_resuming_session()
+    {
+        var provider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.CompleteOverride = (id, token) => id == "bc-1" ? provider.Task : Task.CompletedTask;
+        _youtube.AuthenticateOverride = token => _youtube.AuthenticateCalls == 2 ? auth.Task : Task.FromResult(true);
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var ending = orchestrator.StopStreamingKeepRecordingAsync();
+        Task? resume = null;
+        try
+        {
+            Assert.Equal(1, _youtube.CompleteCalls);
+            resume = orchestrator.StartAsync(CancellationToken.None);
+            Assert.Equal(2, _youtube.AuthenticateCalls);
+            Assert.Equal(StreamState.ConnectingYouTube, orchestrator.State);
+            provider.TrySetException(new IOException("old broadcast completion failed"));
+            await ending.WaitAsync(TimeSpan.FromSeconds(5));
+            auth.TrySetResult(true);
+            await resume.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.Equal(2, _youtube.CreateCalls); // the old ending session must not be reused
+        }
+        finally
+        {
+            provider.TrySetResult();
+            auth.TrySetResult(true);
+            await ending.WaitAsync(TimeSpan.FromSeconds(5));
+            if (resume is not null) await resume.WaitAsync(TimeSpan.FromSeconds(5));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_duration_retry_cannot_hold_shutdown_on_an_ignoring_provider()
+    {
+        var provider = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var log = new LateCompletionLog();
+        _youtube.CompleteFailuresBeforeSuccess = 1;
+        _youtube.CompleteOverride = (id, token) => _youtube.CompleteCalls == 2 ? provider.Task : Task.CompletedTask;
+        var orchestrator = CreateOrchestrator(liveAutoStop: TimeSpan.FromMilliseconds(30),
+            liveAutoStopRetry: TimeSpan.FromMilliseconds(90),
+            broadcastCompletionTimeout: TimeSpan.FromMilliseconds(40), log: log);
+        await orchestrator.StartAsync(CancellationToken.None);
+        Task? stopping = null;
+        try
+        {
+            await WaitUntilAsync(() => _youtube.CompleteCalls >= 2, TimeSpan.FromSeconds(5));
+            Assert.True(_youtube.CompleteCalls >= 2);
+            stopping = orchestrator.StopAsync();
+            await stopping.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Idle, orchestrator.State);
+            Assert.False(_encoder.IsRunning);
+            Assert.False(provider.Task.IsCompleted);
+            provider.TrySetException(new IOException("delayed-completion-fault"));
+            await log.Observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(StreamState.Idle, orchestrator.State);
+        }
+        finally
+        {
+            provider.TrySetResult();
+            if (stopping is not null) await stopping.WaitAsync(TimeSpan.FromSeconds(5));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_records_before_authentication_returns()
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            Assert.Equal(1, _youtube.AuthenticateCalls);
+            Assert.True(_encoder.IsRunning);
+            Assert.Equal(string.Empty, Assert.Single(_encoder.StartCalls).RtmpUrl);
+            Assert.Equal(0, _youtube.CreateCalls);
+        }
+        finally { await orchestrator.StopAsync(); await start.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Fallback_recovers_during_pending_auth_without_new_youtube_calls(bool stall)
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            _recording.ActiveRecordingLength = 1000;
+            if (stall) _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+            else _encoder.SimulateDeath();
+            await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2 && _encoder.IsRunning, TimeSpan.FromSeconds(2));
+            Assert.True(_encoder.IsRunning);
+            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.All(_encoder.StartCalls, call => Assert.Equal(string.Empty, call.RtmpUrl));
+            Assert.Equal(1, _youtube.AuthenticateCalls);
+            Assert.Equal(0, _youtube.CreateCalls);
+        }
+        finally { await orchestrator.StopAsync(); await start.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Fact]
+    public async Task Fallback_quiet_but_growing_recording_is_not_replaced_during_auth_wait()
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        _recording.GrowOnSample = true;
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
+            var target = _recording.Samples + 4;
+            await WaitUntilAsync(() => _recording.Samples >= target, TimeSpan.FromSeconds(3));
+            Assert.True(_recording.Samples >= target);
+            Assert.Single(_encoder.StartCalls);
+            Assert.Equal(1, _youtube.AuthenticateCalls);
+        }
+        finally { await orchestrator.StopAsync(); await start.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Fact]
+    public async Task Fallback_disabled_recording_stays_disabled_while_auth_is_pending()
+    {
+        var config = _configStore.Load(); config.Recording.Enabled = false; _configStore.Save(config);
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            await Task.Delay(100);
+            Assert.Empty(_encoder.StartCalls);
+            auth.TrySetResult(true);
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.Equal(string.Empty, Assert.Single(_encoder.StartCalls).RecordingFilePath);
+        }
+        finally { await orchestrator.StopAsync(); await start.WaitAsync(TimeSpan.FromSeconds(2)); }
+    }
+
+    [Fact]
+    public async Task Fallback_recovery_and_live_transition_never_overlap_encoder_operations()
+    {
+        var auth = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recoveryEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRecovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.AuthenticateOverride = token => auth.Task.WaitAsync(token);
+        var recordingStarts = 0;
+        _encoder.StartOverride = async (options, token) =>
+        {
+            if (options.RtmpUrl.Length == 0 && Interlocked.Increment(ref recordingStarts) == 2)
+            {
+                recoveryEntered.TrySetResult();
+                await releaseRecovery.Task.WaitAsync(token);
+            }
+        };
+        var orchestrator = CreateOrchestrator();
+        var start = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(() => _youtube.AuthenticateCalls == 1, TimeSpan.FromSeconds(2));
+            _encoder.SimulateDeath();
+            await recoveryEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            auth.TrySetResult(true);
+            await WaitUntilAsync(() => _youtube.CreateCalls == 1, TimeSpan.FromSeconds(2));
+            Assert.Equal(1, _youtube.CreateCalls);
+            Assert.False(start.IsCompleted); // live transition must wait for the recording swap
+            releaseRecovery.TrySetResult();
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(1, _encoder.MaxConcurrentOperations);
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_encoder.IsRunning);
+        }
+        finally
+        {
+            releaseRecovery.TrySetResult();
+            await orchestrator.StopAsync();
+            await start.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Fact]
+    public async Task Fallback_late_broadcast_result_cannot_mutate_a_new_run()
+    {
+        var created = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var late = new TaskCompletionSource<LiveSession>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _youtube.CreateOverride = token =>
+        {
+            if (_youtube.CreateCalls == 1) { created.TrySetResult(); return late.Task; }
+            return Task.FromResult(new LiveSession("new-broadcast", "new-key", "rtmp://ingest.example/live2", "https://youtu.be/new"));
+        };
+        var orchestrator = CreateOrchestrator();
+        var oldStart = orchestrator.StartAsync(CancellationToken.None);
+        try
+        {
+            await created.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StartAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2));
+            var count = _encoder.StartCalls.Count;
+            late.TrySetResult(new LiveSession("old-broadcast", "old-key", "rtmp://ingest.example/live2", "https://youtu.be/old"));
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Live, orchestrator.State);
+            Assert.True(_encoder.IsRunning);
+            Assert.Equal(count, _encoder.StartCalls.Count);
+            Assert.Contains("new-key", _encoder.StartCalls[^1].RtmpUrl);
+        }
+        finally
+        {
+            late.TrySetResult(new LiveSession("old-broadcast", "old-key", "rtmp://ingest.example/live2", "https://youtu.be/old"));
+            await oldStart.WaitAsync(TimeSpan.FromSeconds(2));
+            await orchestrator.StopAsync();
+        }
+    }
+
+    [Fact]
     public async Task Audit_backup_restarts_after_each_failed_tee_start()
     {
         _encoder.StreamFailuresBeforeSuccess = 2;
@@ -180,7 +663,7 @@ public class StreamOrchestratorTests : IDisposable
                 TimeSpan.FromSeconds(10)); // Observe recovery; do not assume a 1s CI scheduling budget.
             Assert.Equal(2, _encoder.FailedStreamStarts);
             Assert.True(_encoder.IsRunning);
-            Assert.Equal(2, _encoder.StartCalls.Count(call => call.RtmpUrl.Length == 0));
+            Assert.Equal(2, StartsAfterInitialBackup.Count(call => call.RtmpUrl.Length == 0));
             Assert.False(start.IsCompleted); // streaming remains offline, but the backup is alive
         }
         finally
@@ -223,9 +706,9 @@ public class StreamOrchestratorTests : IDisposable
             await orchestrator.StopStreamingKeepRecordingAsync();
             _recording.ActiveRecordingLength = 1000;
             _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
-            await WaitUntilAsync(() => _encoder.StartCalls.Count >= 3, TimeSpan.FromSeconds(1));
-            Assert.Equal(3, _encoder.StartCalls.Count);
-            Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+            await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 3, TimeSpan.FromSeconds(1));
+            Assert.Equal(3, StartsAfterInitialBackup.Count);
+            Assert.Equal(string.Empty, StartsAfterInitialBackup[^1].RtmpUrl);
             Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
             Assert.Equal(1, _youtube.CreateCalls);
         }
@@ -243,7 +726,7 @@ public class StreamOrchestratorTests : IDisposable
             _recording.GrowOnSample = true;
             _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
             await Task.Delay(450);
-            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.Equal(2, StartsAfterInitialBackup.Count);
             Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
         }
         finally { await orchestrator.StopAsync(); }
@@ -282,7 +765,7 @@ public class StreamOrchestratorTests : IDisposable
             Assert.Equal(StreamState.Live, orchestrator.State);
             Assert.True(_capture.Started);
             Assert.True(_encoder.IsRunning);
-            Assert.Single(_encoder.StartCalls);
+            Assert.Single(StartsAfterInitialBackup);
         }
         finally
         {
@@ -309,7 +792,7 @@ public class StreamOrchestratorTests : IDisposable
             flush.TrySetResult();
             await stopping.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.Equal(StreamState.Idle, orchestrator.State);
-            Assert.Equal(2, _encoder.StartCalls.Count);
+            Assert.Equal(2, StartsAfterInitialBackup.Count);
             Assert.False(_encoder.IsRunning);
         }
         finally
@@ -367,9 +850,9 @@ public class StreamOrchestratorTests : IDisposable
 
         // The tee encoder was swapped for a recording-only one: same session, new part file.
         Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
-        Assert.Equal(2, _encoder.StartCalls.Count);
-        Assert.Equal(string.Empty, _encoder.StartCalls[1].RtmpUrl);
-        Assert.EndsWith(".mp4", _encoder.StartCalls[1].RecordingFilePath);
+        Assert.Equal(2, StartsAfterInitialBackup.Count);
+        Assert.Equal(string.Empty, StartsAfterInitialBackup[1].RtmpUrl);
+        Assert.EndsWith(".mp4", StartsAfterInitialBackup[1].RecordingFilePath);
         Assert.True(_encoder.IsRunning);
         // Capture/audio keep feeding the recording; the broadcast is completed (no ghost live).
         Assert.True(_capture.Started);
@@ -399,7 +882,7 @@ public class StreamOrchestratorTests : IDisposable
 
         Assert.Equal(1, _youtube.CompleteCalls);
         Assert.True(_encoder.IsRunning);
-        Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
+        Assert.Equal(string.Empty, StartsAfterInitialBackup[^1].RtmpUrl);
         var replay = Assert.IsType<LiveReplayRecord>(replays.Latest);
         Assert.Equal("https://youtu.be/x", replay.Url);
         Assert.NotNull(replay.EndedAtUtc);
@@ -457,8 +940,8 @@ public class StreamOrchestratorTests : IDisposable
         Assert.Equal(StreamState.Live, orchestrator.State);
         Assert.Equal(2, _youtube.CreateCalls); // the stopped broadcast was completed; this is a new one
         Assert.Equal(1, _youtube.CompleteCalls);
-        Assert.Equal(3, _encoder.StartCalls.Count);
-        Assert.Equal("rtmp://ingest.example/live2/key-2", _encoder.StartCalls[^1].RtmpUrl);
+        Assert.Equal(3, StartsAfterInitialBackup.Count);
+        Assert.Equal("rtmp://ingest.example/live2/key-2", StartsAfterInitialBackup[^1].RtmpUrl);
         Assert.True(_capture.Started);
         Assert.True(_mixer.Started);
         Assert.Equal(1, _capture.StartCalls);
@@ -475,7 +958,7 @@ public class StreamOrchestratorTests : IDisposable
         await orchestrator.StopStreamingKeepRecordingAsync(); // Idle — nothing to drop
 
         Assert.Equal(StreamState.Idle, orchestrator.State);
-        Assert.Empty(_encoder.StartCalls);
+        Assert.Empty(StartsAfterInitialBackup);
         Assert.Equal(0, _youtube.CompleteCalls);
     }
 
@@ -493,7 +976,7 @@ public class StreamOrchestratorTests : IDisposable
         // No recording leg to keep → full stop semantics.
         Assert.Equal(StreamState.Idle, orchestrator.State);
         Assert.True(_encoder.Stopped);
-        Assert.Single(_encoder.StartCalls); // no recording-only restart
+        Assert.Single(StartsAfterInitialBackup); // no recording-only restart
         Assert.Equal("bc-1", _youtube.CompletedBroadcastId);
     }
 
@@ -542,9 +1025,9 @@ public class StreamOrchestratorTests : IDisposable
         // Same broadcast + ingest (no orphan, no new watch URL), state stays Live throughout,
         // and the recording continues in a NEW part file (frag mp4 cannot be appended).
         Assert.Equal(StreamState.Live, orchestrator.State);
-        Assert.Equal(2, _encoder.StartCalls.Count);
-        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[1].RtmpUrl);
-        Assert.Contains("_part", _encoder.StartCalls[1].RecordingFilePath);
+        Assert.Equal(2, StartsAfterInitialBackup.Count);
+        Assert.Equal("rtmp://ingest.example/live2/key-1", StartsAfterInitialBackup[1].RtmpUrl);
+        Assert.Contains("_part", StartsAfterInitialBackup[1].RecordingFilePath);
         Assert.True(_encoder.IsRunning);
         Assert.Equal(1, _youtube.CreateCalls);
         Assert.Equal(0, _youtube.CompleteCalls);
@@ -560,7 +1043,7 @@ public class StreamOrchestratorTests : IDisposable
 
         Assert.False(await orchestrator.SwapLiveEncoderAsync(QualityStatus.Original));
 
-        Assert.Empty(_encoder.StartCalls);
+        Assert.Empty(StartsAfterInitialBackup);
         Assert.Equal(QualityStatus.Original, orchestrator.CurrentQuality);
     }
 
@@ -578,12 +1061,12 @@ public class StreamOrchestratorTests : IDisposable
             QualityStatus.Original with { Level = 1, LevelName = "절약 1단계" });
 
         await Task.Delay(200); // many 25ms watchdog ticks over the held stop window
-        Assert.Single(_encoder.StartCalls);                 // no watchdog double-start
+        Assert.Single(StartsAfterInitialBackup);                 // no watchdog double-start
         Assert.Equal(StreamState.Live, orchestrator.State); // and no reconnect claim
 
         gate.SetResult();
         Assert.True(await swap);
-        Assert.Equal(2, _encoder.StartCalls.Count); // exactly the swap's own restart
+        Assert.Equal(2, StartsAfterInitialBackup.Count); // exactly the swap's own restart
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
     }
@@ -619,7 +1102,7 @@ public class StreamOrchestratorTests : IDisposable
         _recording.ActiveRecordingLength = 50_000_000; // a long-running part file
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         // Let the growth stamp age past StallTimeout while the file size stays constant.
         await Task.Delay(300);
@@ -632,7 +1115,7 @@ public class StreamOrchestratorTests : IDisposable
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // progress line still quiet
 
         await Task.Delay(300); // many watchdog ticks
-        Assert.Single(_encoder.StartCalls); // no false restart
+        Assert.Single(StartsAfterInitialBackup); // no false restart
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
     }
@@ -643,14 +1126,14 @@ public class StreamOrchestratorTests : IDisposable
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
         await orchestrator.StopStreamingKeepRecordingAsync();
-        Assert.Equal(2, _encoder.StartCalls.Count);
+        Assert.Equal(2, StartsAfterInitialBackup.Count);
 
         _encoder.SimulateDeath();
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 3, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 3, TimeSpan.FromSeconds(5));
 
         // Recording is revived recording-only; the stream must NOT be re-established.
-        Assert.Equal(string.Empty, _encoder.StartCalls[^1].RtmpUrl);
-        Assert.EndsWith(".mp4", _encoder.StartCalls[^1].RecordingFilePath);
+        Assert.Equal(string.Empty, StartsAfterInitialBackup[^1].RtmpUrl);
+        Assert.EndsWith(".mp4", StartsAfterInitialBackup[^1].RecordingFilePath);
         Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
         Assert.Equal(1, _youtube.CreateCalls); // no new broadcast
         await orchestrator.StopAsync();
@@ -661,12 +1144,12 @@ public class StreamOrchestratorTests : IDisposable
     {
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         _encoder.SimulateDeath();
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.True(_encoder.StartCalls.Count >= 2);
+        Assert.True(StartsAfterInitialBackup.Count >= 2);
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
     }
@@ -676,14 +1159,14 @@ public class StreamOrchestratorTests : IDisposable
     {
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         // Process stays alive (IsRunning == true) but stops emitting progress AND the recording
         // file is not growing (FakeRecording default length stays 0): a genuinely stalled feed.
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.True(_encoder.StartCalls.Count >= 2);
+        Assert.True(StartsAfterInitialBackup.Count >= 2);
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
     }
@@ -699,7 +1182,7 @@ public class StreamOrchestratorTests : IDisposable
         try
         {
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // progress line quiet…
         // A busy CI worker may not schedule even one watchdog tick within 300 ms. Wait for
@@ -707,7 +1190,7 @@ public class StreamOrchestratorTests : IDisposable
         await WaitUntilAsync(() => _recording.ActiveRecordingLength >= 3_000_000, TimeSpan.FromSeconds(5));
 
         Assert.True(_recording.ActiveRecordingLength >= 3_000_000);
-        Assert.Single(_encoder.StartCalls); // …and recording is advancing, so no restart
+        Assert.Single(StartsAfterInitialBackup); // …and recording is advancing, so no restart
         Assert.Equal(StreamState.Live, orchestrator.State);
         }
         finally { await orchestrator.StopAsync(); }
@@ -724,12 +1207,12 @@ public class StreamOrchestratorTests : IDisposable
         _configStore.Save(config);
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // no file signal → stats decide
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.True(_encoder.StartCalls.Count >= 2);
+        Assert.True(StartsAfterInitialBackup.Count >= 2);
         await orchestrator.StopAsync();
     }
 
@@ -741,13 +1224,13 @@ public class StreamOrchestratorTests : IDisposable
         _recording.GrowOnSample = true;
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         _recording.GrowOnSample = false; // recording file frozen
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // and the feed is quiet
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.True(_encoder.StartCalls.Count >= 2);
+        Assert.True(StartsAfterInitialBackup.Count >= 2);
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
     }
@@ -776,7 +1259,7 @@ public class StreamOrchestratorTests : IDisposable
         Assert.Equal(1, _youtube.CreateCalls);
 
         _encoder.SimulateDeath();
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
         // The restart must reuse the existing broadcast, not spawn a new (orphan) one, and must
         // not complete it mid-session — that was the field-test "7 orphan broadcasts" bug.
@@ -799,10 +1282,10 @@ public class StreamOrchestratorTests : IDisposable
         {
             Level = 1, LevelName = "절약 1단계", Reason = QualityChangeReason.NetworkCongestion
         });
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.Equal(5400, _encoder.StartCalls[^1].VideoBitrateKbps);
-        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[^1].RtmpUrl);
+        Assert.Equal(5400, StartsAfterInitialBackup[^1].VideoBitrateKbps);
+        Assert.Equal("rtmp://ingest.example/live2/key-1", StartsAfterInitialBackup[^1].RtmpUrl);
         await WaitUntilAsync(() => orchestrator.CurrentQuality.Level == 1, TimeSpan.FromSeconds(5));
         Assert.Equal(StreamState.Live, orchestrator.State);
         await orchestrator.StopAsync();
@@ -818,7 +1301,7 @@ public class StreamOrchestratorTests : IDisposable
 
         await orchestrator.StartAsync(CancellationToken.None);
 
-        var options = Assert.Single(_encoder.StartCalls);
+        var options = Assert.Single(StartsAfterInitialBackup);
         Assert.Equal(3600, options.VideoBitrateKbps);
         Assert.Equal(30, options.OutputFps);
         Assert.Equal(2, orchestrator.CurrentQuality.Level);
@@ -839,7 +1322,7 @@ public class StreamOrchestratorTests : IDisposable
         await WaitUntilAsync(
             () => orchestrator.CurrentQuality.Mode == QualityMode.ManualHold, TimeSpan.FromSeconds(5));
 
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
         await orchestrator.StopAsync();
     }
 
@@ -848,14 +1331,14 @@ public class StreamOrchestratorTests : IDisposable
     {
         var orchestrator = CreateOrchestrator();
         await orchestrator.StartAsync(CancellationToken.None);
-        Assert.Single(_encoder.StartCalls);
+        Assert.Single(StartsAfterInitialBackup);
 
         // onfail=ignore: the process keeps running and progress keeps flowing — only the sticky
         // leg-down signal betrays the silently dead broadcast (the -10053 field bug).
         _encoder.RtmpLegDown = true;
-        await WaitUntilAsync(() => _encoder.StartCalls.Count >= 2, TimeSpan.FromSeconds(5));
+        await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 2, TimeSpan.FromSeconds(5));
 
-        Assert.Equal("rtmp://ingest.example/live2/key-1", _encoder.StartCalls[^1].RtmpUrl);
+        Assert.Equal("rtmp://ingest.example/live2/key-1", StartsAfterInitialBackup[^1].RtmpUrl);
         Assert.Equal(1, _youtube.CreateCalls); // same broadcast reused — no orphan
         Assert.Equal(StreamState.Live, orchestrator.State);
         Assert.False(_encoder.RtmpLegDown); // the fresh session reset the signal
@@ -875,7 +1358,7 @@ public class StreamOrchestratorTests : IDisposable
 
         // Backoff (100→200→400ms cap in tests): a handful of spaced rebuilds, not a loop that
         // shreds the recording into part-file confetti.
-        Assert.InRange(_encoder.StartCalls.Count, 2, 6);
+        Assert.InRange(StartsAfterInitialBackup.Count, 2, 6);
         await orchestrator.StopAsync();
     }
 
@@ -889,7 +1372,7 @@ public class StreamOrchestratorTests : IDisposable
 
         await orchestrator.StartAsync(CancellationToken.None);
 
-        Assert.Equal(string.Empty, Assert.Single(_encoder.StartCalls).RecordingFilePath);
+        Assert.Equal(string.Empty, Assert.Single(StartsAfterInitialBackup).RecordingFilePath);
     }
 
     [Fact]
@@ -912,24 +1395,54 @@ public class StreamOrchestratorTests : IDisposable
         }
     }
 
+    public Task InitializeAsync() => Task.CompletedTask;
+
+    public async Task DisposeAsync()
+    {
+        // A completed assertion must not leave per-run watchdogs ticking in other tests.
+        foreach (var orchestrator in _createdOrchestrators)
+            await orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 
     // ---- fakes ----
+
+    private sealed class LateCompletionLog : ILogService
+    {
+        public TaskCompletionSource Observed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Debug(string message) { }
+        public void Info(string message) { }
+        public void Warn(string message)
+        {
+            if (message.Contains("delayed-completion-fault", StringComparison.Ordinal)) Observed.TrySetResult();
+        }
+        public void Error(string message, Exception? exception = null) { }
+    }
 
     private sealed class FakeYouTube : IYouTubeLiveService
     {
         public int FailuresBeforeSuccess;
         public int CreateCalls;
         public bool AuthenticationUnavailable;
+        public int AuthenticateCalls;
+        public Func<CancellationToken, Task<bool>>? AuthenticateOverride;
+        public Func<CancellationToken, Task<LiveSession>>? CreateOverride;
         public int CompleteCalls;
         public int CompleteFailuresBeforeSuccess;
         public string? CompletedBroadcastId;
+        public Func<string, CancellationToken, Task>? CompleteOverride;
 
-        public Task<bool> AuthenticateAsync(CancellationToken ct) => Task.FromResult(!AuthenticationUnavailable);
+        public Task<bool> AuthenticateAsync(CancellationToken ct)
+        {
+            AuthenticateCalls++;
+            return AuthenticateOverride?.Invoke(ct) ?? Task.FromResult(!AuthenticationUnavailable);
+        }
 
         public Task<LiveSession> CreateBroadcastAsync(CancellationToken ct)
         {
             CreateCalls++;
+            if (CreateOverride is not null) return CreateOverride(ct);
             if (FailuresBeforeSuccess-- > 0)
             {
                 throw new HttpRequestException("simulated network failure");
@@ -939,15 +1452,15 @@ public class StreamOrchestratorTests : IDisposable
                 "rtmp://ingest.example/live2", "https://youtu.be/x"));
         }
 
-        public Task CompleteBroadcastAsync(string broadcastId, CancellationToken ct)
+        public async Task CompleteBroadcastAsync(string broadcastId, CancellationToken ct)
         {
             CompleteCalls++;
             if (CompleteFailuresBeforeSuccess-- > 0)
             {
                 throw new HttpRequestException("simulated completion failure");
             }
+            if (CompleteOverride is not null) await CompleteOverride(broadcastId, ct);
             CompletedBroadcastId = broadcastId;
-            return Task.CompletedTask;
         }
     }
 
@@ -955,6 +1468,16 @@ public class StreamOrchestratorTests : IDisposable
     {
         public List<EncoderStartOptions> StartCalls { get; } = [];
         public bool Stopped;
+        public Func<EncoderStartOptions, CancellationToken, Task>? StartOverride;
+        public int MaxConcurrentOperations;
+        private int _operations;
+        private void EnterOperation()
+        {
+            var active = Interlocked.Increment(ref _operations);
+            int seen;
+            do { seen = MaxConcurrentOperations; if (active <= seen) break; }
+            while (Interlocked.CompareExchange(ref MaxConcurrentOperations, active, seen) != seen);
+        }
         public int StreamFailuresBeforeSuccess;
         public int FailedStreamStarts;
         public Action? OnStreamStartFailure;
@@ -976,8 +1499,11 @@ public class StreamOrchestratorTests : IDisposable
         public event EventHandler? UnexpectedExit;
 #pragma warning restore CS0067
 
-        public Task StartAsync(EncoderStartOptions options, CancellationToken ct)
+        public async Task StartAsync(EncoderStartOptions options, CancellationToken ct)
         {
+            EnterOperation();
+            try
+            {
             ct.ThrowIfCancellationRequested();
             StartCalls.Add(options);
             if (options.RtmpUrl.Length > 0 && StreamFailuresBeforeSuccess-- > 0)
@@ -987,13 +1513,15 @@ public class StreamOrchestratorTests : IDisposable
                 OnStreamStartFailure?.Invoke();
                 throw new IOException("simulated tee start failure");
             }
+            if (StartOverride is not null) await StartOverride(options, ct);
             _running = true;
             TimeSinceProgress = TimeSpan.Zero; // a fresh start clears any prior stall
             if (!KeepRtmpLegDownOnStart)
             {
                 RtmpLegDown = false; // a fresh session resets the sticky leg signal
             }
-            return Task.CompletedTask;
+            }
+            finally { Interlocked.Decrement(ref _operations); }
         }
 
         /// <summary>When set, the NEXT StopAsync awaits it — simulates ffmpeg's slow (~10s) flush.</summary>
@@ -1001,6 +1529,9 @@ public class StreamOrchestratorTests : IDisposable
 
         public async Task StopAsync()
         {
+            EnterOperation();
+            try
+            {
             Stopped = true;
             _running = false;
             var gate = StopGate;
@@ -1009,6 +1540,8 @@ public class StreamOrchestratorTests : IDisposable
             {
                 await gate.Task;
             }
+            }
+            finally { Interlocked.Decrement(ref _operations); }
         }
 
         public void SimulateDeath() => _running = false;
@@ -1021,6 +1554,8 @@ public class StreamOrchestratorTests : IDisposable
         public int RetentionRuns;
         public int InitialFailuresBeforeSuccess;
         public bool ThrowOnSweep; // throws on periodic sweeps (not the boot sweep)
+        public int Samples;
+        public Func<CancellationToken, Task>? SweepOverride;
         public long ActiveRecordingLength; // current recording-file size the watchdog samples
         public bool GrowOnSample; // simulate ffmpeg writing: grows on each sample (keyed to sampling, not wall-clock)
         private int _files;
@@ -1032,6 +1567,7 @@ public class StreamOrchestratorTests : IDisposable
 
         public long GetActiveRecordingLength()
         {
+            Interlocked.Increment(ref Samples);
             if (GrowOnSample)
             {
                 ActiveRecordingLength += 1_000_000;
@@ -1047,7 +1583,7 @@ public class StreamOrchestratorTests : IDisposable
             {
                 throw new IOException("simulated retention sweep failure");
             }
-            return Task.CompletedTask;
+            return SweepOverride?.Invoke(ct) ?? Task.CompletedTask;
         }
     }
 

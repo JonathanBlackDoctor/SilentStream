@@ -7,7 +7,7 @@ namespace SilentStream.App.Remote;
 
 /// <summary>
 /// Performs a remote-requested application restart without leaving ffmpeg or the embedded server
-/// behind. The replacement process is launched by a tiny detached Windows command after this
+/// behind. The replacement process is launched by the bundled helper after this
 /// process exits, so the single-instance guard never races the old instance.
 /// </summary>
 public sealed class RemoteAppRestartService(IStreamOrchestrator orchestrator, ILogService log)
@@ -32,9 +32,11 @@ public sealed class RemoteAppRestartService(IStreamOrchestrator orchestrator, IL
         await Task.Delay(TimeSpan.FromMilliseconds(500)).ConfigureAwait(false);
 
         var executable = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        var helper = Path.Combine(AppContext.BaseDirectory, "uninstall-helper", "MediaCaptureHelper.UninstallHelper.exe");
+        var app = Application.Current;
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable) || !File.Exists(helper) || app?.Dispatcher is null)
         {
-            log.Error("원격 앱 재시작 실패: 실행 파일 경로를 찾지 못했습니다.");
+            log.Error("원격 앱 재시작 실패: 앱 또는 재시작 도우미를 확인하지 못해 녹화를 유지합니다.");
             Interlocked.Exchange(ref _restartQueued, 0);
             return;
         }
@@ -52,16 +54,20 @@ public sealed class RemoteAppRestartService(IStreamOrchestrator orchestrator, IL
 
         try
         {
+            using var current = Process.GetCurrentProcess();
             var command = new ProcessStartInfo
             {
-                FileName = Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe",
+                FileName = helper,
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
-            command.ArgumentList.Add("/d");
-            command.ArgumentList.Add("/c");
-            command.ArgumentList.Add($"timeout /t 2 /nobreak > nul & start \"\" \"{executable}\"");
-            if (Process.Start(command) is null)
+            command.ArgumentList.Add("--restart-after");
+            command.ArgumentList.Add(current.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            command.ArgumentList.Add(current.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            command.ArgumentList.Add(executable);
+            command.ArgumentList.Add(Path.Combine(SilentStream.Core.AppPaths.AppDataDir, "app-restart-result.json"));
+            using var helperProcess = Process.Start(command);
+            if (helperProcess is null)
             {
                 throw new InvalidOperationException("재시작 도우미 프로세스를 시작하지 못했습니다.");
             }
@@ -74,13 +80,6 @@ public sealed class RemoteAppRestartService(IStreamOrchestrator orchestrator, IL
         }
 
         log.Info("원격 요청으로 앱을 다시 시작합니다.");
-        var app = Application.Current;
-        if (app?.Dispatcher is null)
-        {
-            log.Error("원격 앱 재시작 실패: WPF 애플리케이션을 찾지 못했습니다.");
-            Interlocked.Exchange(ref _restartQueued, 0);
-            return;
-        }
         _ = app.Dispatcher.BeginInvoke(new Action(app.Shutdown));
     }
 }

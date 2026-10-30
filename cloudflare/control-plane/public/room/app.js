@@ -52,7 +52,7 @@ function uploadRetryIds(value,date){
   const v=String(value?.agentVersion||"").split(/[.+-]/).slice(0,3).map(Number);
   const supported=v.length===3&&v.every(Number.isFinite)&&(v[0]>0||v[1]>4||v[1]===4&&v[2]>=22);
   if(!supported||!value?.app?.uploadRetryControl||!controllerFresh(value))return [];
-  return (value.app.queue?.items||[]).filter(j=>j.date===date&&j.status==="failed"&&!j.videoId)
+  return (value.app.queue?.items||[]).filter(j=>j.date===date&&j.status==="failed"&&!j.videoId&&!j.needsUploadReconciliation)
     .map(j=>j.id).filter(Boolean).slice(0,50);
 }
 async function retryUploads(){

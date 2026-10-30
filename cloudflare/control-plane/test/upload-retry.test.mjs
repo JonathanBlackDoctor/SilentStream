@@ -18,7 +18,8 @@ const device={online:true,agentVersion:"0.4.22",app:{uploadRetryControl:true,que
   {id:"complete",date:"2026-10-28",status:"completed",videoId:"already"},
   {id:"active",date:"2026-10-28",status:"uploading"},
   {id:"previous",date:"2026-10-27",status:"failed"},
-  {id:"known-video",date:"2026-10-28",status:"failed",videoId:"exists"}
+  {id:"known-video",date:"2026-10-28",status:"failed",videoId:"exists"},
+  {id:"unknown-outcome",date:"2026-10-28",status:"failed",needsUploadReconciliation:true}
 ]}}};
 test("retries the selected day's failed jobs only and recomputes the selection at click time",async()=>{
   const {context,calls}=setup();

@@ -66,6 +66,7 @@ test('server permission rejects managers and refuses scheduling without a regist
   const values=new Map([['ownerEmail','owner@example.com'],['member:manager@example.com',{role:'manager',rooms:['m112']}]]);
   const storage={get:async key=>values.get(key),put:async(key,value)=>values.set(key,value),
     list:async()=>new Map(),delete:async key=>values.delete(key)};
+  storage.transaction=async callback=>callback(storage);
   const plane=new ControlPlane({storage,getWebSockets:()=>[]},{});
   for(const action of ['system.shutdown.schedule','system.shutdown.schedule.cancel']){
     assert.equal((await plane.command({roomId:'m112',email:'manager@example.com',action,body:{}})).status,403);

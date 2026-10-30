@@ -593,6 +593,11 @@ async function handleRoomHost(request, env, url, room) {
     const selected = rooms.find(candidate => candidate.roomId === room);
     return security(selected ? json([selected]) : error("이 호실에 대한 권한이 없습니다.", 403));
   }
+  const history = url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/recent-commands$/);
+  if (history && request.method === "GET") {
+    if (normalizeRoom(decodeURIComponent(history[1])) !== room) return security(new Response("Not Found", { status: 404 }));
+    return security(await callControl(env, "/recent-commands", { email, roomId: room }));
+  }
   const action = url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/actions\/([^/]+)$/);
   if (action && request.method === "POST") {
     if (!sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.", 403));
@@ -1277,7 +1282,9 @@ export class ControlPlane {
     const commandId = crypto.randomUUID().replaceAll("-", "");
     const now = new Date().toISOString();
     const payload = { method: target.method, path: target.path, body: body.body && Object.keys(body.body).length ? body.body : null };
-    await this.state.storage.put(`command:${commandId}`, { commandId, roomId, action: body.action, requestedBy: normalizeEmail(body.email), requestedAtUtc: now, state: "queued" });
+    const recipient = socket?.deserializeAttachment();
+    await this.state.storage.put(`command:${commandId}`, { commandId, roomId, action: body.action, requestedBy: normalizeEmail(body.email), requestedAtUtc: now, state: "queued",
+      deviceId: recipient?.deviceId, installationId: recipient?.installationId });
     if (!socket) {
       const result = { commandId, ok: false, statusCode: 503, contentType: "application/json", body: "", error: "강의실 PC가 오프라인입니다.", completedAtUtc: now };
       await this.completeCommand(result);
@@ -1287,14 +1294,14 @@ export class ControlPlane {
     const envelope = { schemaVersion: 1, type: "command", requestId: commandId, payload: dispatch };
     let timer;
     const completion = new Promise(resolve => {
-      timer = setTimeout(() => resolve({ commandId, ok: false, statusCode: 504, contentType: "application/json", body: "", error: "강의실 PC 응답 시간이 초과되었습니다.", completedAtUtc: new Date().toISOString() }), body.action === "system.shutdown.schedule.cancel" ? 90000 : body.action === "system.shutdown" ? 65000 : 20000);
+      timer = setTimeout(() => resolve({ commandId, ok: false, outcomeUnknown: true, statusCode: 504, contentType: "application/json", body: "", error: "PC 명령의 완료 여부를 확인하지 못했습니다. 최신 상태와 명령 이력을 확인하기 전에는 같은 명령을 다시 보내지 마세요.", completedAtUtc: new Date().toISOString() }), body.action === "system.shutdown.schedule.cancel" ? 90000 : body.action === "system.shutdown" ? 65000 : 20000);
       this.pending.set(commandId, result => { clearTimeout(timer); resolve(result); });
     });
     try { socket.send(JSON.stringify(envelope)); }
     catch {
       clearTimeout(timer);
       this.pending.delete(commandId);
-      const failed = { commandId, ok: false, statusCode: 503, contentType: "application/json", body: "", error: "강의실 PC 연결이 끊어졌습니다.", completedAtUtc: new Date().toISOString() };
+      const failed = { commandId, ok: false, outcomeUnknown: true, statusCode: 503, contentType: "application/json", body: "", error: "명령 전달 중 연결이 끊겨 결과가 미확정입니다. PC 상태와 명령 이력을 확인한 뒤 진행하세요.", completedAtUtc: new Date().toISOString() };
       await this.completeCommand(failed);
       return json(failed, 503);
     }
@@ -1306,8 +1313,12 @@ export class ControlPlane {
 
   async completeCommand(result) {
     const key = `command:${result.commandId}`;
-    const command = await this.state.storage.get(key);
-    if (command) await this.state.storage.put(key, { ...command, state: result.ok ? "completed" : "failed", completedAtUtc: result.completedAtUtc, statusCode: result.statusCode, error: result.error || null });
+    await this.state.storage.transaction(async storage => {
+      const command = await storage.get(key);
+      if (!command || result.outcomeUnknown && ["completed", "failed"].includes(command.state)) return;
+      await storage.put(key, { ...command, state: result.outcomeUnknown ? "unknown" : result.ok ? "completed" : "failed",
+        completedAtUtc: result.completedAtUtc, statusCode: result.statusCode, error: result.error || null });
+    });
     const commands = await this.state.storage.list({ prefix: "command:" });
     if (commands.size > 500) {
       const oldest = [...commands.entries()].sort((a, b) => String(a[1].requestedAtUtc).localeCompare(String(b[1].requestedAtUtc))).slice(0, commands.size - 500).map(entry => entry[0]);
@@ -1354,6 +1365,10 @@ export class ControlPlane {
     } else if (envelope.type === "commandResult") {
       const result = envelope.payload;
       if (!safeId(result?.commandId, 128)) return;
+      const command = await this.state.storage.get(`command:${result.commandId}`);
+      if (!command || command.roomId !== attachment.roomId ||
+          command.deviceId && command.deviceId !== attachment.deviceId ||
+          command.installationId && command.installationId !== attachment.installationId) return;
       const resolve = this.pending.get(result.commandId);
       if (resolve) resolve(result);
       else await this.completeCommand(result);

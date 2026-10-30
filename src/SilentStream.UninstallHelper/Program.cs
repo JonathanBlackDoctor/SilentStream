@@ -2,6 +2,24 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 
+if (args.Length == 5 && args[0] == "--restart-after" &&
+    int.TryParse(args[1], out var restartParent) && long.TryParse(args[2], out var restartStarted))
+{
+    var result = await SilentStream.UninstallHelper.ApplicationRestart.RestartAfterExitAsync(
+        restartParent, restartStarted, args[3]);
+    try
+    {
+        var resultPath = Path.GetFullPath(args[4]);
+        Directory.CreateDirectory(Path.GetDirectoryName(resultPath)!);
+        File.WriteAllText(resultPath, JsonSerializer.Serialize(new {
+            requestedParentProcessId = restartParent, completedAtUtc = DateTimeOffset.UtcNow,
+            exitCode = result, processLaunchAccepted = result == 0
+        }));
+    }
+    catch (Exception) { /* Keep the relaunch result; receipt failure cannot justify another launch. */ }
+    return result;
+}
+
 if (args.Length != 1 || !File.Exists(args[0]))
 {
     return 2;

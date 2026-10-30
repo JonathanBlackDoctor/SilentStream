@@ -58,7 +58,18 @@ const dangerousActions={
   "live.retry":"방송을 재연결할까요? 송출이 잠시 중단될 수 있습니다.",
   "inspection.rerun":"자동 점검을 다시 실행할까요? PC 상태에 따라 복구 작업이 실행될 수 있습니다."
 };
-async function act(room,action,confirmation){confirmation=dangerousActions[action]||confirmation;if(confirmation&&!confirm(`${roomName(room)}: ${confirmation}`))return;try{const result=await api(`/api/control/rooms/${encodeURIComponent(room)}/actions/${encodeURIComponent(action)}`,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});show(result.ok?"명령을 실행했습니다.":result.error||"명령을 완료하지 못했습니다.",!result.ok);setTimeout(load,700)}catch(error){show(error.message,true)}}
+const pendingRoomActions=new Set();
+async function act(room,action,confirmation){
+  if(pendingRoomActions.has(room)){show("이 호실의 앞선 명령 결과를 기다리고 있습니다.",true);return}
+  confirmation=dangerousActions[action]||confirmation;
+  if(confirmation&&!confirm(`${roomName(room)}: ${confirmation}`))return;
+  pendingRoomActions.add(room);
+  try{
+    const result=await api(`/api/control/rooms/${encodeURIComponent(room)}/actions/${encodeURIComponent(action)}`,{method:"POST",headers:{"content-type":"application/json"},body:"{}"});
+    show(result.ok?"명령을 실행했습니다.":result.error||"명령을 완료하지 못했습니다.",!result.ok);setTimeout(load,700)
+  }catch(error){show(error.message,true)}
+  finally{pendingRoomActions.delete(room)}
+}
 function showDetails(room){const device=devices.find(value=>value.roomId===room);$("detailTitle").textContent=`${roomName(room)} 상세 상태`;$("detailBody").textContent=JSON.stringify(device,null,2);detail.showModal()}
 async function loadMembers(){const members=await api("/api/control/members");$("members").classList.add("show");$("roomChecks").innerHTML=roomIds.map(room=>`<label><input type="checkbox" value="${room}" checked> ${roomName(room)}</label>`).join("");$("memberList").innerHTML=members.map(member=>`<div class="member-row"><span><b>${esc(member.email)}</b> · ${member.role==="admin"?"관리자":member.rooms.map(room=>roomName(room)).join(", ")}</span>${member.email===session.email&&session.owner?"<span>최초 소유자</span>":`<button class="danger" data-delete="${encodeURIComponent(member.email)}">삭제</button>`}</div>`).join("")}
 roomsEl.addEventListener("click",event=>{const button=event.target.closest("button");if(!button)return;if(button.dataset.detail)showDetails(button.dataset.detail);if(button.dataset.action)act(button.dataset.room,button.dataset.action,button.dataset.confirm)});

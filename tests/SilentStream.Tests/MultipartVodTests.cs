@@ -113,6 +113,33 @@ public sealed class MultipartVodTests : IDisposable
     }
 
     [Fact]
+    public async Task Empty_startup_backup_does_not_block_the_live_part_or_duplicate_its_success_receipt()
+    {
+        MakeFiles();
+        _runner.EmptyInput = File1;
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        var live = Assert.Single(_queue.Jobs);
+        Assert.EndsWith("1교시 (2/2)", live.Title);
+        var receipt = _assets.Items[live.Id] with { VideoId = "existing-live-video" };
+        _assets.Items[live.Id] = receipt;
+        _queue.Jobs.Clear();
+        _runner.Calls.Clear();
+
+        // A later scan may find usable content in the earlier part. Its recovery must not
+        // rename/re-cut/re-upload the already successful live part or replace its identity.
+        _runner.EmptyInput = null;
+        await Coordinator().RecoverCompletedPeriodsAsync(default);
+        var recovered = Assert.Single(_queue.Jobs);
+        Assert.EndsWith("1교시 (1/2)", recovered.Title);
+        Assert.NotEqual(live.SourceKey, recovered.SourceKey);
+        Assert.Equal(receipt, _assets.Items[live.Id]);
+        Assert.Single(_runner.Calls);
+        Assert.Contains(File1, _runner.Calls[0]);
+        Assert.True(File.Exists(File1));
+        Assert.True(File.Exists(File2));
+    }
+
+    [Fact]
     public async Task A_single_historical_part_still_uploads_without_a_part_suffix()
     {
         File.WriteAllBytes(File2, new byte[16]);
@@ -131,10 +158,13 @@ public sealed class MultipartVodTests : IDisposable
     private sealed class Runner : IProcessRunner
     {
         public List<string> Calls { get; } = [];
+        public string? EmptyInput { get; set; }
         public Task<(int ExitCode, string Output)> RunAsync(string file, string args, TimeSpan timeout, CancellationToken ct)
         {
             Calls.Add(args);var matches = Regex.Matches(args, "\"([^\"]+)\"");
-            File.WriteAllBytes(matches[^1].Groups[1].Value, new byte[16]);return Task.FromResult((0, "ok"));
+            File.WriteAllBytes(matches[^1].Groups[1].Value, new byte[16]);
+            return Task.FromResult((0, EmptyInput is not null && args.Contains($"-i \"{EmptyInput}\"")
+                ? "Output file is empty, nothing was encoded" : "ok"));
         }
     }
     private sealed class Queue : IUploadQueue

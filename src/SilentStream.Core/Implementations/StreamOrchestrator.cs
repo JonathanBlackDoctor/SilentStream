@@ -54,6 +54,9 @@ public sealed record StreamOrchestratorOptions
     /// still leaves an hour of margin before the 12-hour boundary.
     /// </summary>
     public TimeSpan LiveAutoStopRetryAfter { get; init; } = TimeSpan.FromHours(11);
+
+    /// <summary>Hard wait budget for a broadcast completion, even if the provider ignores its token.</summary>
+    public TimeSpan BroadcastCompletionTimeout { get; init; } = TimeSpan.FromSeconds(10);
 }
 
 /// <summary>
@@ -78,7 +81,13 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
     private readonly object _gate = new();
     private CancellationTokenSource? _runCts;
-    private Task? _supervisorTask;
+    private sealed class RunWork(CancellationTokenSource source)
+    {
+        public CancellationTokenSource Source { get; } = source;
+        public Task? SupervisorTask;
+        public Task? FallbackTask;
+    }
+    private RunWork? _runWork;
     private LiveSession? _session;
     private DateTimeOffset? _liveBroadcastStartedAtUtc;
     private bool _durationLimitFirstAttempted;
@@ -97,6 +106,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     // encoder. The full StopAsync deliberately does NOT take this lock — it cancels the session
     // token instead, so it can never block behind a wedged swap.
     private readonly SemaphoreSlim _swapLock = new(1, 1);
+    private readonly SemaphoreSlim _retentionLock = new(1, 1);
     // A single operator-triggered wake-up is enough to skip the current retry backoff. Keeping
     // this bounded prevents repeated taps from accumulating retries for a future outage.
     private readonly SemaphoreSlim _retryWakeSignal = new(0, 1);
@@ -199,6 +209,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             else
             {
                 _runCts = startedRun = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                _runWork = new RunWork(startedRun);
                 SetState(StreamState.Warmup);
             }
         }
@@ -223,9 +234,18 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
             await InitializeCaptureUntilReadyAsync(token).ConfigureAwait(false);
 
+            await StartRecordingOnlyAsync(token).ConfigureAwait(false);
+            lock (_gate)
+            {
+                var work = RequireCurrentRunLocked(token);
+                work.FallbackTask = GuardFallbackRecordingAsync(token);
+            }
             await ConnectUntilLiveAsync(token).ConfigureAwait(false);
-
-            _supervisorTask = SuperviseAsync(token);
+            lock (_gate)
+            {
+                var work = RequireCurrentRunLocked(token);
+                work.SupervisorTask = SuperviseAsync(token);
+            }
         }
         catch (OperationCanceledException)
         {
@@ -244,7 +264,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 // Recording bookkeeping first: it must survive any streaming failure.
                 _sessionStart = DateTime.Now;
-                await _recording.EnforceRetentionAsync(token).ConfigureAwait(false);
+                await SweepRetentionAsync(token).ConfigureAwait(false);
 
                 await _capture.StartAsync(token).ConfigureAwait(false);
                 try
@@ -293,33 +313,16 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     /// </summary>
     private async Task ResumeStreamingFromRecordingOnlyAsync()
     {
-        await _swapLock.WaitAsync().ConfigureAwait(false);
-        try
+        CancellationToken token;
+        lock (_gate)
         {
-            CancellationToken token;
-            lock (_gate)
-            {
-                // A second tap, a full stop, or another transition may have won while this
-                // request was waiting for the encoder swap lock.
-                if (State != StreamState.RecordingOnly)
-                {
-                    return;
-                }
-
-                token = _runCts?.Token ?? CancellationToken.None;
-                SetState(StreamState.ConnectingYouTube);
-            }
-
-            await ConnectUntilLiveAsync(token).ConfigureAwait(false);
+            if (State != StreamState.RecordingOnly || _runCts is null) return;
+            token = _runCts.Token;
+            RequireCurrentRunLocked(token);
+            SetState(StreamState.ConnectingYouTube);
         }
-        catch (OperationCanceledException)
-        {
-            // StopAsync owns cancellation and the full teardown.
-        }
-        finally
-        {
-            _swapLock.Release();
-        }
+        try { await ConnectUntilLiveAsync(token).ConfigureAwait(false); }
+        catch (OperationCanceledException) { /* the run owner handles full teardown */ }
     }
 
     public Task StopAsync() => StopRunAsync(expectedRun: null);
@@ -327,6 +330,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private async Task StopRunAsync(CancellationTokenSource? expectedRun)
     {
         CancellationTokenSource? cts;
+        Task[] monitors;
         lock (_gate)
         {
             // Compare and claim Stopping atomically. An old cancellation continuation
@@ -338,20 +342,13 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             }
             SetState(StreamState.Stopping);
             cts = _runCts;
+            monitors = new[] { _runWork?.SupervisorTask, _runWork?.FallbackTask }.OfType<Task>().ToArray();
         }
 
         cts?.Cancel();
-        if (_supervisorTask is not null)
-        {
-            try
-            {
-                await _supervisorTask.ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            _supervisorTask = null;
-        }
+        try { await Task.WhenAll(monitors).ConfigureAwait(false); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.Error("녹화 감시 종료 중 오류", ex); }
 
         // §4.3 shutdown order: finalise the mp4 first, then complete the broadcast.
         try
@@ -386,8 +383,9 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         {
             try
             {
-                using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                using var completeCts = new CancellationTokenSource(_options.BroadcastCompletionTimeout);
+                await AwaitNetworkForRunAsync(
+                    _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token), completeCts.Token)
                     .ConfigureAwait(false);
                 RecordBroadcastEnded(session.BroadcastId);
             }
@@ -397,8 +395,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             }
         }
 
-        SetState(StreamState.Idle);
-        _liveBroadcastStartedAtUtc = null;
+        lock (_gate)
+        {
+            _liveBroadcastStartedAtUtc = null;
+            SetState(StreamState.Idle);
+        }
         _log.Info("송출·녹화가 중지되었습니다.");
     }
 
@@ -466,6 +467,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             LiveSession? session;
             lock (_gate)
             {
+                if (!IsCurrentRunLocked(token) || State != StreamState.RecordingOnly) return;
                 session = _session;
                 _session = null;
             }
@@ -473,18 +475,23 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             {
                 try
                 {
-                    using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-                    await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+                    using var completeCts = new CancellationTokenSource(_options.BroadcastCompletionTimeout);
+                    await AwaitNetworkForRunAsync(
+                        _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token), completeCts.Token)
                         .ConfigureAwait(false);
                     RecordBroadcastEnded(session.BroadcastId);
-                    _liveBroadcastStartedAtUtc = null;
+                    lock (_gate)
+                    {
+                        if (OwnsRunLocked(token) && State == StreamState.RecordingOnly && _session is null)
+                            _liveBroadcastStartedAtUtc = null;
+                    }
                 }
                 catch (Exception ex)
                 {
                     _log.Error("방송 종료 처리 실패 — 전체 중지 시 다시 시도합니다.", ex);
                     lock (_gate)
                     {
-                        _session ??= session;
+                        if (OwnsRunLocked(token) && State == StreamState.RecordingOnly) _session ??= session;
                     }
                 }
             }
@@ -613,6 +620,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private async Task<bool> RestartEncoderInPlaceAsync(string rtmpUrl, CancellationToken token)
     {
         await _encoder.StopAsync().ConfigureAwait(false);
+        RequireCurrentRun(token);
         var config = _configStore.Load();
         _sessionStart = DateTime.Now;
         // A recording-only swap always keeps the file leg (that is its whole point), even if the
@@ -626,7 +634,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         bool tornDown;
         lock (_gate)
         {
-            tornDown = State is StreamState.Stopping or StreamState.Idle;
+            tornDown = !IsCurrentRunLocked(token);
         }
         if (tornDown)
         {
@@ -637,7 +645,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         return true;
     }
 
-    private async Task<bool> RecoverRecordingOnlyEncoderAsync(CancellationToken token)
+    private async Task<bool> RecoverRecordingOnlyEncoderAsync(CancellationToken token, bool whileConnecting = false)
     {
         await _swapLock.WaitAsync(token).ConfigureAwait(false);
         var claimed = false;
@@ -645,9 +653,12 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         {
             lock (_gate)
             {
-                token.ThrowIfCancellationRequested();
-                if (State != StreamState.RecordingOnly || Volatile.Read(ref _encoderSwapInProgress) != 0)
-                    return false;
+                RequireCurrentRunLocked(token);
+                var eligible = whileConnecting
+                    ? State is StreamState.ConnectingYouTube or StreamState.Retrying
+                    : State == StreamState.RecordingOnly;
+                if (!eligible || Volatile.Read(ref _encoderSwapInProgress) != 0 ||
+                    (whileConnecting && !_configStore.Load().Recording.Enabled)) return false;
                 Volatile.Write(ref _encoderSwapInProgress, 1);
                 claimed = true;
             }
@@ -668,14 +679,17 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
         while (true)
         {
-            ct.ThrowIfCancellationRequested();
-            SetState(StreamState.ConnectingYouTube);
+            lock (_gate)
+            {
+                RequireCurrentRunLocked(ct);
+                SetState(StreamState.ConnectingYouTube);
+            }
             attempt++;
 
             try
             {
                 await StartStreamingOnceAsync(ct).ConfigureAwait(false);
-                SetState(StreamState.Live);
+                RequireCurrentRun(ct);
                 _log.Info($"라이브 송출 시작 (시도 {attempt}회차)");
                 return;
             }
@@ -685,7 +699,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             }
             catch (Exception ex)
             {
-                SetState(StreamState.Retrying);
+                lock (_gate)
+                {
+                    RequireCurrentRunLocked(ct);
+                    SetState(StreamState.Retrying);
+                }
                 _log.Warn($"송출 시작 실패({ex.Message}) — {delay.TotalSeconds:F0}초 후 재시도");
 
                 // §3.6/§4.1: the local backup recording must not depend on YouTube. Once the
@@ -713,85 +731,236 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     /// </summary>
     private async Task<bool> StartRecordingOnlyAsync(CancellationToken ct)
     {
-        if (_encoder.IsRunning)
-        {
-            return true;
-        }
-        var config = _configStore.Load();
-        if (!config.Recording.Enabled)
-        {
-            return true; // recording disabled — nothing to bring up.
-        }
-
+        await _swapLock.WaitAsync(ct).ConfigureAwait(false);
+        var claimed = false;
         try
         {
-            // Stamp the session start at encoder start: StartLocal must map to the new file's
-            // position 0, or period VOD cuts compute offsets from a stale start (past EOF).
+            var config = _configStore.Load();
+            lock (_gate)
+            {
+                RequireCurrentRunLocked(ct);
+                if (_encoder.IsRunning || !config.Recording.Enabled) return true;
+                Volatile.Write(ref _encoderSwapInProgress, 1);
+                claimed = true;
+            }
             _sessionStart = DateTime.Now;
-            var recordingPath = _recording.CreateSessionFilePath(_sessionStart);
-            await _encoder.StartAsync(BuildEncoderOptions(string.Empty, recordingPath, config), ct)
-                .ConfigureAwait(false);
+            var path = _recording.CreateSessionFilePath(_sessionStart);
+            await _encoder.StartAsync(BuildEncoderOptions(string.Empty, path, config), ct).ConfigureAwait(false);
+            if (!await ConfirmStartedEncoderAsync(ct).ConfigureAwait(false)) throw new OperationCanceledException(ct);
             SetQuality(_quality.Status);
             _log.Info("로컬 백업 녹화를 시작했습니다 (송출 연결과 독립).");
             return true;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            RequireCurrentRun(ct);
             _log.Error("로컬 녹화 시작 실패 — 송출 재시도는 계속합니다.", ex);
             return false;
+        }
+        finally
+        {
+            if (claimed) Volatile.Write(ref _encoderSwapInProgress, 0);
+            _swapLock.Release();
         }
     }
 
     private async Task StartStreamingOnceAsync(CancellationToken ct)
     {
-        if (!await _youtube.AuthenticateAsync(ct).ConfigureAwait(false))
+        RequireCurrentRun(ct);
+        var authenticated = await AwaitNetworkForRunAsync(_youtube.AuthenticateAsync(ct), ct).ConfigureAwait(false);
+        RequireCurrentRun(ct);
+        if (!authenticated) throw new InvalidOperationException("YouTube 인증에 실패했습니다.");
+        LiveSession? session;
+        lock (_gate) { RequireCurrentRunLocked(ct); session = _session; }
+        if (session is null)
         {
-            throw new InvalidOperationException("YouTube 인증에 실패했습니다.");
+            var created = await AwaitNetworkForRunAsync(_youtube.CreateBroadcastAsync(ct), ct,
+                CompleteStaleBroadcastAsync).ConfigureAwait(false);
+            var adopted = false;
+            lock (_gate)
+            {
+                if (IsCurrentRunLocked(ct))
+                {
+                    _session = session = created;
+                    _liveBroadcastStartedAtUtc = DateTimeOffset.UtcNow;
+                    _durationLimitFirstAttempted = false;
+                    _durationLimitRetryAttempted = false;
+                    adopted = true;
+                    try
+                    {
+                        _liveReplays?.RecordStarted(created, _liveBroadcastStartedAtUtc.Value,
+                            SilentStream.Core.YouTube.TitleTemplater.ResolveRoomName(_configStore.Load()));
+                    }
+                    catch (Exception ex) { _log.Warn($"라이브 다시보기 링크 저장 실패: {ex.Message}"); }
+                }
+            }
+            if (!adopted)
+            {
+                await CompleteStaleBroadcastAsync(created).ConfigureAwait(false);
+                throw new OperationCanceledException(ct);
+            }
         }
 
-        // Reuse the existing broadcast across encoder restarts (watchdog/stall recovery). Creating
-        // a fresh broadcast on every attempt is what orphaned 7 broadcasts in the field test and
-        // silently migrated the stream to a new watch URL. EnableAutoStop=false keeps the broadcast
-        // alive across a brief feed drop, so the restarted encoder just reconnects to the same
-        // ingest key. A new broadcast is created only for a fresh session (none yet); the explicit
-        // Normal/manual stop and the 10h/11h duration guards are the only places it is completed.
-        if (_session is null)
+        // Network I/O never owns the single-encoder lock. Only stop/file rotation/start is serialized.
+        await _swapLock.WaitAsync(ct).ConfigureAwait(false);
+        var claimed = false;
+        try
         {
-            _session = await _youtube.CreateBroadcastAsync(ct).ConfigureAwait(false);
-            _liveBroadcastStartedAtUtc = DateTimeOffset.UtcNow;
-            _durationLimitFirstAttempted = false;
-            _durationLimitRetryAttempted = false;
+            lock (_gate)
+            {
+                RequireCurrentRunLocked(ct);
+                if (State is not (StreamState.ConnectingYouTube or StreamState.Retrying))
+                    throw new OperationCanceledException(ct);
+                Volatile.Write(ref _encoderSwapInProgress, 1);
+                claimed = true;
+            }
+            if (!await RestartEncoderInPlaceAsync($"{session!.RtmpUrl}/{session.StreamKey}", ct).ConfigureAwait(false))
+                throw new OperationCanceledException(ct);
+            lock (_gate)
+            {
+                RequireCurrentRunLocked(ct);
+                SetState(StreamState.Live);
+            }
+        }
+        finally
+        {
+            if (claimed) Volatile.Write(ref _encoderSwapInProgress, 0);
+            _swapLock.Release();
+        }
+    }
+
+    private bool OwnsRunLocked(CancellationToken token) =>
+        _runWork is not null && _runWork.Source.Token == token;
+
+    private bool IsCurrentRunLocked(CancellationToken token) => !token.IsCancellationRequested &&
+        OwnsRunLocked(token) &&
+        State is not (StreamState.Stopping or StreamState.Idle);
+
+    private RunWork RequireCurrentRunLocked(CancellationToken token)
+    {
+        if (!IsCurrentRunLocked(token)) throw new OperationCanceledException(token);
+        return _runWork!;
+    }
+
+    private void RequireCurrentRun(CancellationToken token)
+    {
+        lock (_gate) RequireCurrentRunLocked(token);
+    }
+
+    private async Task<bool> ConfirmStartedEncoderAsync(CancellationToken token)
+    {
+        lock (_gate) { if (IsCurrentRunLocked(token)) return true; }
+        // The swap lock is still held, so this cannot stop a later run's encoder.
+        await _encoder.StopAsync().ConfigureAwait(false);
+        return false;
+    }
+
+    private Task AwaitNetworkForRunAsync(Task request, CancellationToken token) =>
+        AwaitNetworkForRunAsync(AsCompletionAsync(request), token);
+
+    private static async Task<bool> AsCompletionAsync(Task request)
+    {
+        await request.ConfigureAwait(false);
+        return true;
+    }
+
+    private async Task<T> AwaitNetworkForRunAsync<T>(Task<T> request, CancellationToken token,
+        Func<T, Task>? discardLateResult = null)
+    {
+        try { return await request.WaitAsync(token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // Stop must not await a provider that ignores cancellation. Observe eventual faults,
+            // and close a late-created broadcast without ever adopting it into a later run.
+            _ = ObserveDiscardedNetworkResultAsync(request, discardLateResult);
+            throw;
+        }
+    }
+
+    private async Task ObserveDiscardedNetworkResultAsync<T>(Task<T> request, Func<T, Task>? discard)
+    {
+        try
+        {
+            var result = await request.ConfigureAwait(false);
+            if (discard is not null) await discard(result).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { _log.Warn($"이전 실행의 늦은 네트워크 결과 확인 실패: {ex.Message}"); }
+    }
+
+    private async Task CompleteStaleBroadcastAsync(LiveSession stale)
+    {
+        lock (_gate) { if (_session?.BroadcastId == stale.BroadcastId) return; }
+        try
+        {
+            using var cleanup = new CancellationTokenSource(_options.BroadcastCompletionTimeout);
+            await AwaitNetworkForRunAsync(
+                _youtube.CompleteBroadcastAsync(stale.BroadcastId, cleanup.Token), cleanup.Token)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) { _log.Warn($"이전 실행의 늦은 방송 생성 결과 정리 실패: {ex.Message}"); }
+    }
+
+    private async Task SweepRetentionAsync(CancellationToken token)
+    {
+        await _retentionLock.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            RequireCurrentRun(token);
+            await _recording.EnforceRetentionAsync(token).ConfigureAwait(false);
+        }
+        finally { _retentionLock.Release(); }
+    }
+
+    private async Task GuardFallbackRecordingAsync(CancellationToken token)
+    {
+        var lastLength = -1L;
+        var lastGrowth = Stopwatch.GetTimestamp();
+        var lastSweep = Stopwatch.GetTimestamp();
+        var lastAttempt = 0L;
+        var retryDelay = _options.RetryBaseDelay;
+        while (!token.IsCancellationRequested)
+        {
             try
             {
-                _liveReplays?.RecordStarted(_session, _liveBroadcastStartedAtUtc.Value,
-                    SilentStream.Core.YouTube.TitleTemplater.ResolveRoomName(_configStore.Load()));
+                await Task.Delay(_options.WatchdogInterval, token).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    RequireCurrentRunLocked(token);
+                    if (State is not (StreamState.ConnectingYouTube or StreamState.Retrying) ||
+                        Volatile.Read(ref _encoderSwapInProgress) != 0) continue;
+                }
+                if (!_configStore.Load().Recording.Enabled) continue;
+                if (Stopwatch.GetElapsedTime(lastSweep) >= _options.RetentionInterval)
+                {
+                    lastSweep = Stopwatch.GetTimestamp();
+                    await SweepRetentionAsync(token).ConfigureAwait(false);
+                }
+                var length = _recording.GetActiveRecordingLength();
+                var changed = length != lastLength;
+                if (changed) lastGrowth = Stopwatch.GetTimestamp();
+                lastLength = length;
+                var advancing = length > 0 && (changed || Stopwatch.GetElapsedTime(lastGrowth) <= _options.StallTimeout);
+                if (_encoder.IsRunning && (_encoder.TimeSinceProgress <= _options.StallTimeout || advancing))
+                {
+                    lastAttempt = 0;
+                    retryDelay = _options.RetryBaseDelay;
+                    continue;
+                }
+                if (lastAttempt != 0 && Stopwatch.GetElapsedTime(lastAttempt) < retryDelay) continue;
+                lastAttempt = Stopwatch.GetTimestamp();
+                retryDelay = TimeSpan.FromTicks(Math.Min(retryDelay.Ticks * 2, _options.RetryMaxDelay.Ticks));
+                if (await RecoverRecordingOnlyEncoderAsync(token, whileConnecting: true).ConfigureAwait(false))
+                {
+                    lastLength = -1;
+                    lastGrowth = Stopwatch.GetTimestamp();
+                    lastAttempt = 0;
+                    retryDelay = _options.RetryBaseDelay;
+                }
             }
-            catch (Exception ex)
-            {
-                // Link history is operational metadata; a disk error must never block the stream.
-                _log.Warn($"라이브 다시보기 링크 저장 실패: {ex.Message}");
-            }
+            catch (OperationCanceledException) { return; }
+            catch (Exception ex) { _log.Error("송출 연결 대기 중 백업 감시 오류 — 감시를 계속합니다.", ex); }
         }
-
-        var config = _configStore.Load();
-        var recordingEnabled = config.Recording.Enabled;
-        // Stamp the session start at (re)connect time: on a watchdog restart or a delayed first
-        // connect the tee opens a NEW part file whose position 0 is now, and a stale StartLocal
-        // would shift every later period VOD cut past EOF (same fix as the broadcast-only swap).
-        _sessionStart = DateTime.Now;
-        var recordingPath = recordingEnabled
-            ? _recording.CreateSessionFilePath(_sessionStart)
-            : string.Empty;
-
-        if (_encoder.IsRunning)
-        {
-            await _encoder.StopAsync().ConfigureAwait(false);
-        }
-
-        await _encoder.StartAsync(
-            BuildEncoderOptions($"{_session.RtmpUrl}/{_session.StreamKey}", recordingPath, config), ct)
-            .ConfigureAwait(false);
-        SetQuality(_quality.Status); // publish the level this pipeline actually runs at
     }
 
     /// <summary>
@@ -985,7 +1154,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 if (DateTime.UtcNow - lastSweep >= _options.RetentionInterval)
                 {
                     lastSweep = DateTime.UtcNow;
-                    await _recording.EnforceRetentionAsync(ct).ConfigureAwait(false);
+                    await SweepRetentionAsync(ct).ConfigureAwait(false);
                 }
             }
             catch (OperationCanceledException)
@@ -1062,9 +1231,11 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     private async Task RetryPendingBroadcastCompletionAsync()
     {
         LiveSession? session;
+        CancellationToken token;
         lock (_gate)
         {
             if (State != StreamState.RecordingOnly) return;
+            token = _runCts?.Token ?? CancellationToken.None;
             session = _session;
             _session = null;
         }
@@ -1072,17 +1243,25 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
 
         try
         {
-            using var completeCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            await _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token)
+            using var completeCts = new CancellationTokenSource(_options.BroadcastCompletionTimeout);
+            await AwaitNetworkForRunAsync(
+                _youtube.CompleteBroadcastAsync(session.BroadcastId, completeCts.Token), completeCts.Token)
                 .ConfigureAwait(false);
             RecordBroadcastEnded(session.BroadcastId);
-            _liveBroadcastStartedAtUtc = null;
+            lock (_gate)
+            {
+                if (OwnsRunLocked(token) && State == StreamState.RecordingOnly && _session is null)
+                    _liveBroadcastStartedAtUtc = null;
+            }
             _log.Info("장시간 라이브의 YouTube 종료 상태 전이를 재확인했습니다.");
         }
         catch (Exception ex)
         {
             _log.Error("장시간 라이브의 YouTube 종료 상태 재시도 실패 — 스튜디오에서 확인하세요.", ex);
-            lock (_gate) _session ??= session;
+            lock (_gate)
+            {
+                if (OwnsRunLocked(token) && State == StreamState.RecordingOnly) _session ??= session;
+            }
         }
     }
 
