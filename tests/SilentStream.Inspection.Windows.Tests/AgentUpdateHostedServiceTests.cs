@@ -13,6 +13,44 @@ namespace SilentStream.Inspection.Windows.Tests;
 public sealed class AgentUpdateHostedServiceTests
 {
     [Fact]
+    public async Task Deferring_for_a_running_app_does_not_block_startup_diagnostics()
+    {
+        using var fixture = new UpdateFixture();
+        fixture.CreateSignedUpdate("running-app.zip", "93.0.0");
+        var broker = new FakeBroker((_, _, _, _) => Task.FromResult(new BrokerResponse("response", true, "scheduled")));
+        var gate = new StartupUpdateGate();
+        using var service = new AgentUpdateHostedService(fixture.Options, broker, fixture.Store, gate,
+            NullLogger<AgentUpdateHostedService>.Instance, () => true);
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            Assert.True((await gate.WaitAsync(timeout.Token)).UpdateCheckSucceeded);
+            Assert.Equal(0, broker.CallCount);
+        }
+        finally { await service.StopAsync(CancellationToken.None); }
+    }
+
+    [Fact]
+    public async Task Running_app_defers_helper_update_without_consuming_package_and_resumes_after_exit()
+    {
+        using var fixture = new UpdateFixture();
+        var candidate = fixture.CreateSignedUpdate("running-app.zip", "93.0.0");
+        var broker = new FakeBroker((_, _, _, _) => Task.FromResult(new BrokerResponse("response", true, "scheduled")));
+        var running = true;
+        using var service = fixture.CreateService(broker, () => running);
+        Assert.Equal(AgentUpdateHostedService.AgentUpdateScanResult.AppRunning,
+            await service.ProcessCandidatesAsync([candidate], CancellationToken.None));
+        Assert.True(File.Exists(candidate));
+        Assert.Equal(0, broker.CallCount);
+        running = false;
+        Assert.Equal(AgentUpdateHostedService.AgentUpdateScanResult.Scheduled,
+            await service.ProcessCandidatesAsync([candidate], CancellationToken.None));
+        Assert.Equal(1, broker.CallCount);
+        fixture.Store.EndMaintenance();
+    }
+
+    [Fact]
     public async Task Scan_ignores_old_and_invalid_files_then_selects_the_highest_valid_version()
     {
         using var fixture = new UpdateFixture();
@@ -112,12 +150,12 @@ public sealed class AgentUpdateHostedServiceTests
             Store = new InspectionStore(Options);
         }
 
-        public AgentUpdateHostedService CreateService(IBrokerClient broker) => new(
+        public AgentUpdateHostedService CreateService(IBrokerClient broker, Func<bool>? appRunning = null) => new(
             Options,
             broker,
             Store,
             new StartupUpdateGate(),
-            NullLogger<AgentUpdateHostedService>.Instance);
+            NullLogger<AgentUpdateHostedService>.Instance, appRunning ?? (() => false));
 
         public string CreateSignedUpdate(string fileName, string version)
         {

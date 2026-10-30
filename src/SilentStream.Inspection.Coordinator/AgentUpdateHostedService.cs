@@ -12,11 +12,17 @@ public sealed class AgentUpdateHostedService : BackgroundService
     private readonly InspectionStore _store;
     private readonly StartupUpdateGate _startup;
     private readonly ILogger<AgentUpdateHostedService> _logger;
+    private readonly Func<bool> _appRunning;
 
     public AgentUpdateHostedService(CoordinatorOptionsStore options, IBrokerClient broker, InspectionStore store,
         StartupUpdateGate startup, ILogger<AgentUpdateHostedService> logger)
+        : this(options, broker, store, startup, logger, AgentUpdateSafety.ApplicationIsRunning) { }
+
+    internal AgentUpdateHostedService(CoordinatorOptionsStore options, IBrokerClient broker, InspectionStore store,
+        StartupUpdateGate startup, ILogger<AgentUpdateHostedService> logger, Func<bool> appRunning)
     {
         _options = options; _broker = broker; _store = store; _startup = startup; _logger = logger;
+        _appRunning = appRunning;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -38,9 +44,15 @@ public sealed class AgentUpdateHostedService : BackgroundService
                     await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken).ConfigureAwait(false);
                     continue; // the updater normally replaces/restarts this service
                 }
-                if (result == AgentUpdateScanResult.Deferred)
+                if (result == AgentUpdateScanResult.AppRunning)
                 {
-                    _startup.MarkApplying("점검 서비스 업데이트를 안전하게 적용하기 위해 다시 연결하고 있습니다.");
+                    // A deferred update must not hold boot diagnostics hostage while an app is
+                    // already running. The package remains queued for the next app-free window.
+                    _startup.MarkReady(true, "실행 중인 앱을 유지하며 도우미 업데이트를 다음 종료 후로 보류합니다.");
+                }
+                else if (result == AgentUpdateScanResult.Deferred)
+                {
+                    _startup.MarkApplying("점검 서비스 업데이트의 안전한 적용 조건을 기다립니다. 실행 중인 앱은 유지합니다.");
                 }
                 else if (result == AgentUpdateScanResult.Rejected)
                 {
@@ -65,6 +77,9 @@ public sealed class AgentUpdateHostedService : BackgroundService
 
     internal async Task<AgentUpdateScanResult> ProcessCandidatesAsync(IReadOnlyList<string> candidates, CancellationToken token)
     {
+        // The session helper may be the app's parent. Ending its scheduled task/tree while the
+        // app runs can end the recording too. Keep the signed package for the next safe startup.
+        if (_appRunning()) return AgentUpdateScanResult.AppRunning;
         var verifier = new InspectionAgentUpdateVerifier(_options.Current.PublicKeys);
         var acquired = new List<AcquiredAgentUpdate>();
         var rejected = false;
@@ -227,7 +242,7 @@ public sealed class AgentUpdateHostedService : BackgroundService
         }
     }
 
-    internal enum AgentUpdateScanResult { None, Scheduled, Deferred, Rejected }
+    internal enum AgentUpdateScanResult { None, Scheduled, Deferred, Rejected, AppRunning }
     private sealed record AcquiredAgentUpdate(string OriginalPath, string ApplyingPath, Version Version,
         VerifiedInspectionAgentUpdate Verified);
 }

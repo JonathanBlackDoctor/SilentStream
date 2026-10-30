@@ -36,6 +36,15 @@ public static class AgentUpdateApplier
             if (Directory.Exists(next)) Directory.Delete(next, true);
             CopyDirectory(stage, next, InspectionAgentUpdateVerifier.ManifestName);
             RequirePayload(next);
+            // Check again at the last destructive boundary: the app may have started while the
+            // signed update was being copied. Do not enter rollback/stop logic on this deferral.
+            if (AgentUpdateSafety.ApplicationIsRunning())
+            {
+                WriteResult(resultPath, false, expectedVersion, "deferred", "방송 앱 실행 중 — 도우미 업데이트 보류", rollback);
+                if (package.EndsWith(".applying", StringComparison.OrdinalIgnoreCase) && File.Exists(package))
+                    File.Move(package, package[..^".applying".Length], overwrite: false);
+                return;
+            }
             if (Directory.Exists(rollback)) Directory.Delete(rollback, true);
             phase = "stop";
             await RunTolerantAsync(Path.Combine(Environment.SystemDirectory, "schtasks.exe"), "/End", "/TN", SessionTask).ConfigureAwait(false);
@@ -56,6 +65,14 @@ public static class AgentUpdateApplier
         }
         catch (Exception ex)
         {
+            if (phase == "prepare")
+            {
+                // No service was stopped yet. A copy/check failure must not stop a healthy app
+                // or restore an obsolete leftover rollback directory.
+                WriteResult(resultPath, false, expectedVersion, phase, ex.Message, rollback);
+                MoveMarker(package, ".failed");
+                return;
+            }
             var rollbackError = string.Empty;
             try
             {
