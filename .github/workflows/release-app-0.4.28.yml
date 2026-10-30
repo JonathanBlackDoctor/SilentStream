@@ -46,7 +46,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Installer download validation failed.' }
           & ./inspection/deployment/Test-ExistingRegistrationUpdate.ps1
           & ./inspection/deployment/Test-InstallerRecovery.ps1
-          dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release --artifacts-path build-tests
+          dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release --artifacts-path build-tests --logger "trx;LogFileName=core.trx" --results-directory verification-results
           if ($LASTEXITCODE -ne 0) { throw 'Core tests failed.' }
           dotnet test tests/SilentStream.Inspection.Windows.Tests/SilentStream.Inspection.Windows.Tests.csproj -c Release --artifacts-path build-tests
           if ($LASTEXITCODE -ne 0) { throw 'Inspection tests failed.' }
@@ -56,6 +56,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Direct remote tests failed.' }
           node --test cloudflare/control-plane/test/*.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Room PWA tests failed.' }
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-0.4.28-verification
+          path: verification-results
+          if-no-files-found: ignore
       - name: Publish app and uninstall helper
         run: |
           dotnet publish src/SilentStream.App/SilentStream.App.csproj --artifacts-path build-app -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:Version=0.4.28 -p:DebugType=None -p:DebugSymbols=false -o publish

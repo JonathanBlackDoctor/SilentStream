@@ -696,16 +696,21 @@ public class StreamOrchestratorTests : IDisposable
         // stall restart so a healthy pipeline is not churned into a ~30s restart loop.
         _recording.GrowOnSample = true;
         var orchestrator = CreateOrchestrator();
+        try
+        {
         await orchestrator.StartAsync(CancellationToken.None);
         Assert.Single(_encoder.StartCalls);
 
         _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5); // progress line quiet…
-        await Task.Delay(300); // …for many watchdog intervals (25ms each)
+        // A busy CI worker may not schedule even one watchdog tick within 300 ms. Wait for
+        // observed file samples, not elapsed wall time, before asserting the non-restart.
+        await WaitUntilAsync(() => _recording.ActiveRecordingLength >= 3_000_000, TimeSpan.FromSeconds(5));
 
-        Assert.True(_recording.ActiveRecordingLength > 0); // the watchdog actually sampled the file
+        Assert.True(_recording.ActiveRecordingLength >= 3_000_000);
         Assert.Single(_encoder.StartCalls); // …and recording is advancing, so no restart
         Assert.Equal(StreamState.Live, orchestrator.State);
-        await orchestrator.StopAsync();
+        }
+        finally { await orchestrator.StopAsync(); }
     }
 
     [Fact]
