@@ -4,5 +4,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>MediaCaptureHelper.UninstallHelper</AssemblyName>
     <RootNamespace>SilentStream.UninstallHelper</RootNamespace>
+    <DefineConstants>$(DefineConstants);APP_COMPANION</DefineConstants>
   </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../SilentStream.Core/Safety/ApplicationSafetySession.cs" Link="ApplicationSafetySession.cs" />
+  </ItemGroup>
 </Project>

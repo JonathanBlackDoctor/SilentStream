@@ -19,7 +19,7 @@ public sealed class PowerTransitionSafetyStructureTests
         Assert.DoesNotContain("RequestShutdown()", server, StringComparison.Ordinal);
         AssertOrdered(service,
             "_safety.InspectAsync",
-            "_orchestrator.StopAsync",
+            "_orchestrator.StopForMaintenanceAsync",
             "WriteState(reservedState)",
             "new QuietShutdownCountdown");
         Assert.Contains("ConfirmationDelay", service, StringComparison.Ordinal);

@@ -88,6 +88,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         public Task? FallbackTask;
     }
     private RunWork? _runWork;
+    private Task? _stopCompletion;
+    private readonly SilentStream.Core.Safety.ApplicationSafetySession? _safety;
     private LiveSession? _session;
     private DateTimeOffset? _liveBroadcastStartedAtUtc;
     private bool _durationLimitFirstAttempted;
@@ -134,9 +136,10 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IScreenCaptureSource capture,
         IAudioMixer audioMixer,
         IAdaptiveQualityController quality,
-        ILiveReplayCatalog liveReplays)
+        ILiveReplayCatalog liveReplays,
+        SilentStream.Core.Safety.ApplicationSafetySession? safety = null)
         : this(configStore, log, youtube, encoder, recording, capture, audioMixer, quality,
-            new StreamOrchestratorOptions(), liveReplays)
+            new StreamOrchestratorOptions(), liveReplays, safety)
     {
     }
 
@@ -164,7 +167,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         IAudioMixer audioMixer,
         IAdaptiveQualityController quality,
         StreamOrchestratorOptions options,
-        ILiveReplayCatalog? liveReplays)
+        ILiveReplayCatalog? liveReplays,
+        SilentStream.Core.Safety.ApplicationSafetySession? safety = null)
     {
         _configStore = configStore;
         _log = log;
@@ -176,6 +180,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         _quality = quality;
         _options = options;
         _liveReplays = liveReplays;
+        _safety = safety;
 
         _encoder.MetricsUpdated += OnEncoderMetrics;
         _quality.ChangeRequested += OnQualityChangeRequested;
@@ -189,14 +194,26 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     public event EventHandler<MetricsSnapshot>? MetricsUpdated;
     public event EventHandler<QualityStatus>? QualityChanged;
 
-    public async Task StartAsync(CancellationToken ct)
+    public Task StartAsync(CancellationToken ct) => StartWithModeAsync(ct, broadcast: true);
+
+    public Task StartRecordingSessionAsync(CancellationToken ct) => StartWithModeAsync(ct, broadcast: false);
+
+    private async Task StartWithModeAsync(CancellationToken ct, bool broadcast)
     {
+        if ((!broadcast && !_configStore.Load().Recording.Enabled) ||
+            (_safety is not null && (!_safety.StartAllowed || !_safety.SetDesired(broadcast
+                ? Safety.DesiredRunMode.Live : Safety.DesiredRunMode.RecordingOnly, "operator-start"))))
+        {
+            _log.Warn("보존 대기·종료 준비 또는 실행 의도 저장 오류로 새 녹화/방송을 시작하지 않습니다.");
+            return;
+        }
         var resumeFromRecordingOnly = false;
         CancellationTokenSource? startedRun = null;
         lock (_gate)
         {
             if (State == StreamState.RecordingOnly)
             {
+                if (!broadcast) return;
                 // "방송 중지" deliberately leaves capture, mixer, and the local recording
                 // alive. A later Live Start must turn that same running session back into a
                 // broadcast instead of silently no-op'ing because it is not Idle.
@@ -235,12 +252,23 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
             await InitializeCaptureUntilReadyAsync(token).ConfigureAwait(false);
 
             await StartRecordingOnlyAsync(token).ConfigureAwait(false);
-            lock (_gate)
+            if (broadcast)
             {
-                var work = RequireCurrentRunLocked(token);
-                work.FallbackTask = GuardFallbackRecordingAsync(token);
+                lock (_gate)
+                {
+                    var work = RequireCurrentRunLocked(token);
+                    work.FallbackTask = GuardFallbackRecordingAsync(token);
+                }
+                await ConnectUntilLiveAsync(token).ConfigureAwait(false);
             }
-            await ConnectUntilLiveAsync(token).ConfigureAwait(false);
+            else
+            {
+                lock (_gate)
+                {
+                    RequireCurrentRunLocked(token);
+                    SetState(StreamState.RecordingOnly);
+                }
+            }
             lock (_gate)
             {
                 var work = RequireCurrentRunLocked(token);
@@ -325,25 +353,56 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
         catch (OperationCanceledException) { /* the run owner handles full teardown */ }
     }
 
-    public Task StopAsync() => StopRunAsync(expectedRun: null);
+    public Task StopAsync()
+    {
+        // Record the operator's stop before starting asynchronous finalisation. Failure still
+        // stops capture; the safety session disables its companion on persistence failure.
+        _safety?.SetDesired(Safety.DesiredRunMode.Stopped, "operator-stop");
+        return StopRunAsync(expectedRun: null);
+    }
 
-    private async Task StopRunAsync(CancellationTokenSource? expectedRun)
+    public Task StopForMaintenanceAsync() => StopRunAsync(expectedRun: null);
+
+    private Task StopRunAsync(CancellationTokenSource? expectedRun)
     {
         CancellationTokenSource? cts;
         Task[] monitors;
+        TaskCompletionSource completion;
         lock (_gate)
         {
             // Compare and claim Stopping atomically. An old cancellation continuation
             // cannot tear down a newer run that already returned to Live.
-            if (expectedRun is not null && !ReferenceEquals(_runCts, expectedRun)) return;
-            if (State is StreamState.Idle or StreamState.Stopping)
-            {
-                return;
-            }
+            if (expectedRun is not null && !ReferenceEquals(_runCts, expectedRun)) return Task.CompletedTask;
+            if (State == StreamState.Stopping) return _stopCompletion ?? Task.CompletedTask;
+            if (State == StreamState.Idle) return Task.CompletedTask;
+            completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _stopCompletion = completion.Task;
             SetState(StreamState.Stopping);
             cts = _runCts;
             monitors = new[] { _runWork?.SupervisorTask, _runWork?.FallbackTask }.OfType<Task>().ToArray();
         }
+
+        _ = CompleteStopAsync(cts, monitors, completion);
+        return completion.Task;
+    }
+
+    private async Task CompleteStopAsync(CancellationTokenSource? cts, Task[] monitors, TaskCompletionSource completion)
+    {
+        try
+        {
+            await FinalizeStoppedRunAsync(cts, monitors).ConfigureAwait(false);
+            completion.TrySetResult();
+        }
+        catch (Exception ex)
+        {
+            // Every caller (including restart/power-off) observes the same failure. Never report
+            // completion just because another caller already claimed the Stopping state.
+            completion.TrySetException(ex);
+        }
+    }
+
+    private async Task FinalizeStoppedRunAsync(CancellationTokenSource? cts, Task[] monitors)
+    {
 
         cts?.Cancel();
         try { await Task.WhenAll(monitors).ConfigureAwait(false); }
@@ -433,6 +492,8 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
                 }
                 // Transition FIRST so the watchdog's Live-only restart branch can no longer
                 // resurrect the RTMP leg while the encoder is being swapped below.
+                if (_safety is not null && !_safety.SetDesired(Safety.DesiredRunMode.RecordingOnly, "broadcast-stop"))
+                    return;
                 SetState(StreamState.RecordingOnly);
                 token = _runCts?.Token ?? CancellationToken.None;
             }
@@ -511,6 +572,7 @@ public sealed class StreamOrchestrator : IStreamOrchestrator
     /// </summary>
     public async Task<bool> ForceRetryAsync()
     {
+        if (_safety is not null && !_safety.StartAllowed) return false;
         StreamState state;
         lock (_gate)
         {

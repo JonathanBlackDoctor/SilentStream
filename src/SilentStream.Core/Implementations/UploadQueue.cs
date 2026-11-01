@@ -26,6 +26,9 @@ public sealed class UploadQueue : IUploadQueue
     private readonly ILogService _log;
     private readonly IPeriodAssetCatalog? _assets;
     private readonly IYouTubePlaylistService? _playlists;
+    private readonly IUploadBudget? _budget;
+    private readonly Func<bool> _preservationHeld;
+    private DateTimeOffset? _sharedRetryAtUtc;
     private readonly string _queueFile;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
@@ -73,6 +76,15 @@ public sealed class UploadQueue : IUploadQueue
     {
     }
 
+    /// <summary>Production admission control; the budget is used only by the VOD worker.</summary>
+    public UploadQueue(
+        IYouTubeUploadService uploadService, IConfigStore configStore, ILogService log,
+        IPeriodAssetCatalog assets, IYouTubePlaylistService playlists, IUploadBudget budget)
+        : this(uploadService, configStore, log, AppPaths.UploadQueueFile, () => DateTime.Now, Task.Delay,
+            maxPerDay: int.MaxValue, maxAttempts: 5, assetCatalog: assets, playlistService: playlists, budget: budget)
+    {
+    }
+
     /// <summary>Test seam: redirect the queue file, clock, delay, and limits.</summary>
     public UploadQueue(
         IYouTubeUploadService uploadService,
@@ -86,7 +98,9 @@ public sealed class UploadQueue : IUploadQueue
         int maxCompletedRetained = 50,
         int maxFailedRetained = 20,
         IPeriodAssetCatalog? assetCatalog = null,
-        IYouTubePlaylistService? playlistService = null)
+        IYouTubePlaylistService? playlistService = null,
+        IUploadBudget? budget = null,
+        Func<bool>? preservationHeld = null)
     {
         _uploadService = uploadService;
         _configStore = configStore;
@@ -99,6 +113,9 @@ public sealed class UploadQueue : IUploadQueue
         _maxCompletedRetained = maxCompletedRetained;
         _assets = assetCatalog;
         _playlists = playlistService;
+        _budget = budget;
+        _preservationHeld = preservationHeld ?? (() => Safety.ApplicationSafetySession.IsPreservationHeld(
+            Safety.ApplicationSafetySession.DefaultDirectory));
     }
 
     public void Enqueue(UploadJob job)
@@ -137,6 +154,19 @@ public sealed class UploadQueue : IUploadQueue
     }
 
     public DateTimeOffset? PausedUntilUtc
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var local = LocalPausedUntilUtc;
+                var shared = _sharedRetryAtUtc > UtcNow() ? _sharedRetryAtUtc : null;
+                return local is { } pause && (shared is null || pause > shared) ? local : shared;
+            }
+        }
+    }
+
+    private DateTimeOffset? LocalPausedUntilUtc
     {
         get
         {
@@ -316,6 +346,12 @@ public sealed class UploadQueue : IUploadQueue
         {
             try
             {
+                if (_preservationHeld())
+                {
+                    await Task.Yield(); // Even a synchronously completed delay must not block Start/cancellation.
+                    await _delay(TimeSpan.FromSeconds(30), ct).ConfigureAwait(false);
+                    continue;
+                }
                 if (!initialized)
                 {
                     lock (_gate) InitializeQueueLocked();
@@ -324,6 +360,9 @@ public sealed class UploadQueue : IUploadQueue
                 // An acknowledged success remains terminal in memory if disk writes fail. Repair
                 // persistence before any further network operation; never turn it into a new upload.
                 lock (_gate) { if (_persistenceDirty) PersistLocked(); }
+                // Flush the durable pause outbox before local waiting or another admission.
+                // Network failures affect this background worker only.
+                await FlushSharedPauseAsync(ct).ConfigureAwait(false);
                 var job = NextPending();
                 if (job is null)
                 {
@@ -335,7 +374,7 @@ public sealed class UploadQueue : IUploadQueue
                 }
 
                 ResetQuotaWindowIfNewDay();
-                if (PausedUntilUtc is { } resumeAt)
+                if (LocalPausedUntilUtc is { } resumeAt)
                 {
                     _log.Info($"YouTube 업로드 한도 대기 — {resumeAt.ToLocalTime():yyyy-MM-dd HH:mm} 이후 재시도.");
                     if (!await DelayUntilAsync(resumeAt, ct).ConfigureAwait(false))
@@ -345,6 +384,20 @@ public sealed class UploadQueue : IUploadQueue
                     continue; // recompute window after reset
                 }
 
+                if (_budget is not null)
+                {
+                    var decision = await _budget.ReserveAsync(job.Date, Guid.NewGuid().ToString("N"), ct).ConfigureAwait(false);
+                    lock (_gate) _sharedRetryAtUtc = decision.Allowed ? null : decision.RetryAtUtc;
+                    if (!decision.Allowed)
+                    {
+                        // Re-evaluate at most once per minute so today's newly cut lesson can
+                        // proceed even when the backlog allocation is exhausted.
+                        var wait = decision.RetryAtUtc - UtcNow();
+                        await _delay(wait > TimeSpan.Zero && wait < TimeSpan.FromMinutes(1)
+                            ? wait : TimeSpan.FromMinutes(1), ct).ConfigureAwait(false);
+                        continue;
+                    }
+                }
                 await TryUploadAsync(job, ct).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
@@ -388,6 +441,19 @@ public sealed class UploadQueue : IUploadQueue
                 }
             }
             else SetQuotaSpent();
+            if (_budget is not null)
+            {
+                lock (_gate)
+                {
+                    var state = LoadLocked();
+                    state.SharedPauseKind = ex.RetryAfter is null ? "api" : "channel";
+                    state.SharedPauseUntilUtc = ex.RetryAfter is { } retry
+                        ? UtcNow().Add(retry) : new DateTimeOffset(NextResetLocal(_now())).ToUniversalTime();
+                    PersistLocked();
+                }
+                // If delivery fails the worker retries the saved outbox before any new upload.
+                await FlushSharedPauseAsync(ct).ConfigureAwait(false);
+            }
             _log.Warn($"{job.PeriodNumber}교시 업로드 quota 초과 — 큐에 보존하고 리셋 후 자동 재개합니다.");
             return;
         }
@@ -465,7 +531,41 @@ public sealed class UploadQueue : IUploadQueue
     {
         lock (_gate)
         {
-            return LoadLocked().Jobs.FirstOrDefault(j => j.Status == UploadJobStatus.Pending);
+            var pending = LoadLocked().Jobs.Where(j => j.Status == UploadJobStatus.Pending);
+            // Legacy/test queues keep insertion order; centrally governed production queues
+            // reserve room for today's classes instead of draining an old backlog first.
+            return (_budget is null ? pending : pending.OrderBy(j => j.Date == DateOnly.FromDateTime(_now()) ? 0 : 1)
+                .ThenBy(j => j.Date)).FirstOrDefault();
+        }
+    }
+
+    private async Task FlushSharedPauseAsync(CancellationToken ct)
+    {
+        if (_budget is null) return;
+        string? kind;
+        DateTimeOffset? until;
+        lock (_gate)
+        {
+            kind = LoadLocked().SharedPauseKind;
+            until = LoadLocked().SharedPauseUntilUtc;
+            // Also propagate a pause persisted by a pre-budget version on migration.
+            if (until is null && LocalPausedUntilUtc is { } legacyPause)
+            {
+                until = legacyPause;
+                kind = LoadLocked().UploadLimitUntilUtc > UtcNow() ? "channel" : "api";
+                LoadLocked().SharedPauseKind = kind;
+                LoadLocked().SharedPauseUntilUtc = until;
+                PersistLocked();
+            }
+        }
+        if (until is null) return;
+        if (until > UtcNow())
+            await _budget.ReportPauseAsync(kind ?? "api", until.Value, ct).ConfigureAwait(false);
+        lock (_gate)
+        {
+            LoadLocked().SharedPauseKind = null;
+            LoadLocked().SharedPauseUntilUtc = null;
+            PersistLocked();
         }
     }
 
@@ -688,6 +788,11 @@ public sealed class UploadQueue : IUploadQueue
     {
         try
         {
+            if (_preservationHeld())
+            {
+                _log.Info("원본 보존 대기 중이므로 업로드가 완료된 컷 파일도 보존합니다.");
+                return;
+            }
             if (File.Exists(path))
             {
                 File.Delete(path);
@@ -734,6 +839,8 @@ public sealed class UploadQueue : IUploadQueue
     {
         public int QuotaRecoveryVersion { get; set; }
         public DateTimeOffset? UploadLimitUntilUtc { get; set; }
+        public string? SharedPauseKind { get; set; }
+        public DateTimeOffset? SharedPauseUntilUtc { get; set; }
         public List<UploadJob> Jobs { get; set; } = [];
 
         /// <summary>Pacific-time date ("yyyy-MM-dd") the quota counter currently belongs to.</summary>

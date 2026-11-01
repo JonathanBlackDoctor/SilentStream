@@ -31,6 +31,7 @@ public static class AgentUpdateApplier
         Directory.CreateDirectory(resultDirectory);
         var resultPath = Path.Combine(resultDirectory, $"agent-update-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}.json");
         var phase = "prepare";
+        FileStream? applicationMaintenance = null;
         try
         {
             if (Directory.Exists(next)) Directory.Delete(next, true);
@@ -38,9 +39,10 @@ public static class AgentUpdateApplier
             RequirePayload(next);
             // Check again at the last destructive boundary: the app may have started while the
             // signed update was being copied. Do not enter rollback/stop logic on this deferral.
-            if (AgentUpdateSafety.ApplicationIsRunning())
+            applicationMaintenance = AgentUpdateSafety.AcquireMaintenanceFromCoordinator(data);
+            if (applicationMaintenance is null || AgentUpdateSafety.ApplicationIsRunning())
             {
-                WriteResult(resultPath, false, expectedVersion, "deferred", "방송 앱 실행 중 — 도우미 업데이트 보류", rollback);
+                WriteResult(resultPath, false, expectedVersion, "deferred", "앱 실행·원본 보존 또는 상태 확인 불가 — 도우미 업데이트 보류", rollback);
                 if (package.EndsWith(".applying", StringComparison.OrdinalIgnoreCase) && File.Exists(package))
                     File.Move(package, package[..^".applying".Length], overwrite: false);
                 return;
@@ -90,6 +92,7 @@ public static class AgentUpdateApplier
             WriteResult(resultPath, false, expectedVersion, phase, $"{ex.Message} {rollbackError}".Trim(), rollback);
             MoveMarker(package, ".failed");
         }
+        finally { applicationMaintenance?.Dispose(); }
     }
 
     private static async Task StartAllAsync()

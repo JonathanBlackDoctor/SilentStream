@@ -1,6 +1,7 @@
 import {mergeUploads} from "./offline-history.js";
+import { handleUploadBudget } from "./upload-budget.js";
 import {YouTubeReplayJobs, YOUTUBE_SCOPE} from "./youtube-replay-jobs.js";
-import { registerUpdateIdentity, authorizeUpdate, updateProof, privateUpdateResponse, releaseAsset, downloadReleaseAsset } from "./private-updates.js";
+import { registerUpdateIdentity, authorizeUpdate, updateProof, privateUpdateResponse, releaseAsset, downloadReleaseAsset, readUpdatePolicy, changeUpdatePolicy } from "./private-updates.js";
 const ROOM_DEFINITIONS = Object.freeze({
   m111: Object.freeze({ displayName: "M111" }),
   m112: Object.freeze({ displayName: "M112" }),
@@ -621,13 +622,17 @@ export default {
       const agentHost = isAgentHost(url, env);
       const devicePath = url.pathname.startsWith("/api/device/");
       const updatePath = url.pathname.startsWith("/api/updates/");
+      const budgetPath = url.pathname === "/api/upload-budget";
       const localDevelopment = String(env.ENABLE_DEVELOPMENT_IDENTITY) === "true";
-      if (!localDevelopment && ((agentHost && !devicePath && !updatePath && !["/health", "/ready"].includes(url.pathname)) || (!agentHost && (devicePath || updatePath))))
+      if (!localDevelopment && ((agentHost && !devicePath && !updatePath && !budgetPath && !["/health", "/ready"].includes(url.pathname)) || (!agentHost && (devicePath || updatePath || budgetPath))))
         return security(new Response("Not Found", { status: 404 }));
+
+      if (agentHost && budgetPath)
+        return security(await callControl(env, "/upload-budget", updateProof(request)));
 
       if (agentHost && updatePath) {
         const authorized = await callControl(env, "/private-update-authorize", updateProof(request));
-        if (!authorized.ok) return security(new Response(null, { status: authorized.status }));
+        if (!authorized.ok) return security(new Response(null, { status: authorized.status, headers: authorized.headers }));
         try {
           const response = await privateUpdateResponse(request, env);
           return security(request.method === "HEAD" ? new Response(null, response) : response);
@@ -856,6 +861,12 @@ export default {
       if (url.pathname === "/api/control/rooms" && request.method === "GET") {
         return security(await callControl(env, "/rooms", { email }));
       }
+      const updatePolicy = url.pathname.match(/^\/api\/control\/devices\/([a-f0-9]{32})\/update-policy$/);
+      if (updatePolicy && ["GET", "POST"].includes(request.method)) {
+        if (request.method === "POST" && !sameOrigin(request)) return security(error("요청 출처를 확인할 수 없습니다.", 403));
+        return security(await callControl(env, "/update-policy", { email, deviceId: updatePolicy[1],
+          change: request.method === "POST" ? await limitedJson(request) : null }));
+      }
       const commandHistory=url.pathname.match(/^\/api\/control\/rooms\/([^/]+)\/recent-commands$/);
       if(commandHistory&&request.method==="GET")return security(await callControl(env,"/recent-commands",{email,roomId:normalizeRoom(commandHistory[1])}));
       if (url.pathname === "/api/control/members" && request.method === "GET") {
@@ -944,7 +955,15 @@ export class ControlPlane {
           .map(c=>({action:c.action,state:c.state,statusCode:c.statusCode,requestedAtUtc:c.requestedAtUtc,completedAtUtc:c.completedAtUtc,error:c.error||null})));
       }
       case "/public-playlists": return this.publicPlaylists();
-      case "/private-update-authorize": return authorizeUpdate(this.state.storage, body);
+      case "/private-update-authorize": return authorizeUpdate(this.state.storage, body, Date.now(), "updates", this.env.PRIVATE_UPDATE_HOLD_ROOMS);
+      case "/update-policy": {
+        const device = await this.state.storage.get(`device:${body.deviceId}`);
+        if (!device || device.revokedAtUtc) return error("기기를 찾을 수 없습니다.", 404);
+        if (await this.role(body.email, device.roomId) !== "admin") return error("관리자 권한이 필요합니다.", 403);
+        if (body.change) return changeUpdatePolicy(this.state.storage, device, body.change, normalizeEmail(body.email), this.env.PRIVATE_UPDATE_HOLD_ROOMS);
+        return this.state.storage.transaction(async store => json(await readUpdatePolicy(store, device, this.env.PRIVATE_UPDATE_HOLD_ROOMS)));
+      }
+      case "/upload-budget": return handleUploadBudget(this.state.storage, body);
       case "/archive-playlists": return this.publicPlaylists(true);
       case "/room-playlists": {
         if(body.roomId!=="m112"||await this.role(body.email,"m112")==="none")return error("권한이 없습니다.",403);
@@ -1072,6 +1091,7 @@ export class ControlPlane {
         playlists: device.playlists || null,
         uploads: mergeUploads(device.uploads, device.app, device.lastSeenAtUtc),
         cloudShutdownRequest: await this.shutdownRequest(device),
+        updatePolicy: await this.state.storage.transaction(store => readUpdatePolicy(store, device, this.env.PRIVATE_UPDATE_HOLD_ROOMS)),
         role: await this.role(email, roomId)
       } : { roomId, registered: false, online: false, deviceId: "", installationId: "", machineName: "", agentVersion: "", registeredAtUtc: null, lastSeenAtUtc: null, app: null, audio: null, inspection: null, recovery: null, playlists: null, role: await this.role(email, roomId) });
     }

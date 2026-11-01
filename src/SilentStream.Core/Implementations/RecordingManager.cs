@@ -20,6 +20,7 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
     private readonly Func<DateTime> _now;
     private readonly Func<string, long> _freeBytesProvider;
     private readonly IRecordingRetentionGuard? _retentionGuard;
+    private readonly Func<bool> _preservationHeld;
     private readonly object _sessionGate = new();
     private readonly List<RecordingSegment> _segments;
 
@@ -34,19 +35,26 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
     public RecordingManager(IConfigStore configStore, ILogService log, IRecordingRetentionGuard retentionGuard)
         : this(configStore, log, () => DateTime.Now, GetFreeBytes, retentionGuard) { }
 
+    public RecordingManager(IConfigStore configStore, ILogService log, IRecordingRetentionGuard retentionGuard,
+        Safety.ApplicationSafetySession safety)
+        : this(configStore, log, () => DateTime.Now, GetFreeBytes, retentionGuard, () => safety.PreservationHeld) { }
+
     /// <summary>Test seam: inject clock and free-disk-space provider.</summary>
     public RecordingManager(
         IConfigStore configStore,
         ILogService log,
         Func<DateTime> now,
         Func<string, long> freeBytesProvider,
-        IRecordingRetentionGuard? retentionGuard = null)
+        IRecordingRetentionGuard? retentionGuard = null,
+        Func<bool>? preservationHeld = null)
     {
         _configStore = configStore;
         _log = log;
         _now = now;
         _freeBytesProvider = freeBytesProvider;
         _retentionGuard = retentionGuard;
+        _preservationHeld = preservationHeld ?? (() => Safety.ApplicationSafetySession.IsPreservationHeld(
+            Safety.ApplicationSafetySession.DefaultDirectory));
         _segments = LoadSegmentHistory();
     }
 
@@ -210,6 +218,8 @@ public sealed class RecordingManager : IRecordingManager, IRecordingSessionInfo
 
     private bool CanDelete(FileInfo file)
     {
+        try { if (_preservationHeld()) return false; }
+        catch { return false; }
         lock (_sessionGate)
         {
             if (string.Equals(file.FullName, _currentFilePath, StringComparison.OrdinalIgnoreCase)) return false;

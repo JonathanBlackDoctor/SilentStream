@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <Compile Include="../../src/SilentStream.App/Remote/RemoteSystemShutdownService.cs" Link="RemoteSystemShutdownService.cs" />
     <None Update="Fixtures\*.mp4" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

@@ -24,6 +24,12 @@ public sealed class RemoteSystemShutdownService : IDisposable
     private readonly IStreamOrchestrator _orchestrator;
     private readonly ILogService _log;
     private readonly ISystemPowerSafetyProbe _safety;
+    private readonly ApplicationSafetySession? _operationSafety;
+    private string? _powerIntentToken;
+    private CancellationTokenSource? _confirmationCancellation;
+    private readonly string _dataDirectory;
+    private string StateFile => Path.Combine(_dataDirectory, "system-power-state.json");
+    private string AuditFile => Path.Combine(_dataDirectory, "system-power-audit.jsonl");
     private readonly object _gate = new();
     private PendingConfirmation? _pending;
     private PowerActionState _state;
@@ -43,11 +49,13 @@ public sealed class RemoteSystemShutdownService : IDisposable
     public bool WindowsShutdownPending => _shutdownScheduled;
 
     public RemoteSystemShutdownService(IStreamOrchestrator orchestrator, ILogService log,
-        ISystemPowerSafetyProbe safety)
+        ISystemPowerSafetyProbe safety, ApplicationSafetySession? operationSafety = null, string? stateDirectory = null)
     {
         _orchestrator = orchestrator;
         _log = log;
         _safety = safety;
+        _operationSafety = operationSafety;
+        _dataDirectory = stateDirectory ?? AppPaths.AppDataDir;
         _state = ReadState(out _durableStateAvailable);
         if (_state.AwaitingBootConfirmation)
         {
@@ -83,9 +91,11 @@ public sealed class RemoteSystemShutdownService : IDisposable
             else
             {
                 _shutdownScheduled = true;
+                _powerIntentToken = _operationSafety?.BeginTransition(ApplicationTransition.PowerShutdown,
+                    "native-power-countdown-restored")?.TransitionToken;
             }
         }
-        _schedule = new ShutdownScheduleManager(Path.Combine(AppPaths.AppDataDir, "shutdown-schedule.json"),
+        _schedule = new ShutdownScheduleManager(Path.Combine(_dataDirectory, "shutdown-schedule.json"),
             nativeShutdownPending: _shutdownScheduled);
         _scheduleTimer = new Timer(state => _ = _schedule.PollAsync(ExecuteScheduleAsync), null,
             TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(2));
@@ -134,6 +144,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
         lock (_gate)
         {
             _disposed = true;
+            _confirmationCancellation?.Cancel();
             _countdown?.Dispose();
         }
         _scheduleLifetime.Cancel();
@@ -215,6 +226,47 @@ public sealed class RemoteSystemShutdownService : IDisposable
     public async Task<SystemShutdownResult> ConfirmAsync(string? confirmationId, string actorId,
         CancellationToken cancellationToken, DateTimeOffset? targetUtc = null)
     {
+        CancellationTokenSource confirmationCancellation;
+        lock (_gate)
+        {
+            if (_disposed || _confirmationCancellation is not null || _shutdownScheduled)
+                return new(false, "다른 종료 처리가 진행 중입니다.", null);
+            _confirmationCancellation = confirmationCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        }
+        try
+        {
+            var handoff = _operationSafety?.BeginTransition(ApplicationTransition.PowerShutdown, "confirmed-power-shutdown");
+            if (_operationSafety is not null && handoff is null)
+                return new(false, "다른 재시작·업데이트·종료 작업 또는 실행 의도 오류로 PC 종료를 보류합니다.", null);
+            _powerIntentToken = handoff?.TransitionToken;
+            return await ConfirmCoreAsync(confirmationId, actorId, confirmationCancellation.Token, targetUtc).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (confirmationCancellation.IsCancellationRequested)
+        {
+            lock (_gate) _shutdownScheduled = false;
+            return new(false, "PC 종료 요청이 취소되었습니다. 녹화 마감 결과를 확인하세요.", null);
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _confirmationCancellation = null;
+                if (!_shutdownScheduled) ReleasePowerIntent();
+            }
+            confirmationCancellation.Dispose();
+        }
+    }
+
+    private void ReleasePowerIntent()
+    {
+        var token = Interlocked.Exchange(ref _powerIntentToken, null);
+        if (token is not null) _operationSafety?.CancelTransition(token);
+        // Preserve the previous desired mode; cancelling power must never unconditionally start Live.
+    }
+
+    private async Task<SystemShutdownResult> ConfirmCoreAsync(string? confirmationId, string actorId,
+        CancellationToken cancellationToken, DateTimeOffset? targetUtc)
+    {
         PendingConfirmation confirmation;
         var now = DateTimeOffset.UtcNow;
         lock (_gate)
@@ -244,7 +296,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
 
         try
         {
-            await _orchestrator.StopAsync().WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
+            await _orchestrator.StopForMaintenanceAsync().WaitAsync(TimeSpan.FromSeconds(30), cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException ex)
@@ -289,6 +341,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
         }
 
         var requestedAt = DateTimeOffset.UtcNow;
+        cancellationToken.ThrowIfCancellationRequested();
         var previousState = _state;
         var shutdownAt = targetUtc ?? requestedAt.Add(ShutdownDelay);
         if (shutdownAt <= requestedAt)
@@ -351,6 +404,12 @@ public sealed class RemoteSystemShutdownService : IDisposable
     {
         lock (_gate)
         {
+            if (_confirmationCancellation is { } preparing && _countdown is null)
+            {
+                preparing.Cancel();
+                AppendAudit("finalization-cancel-requested", actorId, "녹화 마감 중인 PC 종료 요청을 취소했습니다.");
+                return new(true, "PC 종료 요청을 취소했습니다. 진행 중인 녹화 마감은 보존을 위해 마저 처리합니다.", null);
+            }
             if (!_shutdownScheduled)
             {
                 if (_pending is null) return new(false, "취소할 PC 종료 준비가 없습니다.", null);
@@ -389,6 +448,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
             }
             _state = _state with { AwaitingBootConfirmation = false };
             _durableStateAvailable = WriteState(_state);
+            ReleasePowerIntent();
             AppendAudit("cancelled", actorId, "예약된 Windows 종료를 취소했습니다.");
             _log.Warn("예약된 PC 종료를 원격 요청으로 취소했습니다.");
             return new(true, "예약된 PC 종료를 취소했습니다.", null);
@@ -435,6 +495,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
                 _shutdownScheduled = false;
                 _state = _state with { AwaitingBootConfirmation = false };
                 _durableStateAvailable = WriteState(_state);
+                ReleasePowerIntent();
             }
             AppendAudit("shutdown-failed", actorId, ex.GetType().Name, assessment);
             _log.Error("PC 종료를 실행하지 못했습니다. 원격 상태를 확인하세요.", ex);
@@ -456,8 +517,8 @@ public sealed class RemoteSystemShutdownService : IDisposable
         try
         {
             available = true;
-            if (!File.Exists(AppPaths.SystemPowerStateFile)) return new();
-            var state = JsonSerializer.Deserialize<PowerActionState>(File.ReadAllText(AppPaths.SystemPowerStateFile), Json);
+            if (!File.Exists(StateFile)) return new();
+            var state = JsonSerializer.Deserialize<PowerActionState>(File.ReadAllText(StateFile), Json);
             if (state is null) throw new JsonException("전원 전환 상태가 비어 있습니다.");
             return state;
         }
@@ -473,10 +534,10 @@ public sealed class RemoteSystemShutdownService : IDisposable
     {
         try
         {
-            Directory.CreateDirectory(AppPaths.AppDataDir);
-            var temporary = AppPaths.SystemPowerStateFile + ".tmp";
+            Directory.CreateDirectory(_dataDirectory);
+            var temporary = StateFile + ".tmp";
             File.WriteAllText(temporary, JsonSerializer.Serialize(state, Json));
-            File.Move(temporary, AppPaths.SystemPowerStateFile, overwrite: true);
+            File.Move(temporary, StateFile, overwrite: true);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -491,7 +552,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
     {
         try
         {
-            Directory.CreateDirectory(AppPaths.AppDataDir);
+            Directory.CreateDirectory(_dataDirectory);
             var entry = JsonSerializer.Serialize(new
             {
                 occurredAtUtc = DateTimeOffset.UtcNow,
@@ -501,7 +562,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
                 safe = assessment?.Safe,
                 checks = assessment?.Checks
             }, Json);
-            File.AppendAllText(AppPaths.SystemPowerAuditFile, entry + Environment.NewLine);
+            File.AppendAllText(AuditFile, entry + Environment.NewLine);
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -524,6 +585,7 @@ public sealed class RemoteSystemShutdownService : IDisposable
         _durableStateAvailable = WriteState(_state);
         AppendAudit("schedule-expired", _state.LastActorId ?? "system",
             "종료 예약 뒤에도 같은 부팅 세션이 계속되어 예약 상태를 해제했습니다.");
+        ReleasePowerIntent();
     }
 
     private static DateTimeOffset CurrentBootStartedAtUtc() =>

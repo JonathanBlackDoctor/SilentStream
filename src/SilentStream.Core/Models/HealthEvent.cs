@@ -77,7 +77,10 @@ public enum HealthEventKind
     QualityDegraded,
 
     /// <summary>A microphone endpoint/capture/packet failure, distinct from healthy quiet input.</summary>
-    MicInputFailure
+    MicInputFailure,
+
+    /// <summary>Expected local recording has no observable file growth; clears on growth or intentional stop.</summary>
+    RecordingStalled
 }
 
 /// <summary>

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using SilentStream.UninstallHelper.Safety;
 
 namespace SilentStream.UninstallHelper;
 
@@ -10,9 +11,15 @@ public static class ApplicationRestart
         Task WaitForExitAsync(CancellationToken token);
     }
 
-    public static Task<int> RestartAfterExitAsync(int processId, long startedAtUtcTicks, string executable) =>
+    public static Task<int> RestartAfterExitAsync(int processId, long startedAtUtcTicks, string executable,
+        Func<bool>? claimLaunch = null, string? safetyDirectory = null) =>
         RestartAfterExitAsync(processId, startedAtUtcTicks, executable, OpenParent, path =>
         {
+            var directory = safetyDirectory ?? ApplicationSafetySession.DefaultDirectory;
+            using var lease = ApplicationSafetySession.AcquireExecutionLease(directory, maintenance: false);
+            if (lease is null || ApplicationSafetySession.IsPreservationHeld(directory) ||
+                (claimLaunch is not null && !claimLaunch())) return false;
+            if (ApplicationSafetySession.IsPreservationHeld(directory)) return false;
             using var process = Process.Start(new ProcessStartInfo(path) { UseShellExecute = false, CreateNoWindow = true });
             return process is not null;
         }, TimeSpan.FromSeconds(90));

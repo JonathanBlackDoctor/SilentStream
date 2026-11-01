@@ -33,6 +33,55 @@ public sealed class RecordingRetentionSafetyTests : IDisposable
         $"{Path.GetFullPath(s.FilePath).ToUpperInvariant()}|{s.StartLocal.Ticks}|{Start.Ticks}|{Start.AddHours(1).Ticks}"))).ToLowerInvariant();
 
     [Fact]
+    public void Off_schedule_original_without_any_receipt_is_preserved()
+    {
+        var start = Start.Date.AddHours(23);
+        Assert.False(Guard.CanDelete(new RecordingSegment(Path.Combine(_dir, "off-hours.mp4"),
+            start, start.AddMinutes(30))));
+    }
+
+    [Fact]
+    public void Uploaded_last_period_does_not_release_unarchived_after_class_tail()
+    {
+        var start = Start.Date.AddHours(16).AddMinutes(25);
+        var periodEnd = start.AddHours(1);
+        var segment = new RecordingSegment(Path.Combine(_dir, "late-original.mp4"), start, periodEnd.AddMinutes(35));
+        _assets.Upsert(new PeriodAsset("last", new DateOnly(2026, 10, 28), 8, "last", VideoId: "video",
+            SourceKey: Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+                $"{Path.GetFullPath(segment.FilePath).ToUpperInvariant()}|{start.Ticks}|{start.Ticks}|{periodEnd.Ticks}"))).ToLowerInvariant(),
+            UploadedFileSizeBytes: 4096, UploadValidationVersion: 1));
+        Assert.False(Guard.CanDelete(segment));
+        Assert.True(Guard.CanDelete(segment with { EndLocal = periodEnd }));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Preservation_hold_and_unreadable_hold_override_valid_receipts_at_delete_boundary(bool unreadable)
+    {
+        var manager = Manager();
+        var path = manager.CreateSessionFilePath(Start);
+        File.WriteAllBytes(path, new byte[4096]);
+        File.SetLastWriteTime(path, Start.AddHours(1));
+        manager.CreateSessionFilePath(Start.AddHours(1));
+        var segment = new RecordingSegment(path, Start, Start.AddHours(1));
+        _assets.Upsert(new PeriodAsset("one", new DateOnly(2026, 10, 28), 1, "one", VideoId: "video",
+            SourceKey: Key(segment), UploadedFileSizeBytes: 4096, UploadValidationVersion: 1));
+        Assert.True(Guard.CanDelete(segment));
+        var checks = 0;
+        // The first eligibility check is allowed, but a hold appears before actual deletion.
+        var restarted = new RecordingManager(_config, new LogService(), () => Start.AddDays(2), _ => 0, Guard, () => {
+            if (++checks == 1) return false;
+            if (unreadable) throw new IOException("hold unavailable");
+            return true;
+        });
+        await restarted.EnforceRetentionAsync(CancellationToken.None);
+        Assert.True(checks >= 2);
+        Assert.True(File.Exists(path));
+        Assert.Equal(4096, new FileInfo(path).Length);
+    }
+
+    [Fact]
     public async Task Quota_pending_and_unindexed_originals_survive_all_cleanup_triggers()
     {
         var manager = Manager();

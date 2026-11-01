@@ -53,6 +53,49 @@ public class HealthMonitorTests : IDisposable
 
     // ---- live_started / live_stopped ----
 
+    [Theory]
+    [InlineData(StreamState.Live)]
+    [InlineData(StreamState.RecordingOnly)]
+    [InlineData(StreamState.ConnectingYouTube)]
+    public void Recording_growth_outage_escalates_once_and_clears_on_real_growth(StreamState state)
+    {
+        using var hm = CreateStarted();
+        _orch.Raise(state);
+        _recording.Path = "active.mp4";
+        _recording.Length = 4096;
+        hm.RunChecksOnce();
+        _clock.Now = _clock.Now.AddSeconds(21);
+        hm.RunChecksOnce();
+        hm.RunChecksOnce();
+        Assert.Single(_events, e => e.Kind == HealthEventKind.RecordingStalled && e.Active);
+        _clock.Now = _clock.Now.AddSeconds(40);
+        hm.RunChecksOnce();
+        Assert.Equal(HealthSeverity.Critical, hm.ActiveEvents.Single(e => e.Kind == HealthEventKind.RecordingStalled).Severity);
+        _recording.Length += 4096;
+        hm.RunChecksOnce();
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.RecordingStalled);
+        Assert.Contains(_events, e => e.Kind == HealthEventKind.RecordingStalled && !e.Active);
+    }
+
+    [Fact]
+    public void Empty_replacement_parts_do_not_hide_outage_and_intentional_stop_clears_it()
+    {
+        using var hm = CreateStarted();
+        _orch.Raise(StreamState.RecordingOnly);
+        hm.RunChecksOnce();
+        for (var i = 0; i < 7; i++)
+        {
+            _recording.Path = $"empty-part-{i}.mp4";
+            _recording.Length = 1217;
+            _clock.Now = _clock.Now.AddSeconds(10);
+            hm.RunChecksOnce();
+        }
+        Assert.Equal(HealthSeverity.Critical, hm.ActiveEvents.Single(e => e.Kind == HealthEventKind.RecordingStalled).Severity);
+        _orch.Raise(StreamState.Idle);
+        hm.RunChecksOnce();
+        Assert.DoesNotContain(hm.ActiveEvents, e => e.Kind == HealthEventKind.RecordingStalled);
+    }
+
     [Fact]
     public void Reaching_live_emits_live_started_exactly_once_across_a_reconnect()
     {
@@ -621,9 +664,11 @@ public class HealthMonitorTests : IDisposable
     private sealed class FakeRecording : IRecordingManager
     {
         public long FreeBytes = 500L * 1024 * 1024 * 1024; // 500 GB healthy default
+        public string? Path;
+        public long Length;
         public string CreateSessionFilePath(DateTime sessionStartLocal) => "session.mp4";
-        public RecordingStatus GetStatus() => new(null, 0, FreeBytes);
-        public long GetActiveRecordingLength() => 0;
+        public RecordingStatus GetStatus() => new(Path, 0, FreeBytes);
+        public long GetActiveRecordingLength() => Length;
         public Task EnforceRetentionAsync(CancellationToken ct) => Task.CompletedTask;
     }
 

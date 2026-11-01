@@ -36,6 +36,23 @@ public class UploadQueueTests : IDisposable
             maxPerDay, maxAttempts: 5);
 
     [Fact]
+    public async Task Preservation_hold_arriving_during_upload_keeps_the_cut_and_success_receipt()
+    {
+        var uploader = new FakeUploader();
+        var queue = new UploadQueue(uploader, _configStore, new LogService(), _queueFile,
+            () => _clock.Now, _clock.Delay, 6, 5, preservationHeld: () => uploader.Calls > 0);
+        var job = MakeJob(1);
+        queue.Enqueue(job);
+        using var cts = new CancellationTokenSource();
+        queue.Start(cts.Token);
+        await WaitUntilAsync(() => queue.Snapshot().Single().Status == UploadJobStatus.Completed, TimeSpan.FromSeconds(5));
+        cts.Cancel();
+        Assert.True(File.Exists(job.FilePath));
+        Assert.NotNull(queue.Snapshot().Single().VideoId);
+        Assert.Equal(1, uploader.Calls);
+    }
+
+    [Fact]
     public async Task Uploads_all_jobs_marks_completed_and_deletes_cut_files()
     {
         var uploader = new FakeUploader();

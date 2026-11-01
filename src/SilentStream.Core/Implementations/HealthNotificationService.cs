@@ -141,7 +141,7 @@ public sealed class HealthNotificationService : IDisposable
 
     private static bool IsCondition(HealthEventKind kind) =>
         kind is HealthEventKind.RtmpDown or HealthEventKind.MicSilent or HealthEventKind.MicInputFailure or HealthEventKind.DiskLow
-            or HealthEventKind.QualityDegraded or HealthEventKind.OauthExpiring;
+            or HealthEventKind.QualityDegraded or HealthEventKind.OauthExpiring or HealthEventKind.RecordingStalled;
 
     private static string Format(HealthEvent evt)
     {

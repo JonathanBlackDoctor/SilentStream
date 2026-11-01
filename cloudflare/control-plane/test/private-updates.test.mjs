@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerUpdateIdentity, authorizeUpdate, releaseAsset, downloadReleaseAsset, privateUpdateResponse } from "../src/private-updates.js";
-import worker from "../src/index.js";
+import { registerUpdateIdentity, authorizeUpdate, releaseAsset, downloadReleaseAsset, privateUpdateResponse, readUpdatePolicy, changeUpdatePolicy } from "../src/private-updates.js";
+import worker, { ControlPlane } from "../src/index.js";
 const hex = data => Buffer.from(data).toString("hex");
 async function setup() {
   const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
@@ -42,6 +42,79 @@ test("key rotation removes the previous key, while unrelated keys cannot replace
   await registerUpdateIdentity(x.storage,x.device,other.identity);
   assert.equal((await authorizeUpdate(x.storage,await x.proof())).status,401);
   assert.equal((await authorizeUpdate(x.storage,await other.proof())).status,200);
+});
+
+test("a preservation hold follows the verified device across keys and ignores claimed room/version", async () => {
+  const x = await setup(); await registerUpdateIdentity(x.storage, x.device, x.identity);
+  const held = await authorizeUpdate(x.storage, await x.proof({roomId:"m111", appVersion:"0.4.99"}), Date.now(), "updates", "m112");
+  assert.equal(held.status, 503); assert.equal(held.headers.get("retry-after"), "21600");
+  assert.equal(x.values.get("update-policy:device-one").held, true);
+  const other = await setup(); await registerUpdateIdentity(x.storage, x.device, other.identity);
+  assert.equal((await authorizeUpdate(x.storage, await other.proof())).status, 503, "persisted without the default setting");
+  assert.equal((await authorizeUpdate(x.storage, await x.proof())).status, 401, "rotation still revokes the old key");
+  assert.equal((await authorizeUpdate(x.storage, await other.proof({ method:"POST", target:"/api/upload-budget?operation=reserve" }), Date.now(), "upload-budget")).status, 200);
+  x.values.set("device:device-one", {...x.device, revokedAtUtc:new Date().toISOString()});
+  assert.equal((await authorizeUpdate(x.storage, await other.proof())).status, 401);
+});
+
+test("all feed and artifact requests stop before release lookup even with HEAD/range/explicit version", async () => {
+  const x = await setup(); await registerUpdateIdentity(x.storage, x.device, x.identity);
+  const control = new ControlPlane({storage:x.storage}, {PRIVATE_UPDATE_HOLD_ROOMS:"m112"});
+  const env = { DEVICE_BASE_URI:"https://agent.silentstream.win", PUBLIC_BASE_URI:"https://admin.silentstream.win",
+    CONTROL:{idFromName:()=>"global", get:()=>({fetch:r=>control.fetch(r)})} };
+  const original = globalThis.fetch; let fetched = 0;
+  globalThis.fetch = async () => { fetched++; throw new Error("must not reach asset cache/upstream"); };
+  try {
+    for (const path of ["releases.win.json","assets.win.json","v0.4.31/manifest.json","MediaCaptureHelper-0.4.31-full.nupkg",
+      "SilentStream-Central-Installer-v0.4.31.exe","SilentStream-prepared-package-v0.4.31.zip"]) {
+      for (const method of ["GET","HEAD"]) {
+        const proof = await x.proof({method,target:"/api/updates/"+path+"?room=m111&version=0.4.99"});
+        const response = await worker.fetch(new Request("https://agent.silentstream.win"+proof.target, {method,headers:{
+          "x-update-key":proof.keyId,"x-update-time":proof.timestamp,"x-update-nonce":proof.nonce,
+          "x-update-signature":proof.signature,range:"bytes=0-1"}}),env);
+        assert.equal(response.status,503,path); assert.equal(response.headers.get("cache-control"),"no-store");
+        assert.equal(response.headers.get("x-update-policy"),"preservation-hold"); assert.equal(await response.text(),"");
+      }
+    }
+    assert.equal(fetched,0);
+  } finally { globalThis.fetch = original; }
+});
+
+test("policy release needs admin authentication, same origin, current revision and a preservation manifest", async () => {
+  const x = await setup(), deviceId = "a".repeat(32), device = {...x.device,deviceId};
+  x.values.set("device:"+deviceId,device); x.values.set("ownerEmail","owner@example.com");
+  x.values.set("member:manager@example.com",{role:"manager",rooms:["m112"]});
+  const control = new ControlPlane({storage:x.storage}, {PRIVATE_UPDATE_HOLD_ROOMS:"m112",BOOTSTRAP_OWNER_EMAIL:"owner@example.com"});
+  const env = { DEVICE_BASE_URI:"https://agent.silentstream.win",PUBLIC_BASE_URI:"https://admin.silentstream.win",
+    GOOGLE_CLIENT_ID:"test",GOOGLE_CLIENT_SECRET:"test",ENABLE_DEVELOPMENT_IDENTITY:"true",CONTROL:{idFromName:()=>"global",get:()=>({fetch:r=>control.fetch(r)})} };
+  const url = "https://admin.silentstream.win/api/control/devices/"+deviceId+"/update-policy";
+  const request = (email,body,origin="https://admin.silentstream.win") => worker.fetch(new Request(url,{method:body?"POST":"GET",
+    headers:{"x-silentstream-dev-email":email,origin,"content-type":"application/json"},body:body?JSON.stringify(body):undefined}),env);
+  const change={held:false,expectedRevision:1,reason:"full verified original copy"};
+  assert.equal((await request("manager@example.com",change)).status,403);
+  assert.equal((await request("owner@example.com",change,"https://other.invalid")).status,403);
+  const first=await request("owner@example.com"); assert.equal(first.status,200);
+  assert.equal((await first.json()).held,true);
+  assert.equal((await request("owner@example.com",change)).status,400);
+  const release={...change,preservationManifestSha256:"f".repeat(64)};
+  assert.equal((await request("owner@example.com",{...release,expectedRevision:0})).status,409);
+  assert.equal((await request("owner@example.com",release)).status,200);
+  assert.equal((await request("owner@example.com",release)).status,409,"stale retry cannot overwrite later policy");
+  assert.equal((await readUpdatePolicy(x.storage,device,"m112")).held,false);
+  assert.equal(x.values.get("update-policy-audit:"+deviceId+":2").next.actor,"owner@example.com");
+  assert.equal((await worker.fetch(new Request(url),{...env,ENABLE_DEVELOPMENT_IDENTITY:"false"})).status,401);
+});
+
+test("unknown or corrupt policy fails closed and an unrelated room remains eligible", async () => {
+  const x=await setup(); await registerUpdateIdentity(x.storage,x.device,x.identity);
+  x.values.set("device:device-one",{...x.device,roomId:"m111"});
+  assert.equal((await authorizeUpdate(x.storage,await x.proof(),Date.now(),"updates","m112")).status,200);
+  x.values.set("update-policy:device-one",{held:false,deviceId:"someone-else",revision:5});
+  assert.equal((await authorizeUpdate(x.storage,await x.proof())).status,503);
+  for (const revision of [-1,0]) {
+    x.values.set("update-policy:device-one",{held:false,deviceId:x.device.deviceId,revision});
+    assert.equal((await authorizeUpdate(x.storage,await x.proof())).status,503);
+  }
 });
 test("private release proxy strips the GitHub credential before following a signed asset redirect", async () => {
   const original=globalThis.fetch, env={GITHUB_RELEASE_READ_TOKEN:"server-only-test-token",DEVICE_BASE_URI:"https://agent.silentstream.win"};

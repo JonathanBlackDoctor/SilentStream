@@ -4,6 +4,7 @@ using Microsoft.Win32;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Implementations;
 using SilentStream.Core.SingleInstance;
+using SilentStream.Core.Safety;
 
 namespace SilentStream.App;
 
@@ -20,24 +21,28 @@ public static class StartupSequence
     private static CancellationTokenSource? _lifetimeCts;
     private static IRemoteControlServer? _remoteServer;
 
+    public static bool AcquireProcessGuard()
+    {
+        _guard ??= new SingleInstanceGuard();
+        if (_guard.IsPrimaryInstance) return true;
+        SingleInstanceGuard.SignalPrimaryInstance();
+        return false;
+    }
+
     /// <summary>
     /// Acquires the process-wide instance guard before any updater work. A secondary launch must
     /// never schedule or apply an update while the classroom's primary process is still running.
     /// </summary>
     public static bool TryAcquireSingleInstance(Application app, ILogService log)
     {
-        if (_guard is not null) return _guard.IsPrimaryInstance;
-
-        _guard = new SingleInstanceGuard();
-        if (!_guard.IsPrimaryInstance)
+        if (!AcquireProcessGuard())
         {
             log.Info("이미 실행 중인 인스턴스가 있어 제어판 표시 신호만 보내고 종료합니다.");
-            SingleInstanceGuard.SignalPrimaryInstance();
             app.Dispatcher.Invoke(app.Shutdown);
             return false;
         }
 
-        _signalListener = _guard.ListenForSignals(() => (app as App)?.ShowControlWindow());
+        _signalListener ??= _guard!.ListenForSignals(() => (app as App)?.ShowControlWindow());
         return true;
     }
 
@@ -46,35 +51,34 @@ public static class StartupSequence
         var log = services.GetRequiredService<ILogService>();
         var orchestrator = services.GetRequiredService<IStreamOrchestrator>();
         var configStore = services.GetRequiredService<IConfigStore>();
+        var safety = services.GetRequiredService<ApplicationSafetySession>();
 
         if (!TryAcquireSingleInstance(app, log)) return;
 
         // 자동 시작 등록을 현재 설정과 동기화.
-        new AutoStartManager(log).Apply(configStore.Load().Autostart);
+        if (safety.StartAllowed) new AutoStartManager(log).Apply(configStore.Load().Autostart);
 
         // 종료 시퀀스 후킹 (plan §4.3): mp4 마감 → complete 전이 → 로그 flush.
         _lifetimeCts = new CancellationTokenSource();
-        SystemEvents.SessionEnding += (_, _) => OnSessionEnding(orchestrator, log);
-        app.Dispatcher.Invoke(() => app.SessionEnding += (_, _) => OnSessionEnding(orchestrator, log));
+        SystemEvents.SessionEnding += (_, _) => OnSessionEnding(orchestrator, log, safety);
+        app.Dispatcher.Invoke(() => app.SessionEnding += (_, _) => OnSessionEnding(orchestrator, log, safety));
         app.Dispatcher.Invoke(() => app.Exit += (_, _) => Cleanup());
 
         // 확장(교시 VOD + 폰 원격): 라이브와 독립적으로 스케줄러/업로드 워커/원격 서버를 먼저 기동한다.
         // (orchestrator.StartAsync 는 YouTube 미연결 시 재시도 루프로 반환하지 않을 수 있으므로 앞에 둔다.)
-        try
+        if (!safety.PreservationHeld && safety.RunId is not null)
         {
-            await services.GetRequiredService<LegacyPendingSplitMigrator>()
-                .RunAsync(_lifetimeCts.Token).ConfigureAwait(false);
+            try
+            {
+                await services.GetRequiredService<LegacyPendingSplitMigrator>()
+                    .RunAsync(_lifetimeCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { return; }
+            catch (Exception ex) { log.Error("기존 분할 승인 데이터의 고정 시간표 재처리에 실패했습니다.", ex); }
+            services.GetRequiredService<VodCoordinator>().Start(_lifetimeCts.Token);
+            services.GetRequiredService<DailyPlaylistCoordinator>().Start(_lifetimeCts.Token);
         }
-        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
-        {
-            return;
-        }
-        catch (Exception ex)
-        {
-            log.Error("기존 분할 승인 데이터의 고정 시간표 재처리에 실패했습니다.", ex);
-        }
-        services.GetRequiredService<VodCoordinator>().Start(_lifetimeCts.Token);
-        services.GetRequiredService<DailyPlaylistCoordinator>().Start(_lifetimeCts.Token);
+        else log.Warn("원본 보존 대기 또는 실행 의도 오류로 자동 분할·업로드·정리를 시작하지 않습니다.");
         // 헬스 모니터 + 폰 푸시: 상태 감시를 시작하고, 헬스 이벤트를 텔레그램 등 알림 채널로 전달한다.
         // 알림 서비스를 먼저 구독시켜 첫 이벤트부터 놓치지 않는다. 손으로 붙여넣은 평문 봇 토큰은
         // 알림 사용 여부와 무관하게 지금 즉시 DPAPI 암호화한다(평문이 디스크에 남지 않도록).
@@ -85,9 +89,13 @@ public static class StartupSequence
 
         // 자동 송출+녹화 시작 (30초 워밍업은 orchestrator 내부). 원격에서 자동 운행을
         // 껐으면 제어 서버만 유지해, 현장 방문 없이 다시 켜거나 수동으로 시작할 수 있게 한다.
-        if (configStore.Load().AutomaticOperationEnabled)
+        if (safety.StartAllowed && safety.DesiredMode == DesiredRunMode.Live)
         {
             await orchestrator.StartAsync(_lifetimeCts.Token).ConfigureAwait(false);
+        }
+        else if (safety.StartAllowed && safety.DesiredMode == DesiredRunMode.RecordingOnly)
+        {
+            await orchestrator.StartRecordingSessionAsync(_lifetimeCts.Token).ConfigureAwait(false);
         }
         else
         {
@@ -129,14 +137,15 @@ public static class StartupSequence
         }
     }
 
-    private static void OnSessionEnding(IStreamOrchestrator orchestrator, ILogService log)
+    private static void OnSessionEnding(IStreamOrchestrator orchestrator, ILogService log, ApplicationSafetySession safety)
     {
+        safety.BeginTransition(ApplicationTransition.PowerShutdown, "windows-session-ending");
         log.Info("세션 종료 감지 — 녹화 파일을 마감하고 브로드캐스트를 종료합니다.");
         _lifetimeCts?.Cancel();
         try
         {
             // Windows가 허용하는 짧은 창 안에 동기적으로 마감해야 한다.
-            orchestrator.StopAsync().Wait(TimeSpan.FromSeconds(15));
+            orchestrator.StopForMaintenanceAsync().Wait(TimeSpan.FromSeconds(15));
         }
         catch (Exception ex)
         {

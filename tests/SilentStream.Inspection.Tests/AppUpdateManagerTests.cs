@@ -8,6 +8,26 @@ namespace SilentStream.Inspection.Tests;
 public sealed class AppUpdateManagerTests
 {
     [Fact]
+    public async Task Preservation_hold_blocks_both_startup_apply_and_background_download()
+    {
+        var client = new UpdateClient();
+        using var manager = new AppUpdateManager(new Log(), () => client, () => true);
+        Assert.False(await manager.PrepareStartupUpdateAsync());
+        await manager.CheckOnceAsync(CancellationToken.None);
+        Assert.Equal(0, client.Downloads);
+        Assert.Empty(client.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task Hold_created_during_download_blocks_the_final_apply_boundary()
+    {
+        var client = new UpdateClient();
+        using var manager = new AppUpdateManager(new Log(), () => client, () => client.Downloads > 0);
+        Assert.False(await manager.PrepareStartupUpdateAsync());
+        Assert.Equal(1, client.Downloads);
+        Assert.Empty(client.ApplyCalls);
+    }
+    [Fact]
     public async Task BackgroundDownloadStagesOnceWithoutArmingAnExitOrRestart()
     {
         var client = new UpdateClient();

@@ -30,8 +30,14 @@ public interface IStreamOrchestrator
     /// <summary>Runs the start sequence (warmup → connect → live).</summary>
     Task StartAsync(CancellationToken ct);
 
+    /// <summary>Starts local recording without creating or connecting a YouTube broadcast.</summary>
+    Task StartRecordingSessionAsync(CancellationToken ct) => throw new NotSupportedException();
+
     /// <summary>Runs the stop sequence (flush encoder, finalise mp4, complete broadcast).</summary>
     Task StopAsync();
+
+    /// <summary>Finalises the pipeline for an owned restart/power handoff without changing desired mode.</summary>
+    Task StopForMaintenanceAsync() => StopAsync();
 
     /// <summary>
     /// Stops only the YouTube broadcast while the local backup recording continues

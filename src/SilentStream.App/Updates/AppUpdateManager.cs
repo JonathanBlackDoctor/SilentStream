@@ -16,13 +16,16 @@ public sealed class AppUpdateManager : IDisposable
     // The enrolled coordinator registers this PC's public key; GitHub credentials stay on the server.
     private readonly ILogService log;
     private readonly Func<IAppUpdateClient> _createManager;
+    private readonly Func<bool> _preservationHeld;
 
     public AppUpdateManager(ILogService log) : this(log, () => new VelopackUpdateClient()) { }
 
-    internal AppUpdateManager(ILogService log, Func<IAppUpdateClient> createManager)
+    internal AppUpdateManager(ILogService log, Func<IAppUpdateClient> createManager, Func<bool>? preservationHeld = null)
     {
         this.log = log;
         _createManager = createManager;
+        _preservationHeld = preservationHeld ?? (() => SilentStream.Core.Safety.ApplicationSafetySession.IsPreservationHeld(
+            SilentStream.Core.AppPaths.AppDataDir));
     }
 
     private static readonly TimeSpan CheckInterval = TimeSpan.FromHours(6);
@@ -77,6 +80,7 @@ public sealed class AppUpdateManager : IDisposable
     /// </summary>
     public async Task<bool> PrepareStartupUpdateAsync(CancellationToken ct = default)
     {
+        if (_preservationHeld()) return false;
         try
         {
             var manager = _createManager();
@@ -106,6 +110,7 @@ public sealed class AppUpdateManager : IDisposable
             var version = pending.Version.ToString();
             _stagedVersion = version;
             UpdateStaged?.Invoke(version);
+            if (_preservationHeld()) return false;
             manager.WaitExitThenApplyUpdates(pending, silent: true, restart: true);
             log.Info($"부팅 업데이트 준비 완료: v{version} 적용 후 앱을 자동으로 다시 시작합니다.");
             return true;
@@ -139,6 +144,7 @@ public sealed class AppUpdateManager : IDisposable
 
     internal async Task CheckOnceAsync(CancellationToken ct)
     {
+        if (_preservationHeld()) return;
         try
         {
             _lastCheckUtc = DateTimeOffset.UtcNow;

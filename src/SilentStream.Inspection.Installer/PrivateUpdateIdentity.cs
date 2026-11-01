@@ -59,7 +59,8 @@ internal sealed class PrivateUpdateIdentity : IDisposable
     public HttpRequestMessage Request(HttpMethod method, Uri uri)
     {
         if (uri.Scheme != Uri.UriSchemeHttps || uri.Host != "agent.silentstream.win" || !uri.IsDefaultPort
-            || !uri.AbsolutePath.StartsWith("/api/updates/", StringComparison.Ordinal) || !string.IsNullOrEmpty(uri.UserInfo))
+            || !(uri.AbsolutePath.StartsWith("/api/updates/", StringComparison.Ordinal)
+                || (method == HttpMethod.Post && uri.AbsolutePath == "/api/upload-budget")) || !string.IsNullOrEmpty(uri.UserInfo))
             throw new InvalidDataException("비공개 업데이트 주소가 올바르지 않습니다.");
         var time = DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture);
         var nonce = Guid.NewGuid().ToString("N");

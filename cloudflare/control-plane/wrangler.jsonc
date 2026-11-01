@@ -67,6 +67,7 @@
   "vars": {
     "PUBLIC_BASE_URI": "https://admin.silentstream.win",
     "DEVICE_BASE_URI": "https://agent.silentstream.win",
+    "PRIVATE_UPDATE_HOLD_ROOMS": "m112",
     "PACKAGE_KEY": "releases/v0.4.22/SilentStream-prepared-package-v0.4.22.zip",
     "PACKAGE_URL": "https://github.com/JonathanBlackDoctor/SilentStream/releases/download/v0.4.22/SilentStream-prepared-package-v0.4.22.zip",
     "PACKAGE_SHA256": "171145bbff6c729d7a60b0678c2d565ecb8c9816881c9c1d9a34436a03c7988b",

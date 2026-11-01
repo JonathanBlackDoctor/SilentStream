@@ -37,6 +37,7 @@ public sealed class HealthMonitor : IHealthMonitor
     private readonly IConfigStore _configStore;
     private readonly IYouTubeAuthHealth? _youtubeAuth;
     private readonly ILogService _log;
+    private readonly Safety.ApplicationSafetySession? _operationSafety;
     private readonly Func<DateTime> _now;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay;
 
@@ -53,6 +54,10 @@ public sealed class HealthMonitor : IHealthMonitor
     private HealthSeverity? _rtmpDownSeverity;
     private HealthSeverity? _diskLowSeverity;
     private HealthSeverity? _oauthSeverity;
+    private DateTime? _recordingLastProgressUtc;
+    private string? _recordingPath;
+    private long _recordingLength;
+    private HealthSeverity? _recordingSeverity;
     private readonly HashSet<string> _silentMics = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reportedFailedUploadIds = new(StringComparer.Ordinal);
     private readonly HashSet<string> _reportedPendingSplitIds = new(StringComparer.Ordinal);
@@ -68,9 +73,10 @@ public sealed class HealthMonitor : IHealthMonitor
         IUploadQueue uploadQueue,
         IConfigStore configStore,
         IYouTubeAuthHealth youtubeAuth,
-        ILogService log)
+        ILogService log,
+        Safety.ApplicationSafetySession? operationSafety = null)
         : this(orchestrator, mixer, recording, uploadQueue, configStore, log,
-            () => DateTime.UtcNow, Task.Delay, youtubeAuth)
+            () => DateTime.UtcNow, Task.Delay, youtubeAuth, operationSafety)
     {
     }
 
@@ -84,7 +90,8 @@ public sealed class HealthMonitor : IHealthMonitor
         ILogService log,
         Func<DateTime> now,
         Func<TimeSpan, CancellationToken, Task> delay,
-        IYouTubeAuthHealth? youtubeAuth = null)
+        IYouTubeAuthHealth? youtubeAuth = null,
+        Safety.ApplicationSafetySession? operationSafety = null)
     {
         _orchestrator = orchestrator;
         _mixer = mixer;
@@ -93,6 +100,7 @@ public sealed class HealthMonitor : IHealthMonitor
         _configStore = configStore;
         _youtubeAuth = youtubeAuth;
         _log = log;
+        _operationSafety = operationSafety;
         _now = now;
         _delay = delay;
     }
@@ -366,6 +374,8 @@ public sealed class HealthMonitor : IHealthMonitor
         var runtimes = _mixer.SourceStatuses.ToDictionary(s => s.Id, StringComparer.Ordinal);
 
         long? freeBytes = null;
+        string? recordingPath = null;
+        long recordingLength = 0;
         var recordingEnabled = false;
         long thresholdBytes = 0;
         string? room = null;
@@ -377,7 +387,10 @@ public sealed class HealthMonitor : IHealthMonitor
             roomKnown = true;
             recordingEnabled = config.Recording.Enabled;
             thresholdBytes = (long)Math.Max(0, config.Recording.MinFreeGb) * GB;
-            freeBytes = _recording.GetStatus().FreeDiskBytes;
+            var recordingStatus = _recording.GetStatus();
+            freeBytes = recordingStatus.FreeDiskBytes;
+            recordingPath = recordingStatus.CurrentFilePath;
+            recordingLength = _recording.GetActiveRecordingLength();
         }
         catch (Exception ex)
         {
@@ -418,6 +431,7 @@ public sealed class HealthMonitor : IHealthMonitor
                 _room = room;
             }
             CheckRtmpHysteresis(buffer, state);
+            CheckRecordingGrowth(buffer, state, recordingEnabled, recordingPath, recordingLength);
             if (freeBytes is long free)
             {
                 CheckDisk(buffer, free, thresholdBytes, recordingEnabled);
@@ -453,6 +467,53 @@ public sealed class HealthMonitor : IHealthMonitor
             _rtmpDownSeverity = HealthSeverity.Warn;
             SetCondition(buffer, HealthEventKind.RtmpDown, HealthSeverity.Warn, active: true,
                 "송출 연결이 끊겨 재시도 중입니다.", sourceKey: null);
+        }
+    }
+
+    private void CheckRecordingGrowth(List<HealthEvent> buffer, StreamState state, bool enabled, string? path, long length)
+    {
+        var expected = enabled && state is StreamState.Live or StreamState.RecordingOnly
+            or StreamState.ConnectingYouTube or StreamState.Retrying;
+        if (enabled && state == StreamState.Idle && _operationSafety?.StartAllowed == true &&
+            _operationSafety.DesiredMode != Safety.DesiredRunMode.Stopped) expected = true;
+        if (!expected)
+        {
+            _recordingLastProgressUtc = null;
+            _recordingPath = null;
+            _recordingLength = 0;
+            if (_recordingSeverity is not null)
+            {
+                _recordingSeverity = null;
+                SetCondition(buffer, HealthEventKind.RecordingStalled, HealthSeverity.Info, false,
+                    "녹화가 중지되어 파일 증가 감시를 종료했습니다.", null);
+            }
+            return;
+        }
+        var now = _now();
+        _recordingLastProgressUtc ??= now;
+        // File growth is independent of live/encoder counters. Tiny empty fragments and repeated
+        // path changes must not postpone the alarm forever. Growth alone is not playback proof.
+        if (!string.IsNullOrWhiteSpace(path) && length >= 2048 &&
+            (!string.Equals(path, _recordingPath, StringComparison.OrdinalIgnoreCase) || length > _recordingLength))
+        {
+            _recordingLastProgressUtc = now;
+            if (_recordingSeverity is not null)
+            {
+                _recordingSeverity = null;
+                SetCondition(buffer, HealthEventKind.RecordingStalled, HealthSeverity.Info, false,
+                    "녹화 파일이 다시 증가하고 있습니다. 실제 영상은 재생으로 확인하세요.", null);
+            }
+        }
+        _recordingPath = path;
+        _recordingLength = length;
+        var elapsed = now - _recordingLastProgressUtc.Value;
+        var severity = elapsed >= TimeSpan.FromSeconds(60) ? HealthSeverity.Critical
+            : elapsed >= TimeSpan.FromSeconds(20) ? HealthSeverity.Warn : (HealthSeverity?)null;
+        if (severity is not null && severity != _recordingSeverity)
+        {
+            _recordingSeverity = severity;
+            SetCondition(buffer, HealthEventKind.RecordingStalled, severity.Value, true,
+                $"녹화 파일 증가가 {elapsed.TotalSeconds:0}초 동안 확인되지 않습니다. 원본과 녹화 상태를 확인하세요.", null);
         }
     }
 

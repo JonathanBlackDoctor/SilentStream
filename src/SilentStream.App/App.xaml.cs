@@ -37,15 +37,22 @@ public partial class App : Application
     private ControlWindow? _controlWindow;
     private HotkeyManager? _hotkeyManager;
     private AppUpdateManager? _updateManager;
+    private ApplicationSafetySession? _applicationSafety;
+    private ApplicationRecoveryMonitor? _applicationRecovery;
+    private FileStream? _executionLease;
+    private bool _unexpectedExit;
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        if (ApplicationSafetySession.IsPreservationHeld(AppPaths.AppDataDir)) { Shutdown(); return; }
         base.OnStartup(e);
 
         LogConfigurator.Configure();
 
         var collection = new ServiceCollection();
         collection.AddSilentStreamCore();
+        collection.AddSingleton(_ => new ApplicationSafetySession(AppPaths.AppDataDir, WindowsBootIdentity.Read()));
+        collection.AddSingleton<IUploadBudget, SilentStream.App.Uploads.SharedUploadBudget>();
         // Swap the Phase-0 stubs for the real Windows capture/audio implementations.
         collection.AddSingleton<IScreenCaptureSource, DxgiScreenCaptureSource>();
         collection.AddSingleton<IAudioMixer, WasapiAudioMixer>();
@@ -66,6 +73,7 @@ public partial class App : Application
         _services = collection.BuildServiceProvider();
 
         var log = _services.GetRequiredService<ILogService>();
+        if (!StartupSequence.TryAcquireSingleInstance(this, log)) return;
         // Velopack 패키지에 동봉한 OAuth client_secret 을 사용자 폴더에 1회 배치(없을 때만).
         // 기존 Inno [Files] onlyifdoesntexist 단계를 대체 — 토큰/시크릿 등 사용자 자산은 보존한다.
         SeedBundledClientSecret(log);
@@ -91,10 +99,22 @@ public partial class App : Application
             SynchronizeProvisionedVapid(_services, configStore, log);
         }
         config = configStore.Load();
-        if (!StartupSequence.TryAcquireSingleInstance(this, log))
+        _executionLease = ApplicationSafetySession.AcquireExecutionLease(AppPaths.AppDataDir, maintenance: false);
+        if (_executionLease is null)
         {
+            log.Warn("점검 도우미 업데이트/유지보수 중이므로 새 앱을 시작하지 않습니다.");
+            Shutdown();
             return;
         }
+        _applicationSafety = _services.GetRequiredService<ApplicationSafetySession>();
+        using (var current = System.Diagnostics.Process.GetCurrentProcess())
+        {
+            if (!_applicationSafety.Begin(current.Id, current.StartTime.ToUniversalTime().Ticks,
+                    config.AutomaticOperationEnabled, DateTimeOffset.UtcNow))
+                log.Error("실행 의도를 읽거나 저장하지 못했습니다. 자동 녹화·업데이트·재기동을 차단합니다.");
+        }
+        DispatcherUnhandledException += (_, _) => _unexpectedExit = true;
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => _unexpectedExit = true;
 
         // Existing devices become eligible only after the first server-acknowledged snapshot.
         // The coordinator also observes subsequent queue/catalog/config file writes.
@@ -167,15 +187,22 @@ public partial class App : Application
     {
         try
         {
-            if (_updateManager is not null && await _updateManager.PrepareStartupUpdateAsync().ConfigureAwait(false))
+            var updateHandoff = _applicationSafety?.BeginTransition(ApplicationTransition.Update, "startup-update-check");
+            if (updateHandoff is not null && _updateManager is not null &&
+                await _updateManager.PrepareStartupUpdateAsync().ConfigureAwait(false))
             {
                 Dispatcher.Invoke(Shutdown); // the silent updater is waiting for this process to exit
                 return;
             }
+            if (updateHandoff?.TransitionToken is { } updateToken)
+                _applicationSafety?.CancelTransition(updateToken);
 
-            _updateManager?.Start();
+            if (_applicationSafety?.StartAllowed == true) _updateManager?.Start();
             if (_services is not null)
             {
+                _applicationRecovery = new(_services.GetRequiredService<ApplicationSafetySession>(),
+                    _services.GetRequiredService<IStreamOrchestrator>(), log);
+                _applicationRecovery.Start();
                 await StartupSequence.RunAsync(_services, this).ConfigureAwait(false);
             }
         }
@@ -442,10 +469,13 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        if (!_unexpectedExit) _applicationSafety?.MarkCleanExit();
+        _applicationRecovery?.Dispose();
         _updateManager?.Dispose();
         _hotkeyManager?.Dispose();
         LogConfigurator.Flush();
         _services?.Dispose();
+        _executionLease?.Dispose();
         base.OnExit(e);
     }
 }

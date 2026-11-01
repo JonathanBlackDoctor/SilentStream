@@ -139,6 +139,8 @@ public sealed class SessionAgentHost
     private static async Task<object> StartAppAsync(JsonElement? payload)
     {
         var app = RequiredPath(payload, "appExecutablePath", "MediaCaptureHelper.exe");
+        using var lease = AgentUpdateSafety.AcquireApplicationLease(AgentUpdateSafety.CurrentAppDirectory, maintenance: false)
+            ?? throw new InvalidOperationException("원본 보존 또는 도우미 유지보수 중이므로 앱을 시작하지 않습니다.");
         _ = Process.Start(Hidden(app)) ?? throw new InvalidOperationException("Application did not start in the interactive session.");
         await Task.Delay(750).ConfigureAwait(false);
         return new { started = true, sessionId = Process.GetCurrentProcess().SessionId };
@@ -146,6 +148,9 @@ public sealed class SessionAgentHost
 
     private static async Task<object> InstallAppAsync(JsonElement? payload)
     {
+        using var maintenance = AgentUpdateSafety.AcquireApplicationLease(AgentUpdateSafety.CurrentAppDirectory, maintenance: true)
+            ?? throw new InvalidOperationException("Original preservation or an active application prevents installation.");
+        if (AgentUpdateSafety.ApplicationIsRunning()) throw new InvalidOperationException("Stop and preserve the application before installation.");
         var installer = RequiredPath(payload, "installerPath", null);
         if (!Path.GetFileName(installer).EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Installer must be an executable file.");
@@ -168,6 +173,9 @@ public sealed class SessionAgentHost
 
     private static async Task<object> UninstallAppAsync(JsonElement? payload)
     {
+        using var maintenance = AgentUpdateSafety.AcquireApplicationLease(AgentUpdateSafety.CurrentAppDirectory, maintenance: true)
+            ?? throw new InvalidOperationException("Original preservation or an active application prevents removal.");
+        if (AgentUpdateSafety.ApplicationIsRunning()) throw new InvalidOperationException("Stop and preserve the application before removal.");
         var app = RequiredPath(payload, "appExecutablePath", "MediaCaptureHelper.exe");
         var updater = RequiredPath(payload, "updaterPath", "Update.exe");
         var expectedUpdater = Path.GetFullPath(Path.Combine(Directory.GetParent(Directory.GetParent(app)?.FullName ?? string.Empty)?.FullName ?? string.Empty, "Update.exe"));

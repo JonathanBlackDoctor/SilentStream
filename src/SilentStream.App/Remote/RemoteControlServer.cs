@@ -59,6 +59,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
     private readonly IPushSubscriptionStore _pushSubscriptions;
     private readonly IVapidKeyStore _vapidKeys;
     private readonly RemoteAppRestartService _appRestart;
+    private readonly SilentStream.Core.Safety.ApplicationSafetySession _applicationSafety;
     private readonly RemoteSystemShutdownService _systemShutdown;
     private readonly RemoteUninstallService _appUninstall;
     private readonly RecoveryCoordinator _recovery;
@@ -117,7 +118,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
         RecoveryCoordinator recovery,
         InspectionRemoteStore inspection,
         IEnumerable<INotifier> notifiers,
-        ILogService log)
+        ILogService log,
+        SilentStream.Core.Safety.ApplicationSafetySession applicationSafety)
     {
         _orchestrator = orchestrator;
         _scheduleStore = scheduleStore;
@@ -143,6 +145,7 @@ public sealed class RemoteControlServer : IRemoteControlServer
         _inspection = inspection;
         _notifiers = notifiers.ToArray();
         _log = log;
+        _applicationSafety = applicationSafety;
         _diagnosticHistory = new LocalDiagnosticHistory(configStore, AppPaths.LogsDir, AppPaths.VodDir,
             SilentStream.Platform.Windows.WindowsDiagnosticHistory.Read, DiagnosticMediaProbe.Read);
         _cloudflared = new CloudflaredManager(log);
@@ -761,6 +764,9 @@ public sealed class RemoteControlServer : IRemoteControlServer
                     statusCode: StatusCodes.Status400BadRequest);
             }
 
+            if (enabled && !_applicationSafety.SetDesired(SilentStream.Core.Safety.DesiredRunMode.Live, "enable-autostart"))
+                return Results.Json(new { ok = false, error = "보존·종료 대기 또는 실행 의도 저장 오류로 자동 운행을 켤 수 없습니다." }, Json,
+                    statusCode: StatusCodes.Status409Conflict);
             _configStore.Update(config => config.AutomaticOperationEnabled = enabled);
             if (!enabled)
             {
@@ -1523,6 +1529,8 @@ public sealed class RemoteControlServer : IRemoteControlServer
             quietShutdownControl = true,
             shutdownSchedule = _systemShutdown.ScheduleStatus,
             windowsShutdownPending = _systemShutdown.WindowsShutdownPending,
+            originalPreservationHeld = _applicationSafety.PreservationHeld,
+            applicationIntent = _applicationSafety.Snapshot,
             state = state.ToString(),
             badge = StateBadge(state),
             live = state == StreamState.Live,

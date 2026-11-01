@@ -7,6 +7,7 @@ using SilentStream.App.Recovery;
 using SilentStream.Core;
 using SilentStream.Core.Contracts;
 using SilentStream.Core.Provisioning;
+using SilentStream.Core.Safety;
 
 namespace SilentStream.App.Remote;
 
@@ -18,22 +19,30 @@ public sealed class RemoteUninstallService
     private readonly ITokenProtector _protector;
     private readonly RecoveryCoordinator _recovery;
     private readonly ILogService _log;
+    private readonly ApplicationSafetySession _safety;
     private int _queued;
 
     public RemoteUninstallService(IStreamOrchestrator orchestrator, IConfigStore configStore, ITokenProtector protector,
-        RecoveryCoordinator recovery, ILogService log)
+        RecoveryCoordinator recovery, ILogService log, ApplicationSafetySession safety)
     {
         _orchestrator = orchestrator;
         _configStore = configStore;
         _protector = protector;
         _recovery = recovery;
         _log = log;
+        _safety = safety;
     }
 
     public async Task<RemoteUninstallResult> RequestAsync(string? administratorToken, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(administratorToken)) return new(false, "관리자 인증이 필요합니다.");
         if (Interlocked.CompareExchange(ref _queued, 1, 0) != 0) return new(false, "이미 제거 작업이 진행 중입니다.");
+        var handoff = _safety.BeginTransition(ApplicationTransition.Uninstall, "authorised-uninstall");
+        if (handoff is null)
+        {
+            Interlocked.Exchange(ref _queued, 0);
+            return new(false, "원본 보존 또는 다른 종료 작업이 진행 중이므로 제거하지 않습니다.");
+        }
         var launched = false;
         try
         {
@@ -57,7 +66,7 @@ public sealed class RemoteUninstallService
             var authorization = await client.ConsumeRemovalAsync(config.Provisioning.RoomId, config.Provisioning.InstallationId,
                 tunnelToken, command.CommandId, timeout.Token).ConfigureAwait(false);
 
-            await _orchestrator.StopAsync().ConfigureAwait(false);
+            await _orchestrator.StopForMaintenanceAsync().WaitAsync(TimeSpan.FromSeconds(30), timeout.Token).ConfigureAwait(false);
             new AutoStartManager(_log).DisableAll();
             StartHelper(bootstrap.ServiceUrl, command.CommandId, authorization.CompletionToken);
             launched = true;
@@ -83,7 +92,11 @@ public sealed class RemoteUninstallService
         {
             // Once the detached helper has launched, the process exits shortly; leaving the gate
             // closed prevents a second destructive command during that hand-off.
-            if (!launched) Interlocked.Exchange(ref _queued, 0);
+            if (!launched)
+            {
+                _safety.CancelTransition(handoff.TransitionToken!);
+                Interlocked.Exchange(ref _queued, 0);
+            }
         }
     }
 

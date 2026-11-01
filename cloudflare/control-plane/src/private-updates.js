@@ -23,11 +23,49 @@ export async function registerUpdateIdentity(storage, device, identity) {
   } catch { return false; }
 }
 
-export async function authorizeUpdate(storage, proof, now = Date.now()) {
+// The device binding comes from its verified key, never a client-supplied room/version.
+// A default hold is materialized per device and survives later configuration changes.
+export async function readUpdatePolicy(storage, device, defaultHoldRooms = "", now = Date.now()) {
+  const name = `update-policy:${device.deviceId}`;
+  const stored = await storage.get(name);
+  if (stored !== undefined) {
+    if (stored?.deviceId !== device.deviceId || typeof stored.held !== "boolean" || !Number.isSafeInteger(stored.revision) || stored.revision < 1)
+      return { deviceId: device.deviceId, held: true, revision: 0, reason: "policy-unreadable" };
+    return stored;
+  }
+  const held = String(defaultHoldRooms).split(",").map(x => x.trim()).includes(device.roomId);
+  const policy = { deviceId: device.deviceId, held, revision: held ? 1 : 0,
+    reason: held ? "original-preservation-required" : "", updatedAtUtc: new Date(now).toISOString(), actor: "deployment-default" };
+  if (held) await storage.put(name, policy);
+  return policy;
+}
+
+export async function changeUpdatePolicy(storage, device, change, actor, defaultHoldRooms = "", now = Date.now()) {
+  if (typeof change.held !== "boolean" || !Number.isSafeInteger(change.expectedRevision) || change.expectedRevision < 0
+      || typeof change.reason !== "string" || !change.reason.trim() || change.reason.length > 500
+      || (!change.held && !/^[a-f0-9]{64}$/.test(change.preservationManifestSha256 || "")))
+    return Response.json({ error: "보존 기록과 정책 버전을 확인해 주세요." }, { status: 400 });
+  return storage.transaction(async store => {
+    const active = await store.get(`device:${device.deviceId}`);
+    if (!active || active.revokedAtUtc) return new Response(null, { status: 404 });
+    const previous = await readUpdatePolicy(store, active, defaultHoldRooms, now);
+    if (previous.revision !== change.expectedRevision) return Response.json({ error: "정책이 변경되었습니다. 다시 조회해 주세요." }, { status: 409 });
+    const next = { deviceId: active.deviceId, held: change.held, revision: previous.revision + 1,
+      reason: change.reason.trim(), preservationManifestSha256: change.preservationManifestSha256 || null,
+      actor, updatedAtUtc: new Date(now).toISOString() };
+    await store.put(`update-policy:${active.deviceId}`, next);
+    await store.put(`update-policy-audit:${active.deviceId}:${next.revision}`, { previous, next });
+    return Response.json(next);
+  });
+}
+
+export async function authorizeUpdate(storage, proof, now = Date.now(), scope = "updates", defaultHoldRooms = "") {
+  const validTarget = scope === "upload-budget"
+    ? proof.method === "POST" && typeof proof.target === "string" && proof.target.startsWith("/api/upload-budget?")
+    : ["GET", "HEAD"].includes(proof.method) && typeof proof.target === "string" && proof.target.startsWith("/api/updates/");
   if (!/^[a-f0-9]{64}$/.test(proof.keyId || "") || !/^\d{10}$/.test(proof.timestamp || "")
       || !/^[a-f0-9]{32}$/.test(proof.nonce || "") || !/^[A-Za-z0-9_-]{86}$/.test(proof.signature || "")
-      || !["GET", "HEAD"].includes(proof.method) || typeof proof.target !== "string"
-      || !proof.target.startsWith("/api/updates/") || proof.target.length > 2048
+      || !validTarget || proof.target.length > 2048
       || Math.abs(now - Number(proof.timestamp) * 1000) > 300000) return denied();
   const key = await storage.get(`update-key:${proof.keyId}`);
   if (!key) return denied();
@@ -41,13 +79,15 @@ export async function authorizeUpdate(storage, proof, now = Date.now()) {
   return storage.transaction(async store => {
     const current = await store.get(`update-key:${proof.keyId}`);
     const active = await store.get(`device:${key.deviceId}`);
-    if (!current || current.publicKey !== key.publicKey || !active || active.revokedAtUtc) return denied();
+    if (!current || current.deviceId !== key.deviceId || current.publicKey !== key.publicKey || !active || active.revokedAtUtc) return denied();
     const nonceKey = `update-nonces:${proof.keyId}`;
     const nonces = (await store.get(nonceKey) || []).filter(x => x.time > now - 600000);
     if (nonces.some(x => x.value === proof.nonce)) return denied();
     if (nonces.length >= 256) return new Response(null, { status: 429 });
     nonces.push({ value: proof.nonce, time: now });
     await store.put(nonceKey, nonces);
+    if (scope === "updates" && (await readUpdatePolicy(store, active, defaultHoldRooms, now)).held)
+      return new Response(null, { status: 503, headers: { "cache-control": "no-store", "retry-after": "21600", "x-update-policy": "preservation-hold" } });
     return new Response(null, { status: 200 });
   });
 }

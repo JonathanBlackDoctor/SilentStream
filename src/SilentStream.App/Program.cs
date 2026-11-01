@@ -18,11 +18,18 @@ public static class Program
     [STAThread]
     public static void Main()
     {
+        // A preservation hold precedes updater hooks, legacy migration, restore, and logging.
+        // The inspection service remains the access path while original files are copied.
+        if (SilentStream.Core.Safety.ApplicationSafetySession.IsPreservationHeld(AppPaths.AppDataDir)) return;
+        using var executionLease = SilentStream.Core.Safety.ApplicationSafetySession.AcquireExecutionLease(AppPaths.AppDataDir, maintenance: false);
+        if (executionLease is null) return;
         VelopackApp.Build()
             // 제거 시 자동 시작 등록과 방화벽 규칙을 정리한다(기존 Inno [UninstallRun] 동등).
             // *FastCallback 후크는 DI 컨테이너 밖에서 짧게 돌고 즉시 종료된다.
             .OnBeforeUninstallFastCallback(_ => CleanupOnUninstall())
             .Run();
+
+        if (!StartupSequence.AcquireProcessGuard()) return;
 
         // 리브랜드(SilentStream → Media Capture Helper) 후 기존 설치본의 %AppData% 데이터를 1회 이전한다.
         // Velopack 후크 호출은 위 .Run() 안에서 종료되므로 이 줄은 정상 실행 경로에서만 도달한다.

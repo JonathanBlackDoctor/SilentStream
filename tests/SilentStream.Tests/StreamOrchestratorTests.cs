@@ -33,7 +33,8 @@ public class StreamOrchestratorTests : IDisposable, IAsyncLifetime
         TimeSpan? liveAutoStopRetry = null,
         ILiveReplayCatalog? liveReplays = null,
         TimeSpan? broadcastCompletionTimeout = null,
-        ILogService? log = null)
+        ILogService? log = null,
+        SilentStream.Core.Safety.ApplicationSafetySession? safety = null)
     {
         var orchestrator = new StreamOrchestrator(
             _configStore, log ?? new LogService(), _youtube, _encoder, _recording, _capture, _mixer, _quality,
@@ -50,7 +51,7 @@ public class StreamOrchestratorTests : IDisposable, IAsyncLifetime
                 LiveAutoStopAfter = liveAutoStop ?? TimeSpan.FromHours(10),
                 LiveAutoStopRetryAfter = liveAutoStopRetry ?? TimeSpan.FromHours(11),
                 BroadcastCompletionTimeout = broadcastCompletionTimeout ?? TimeSpan.FromSeconds(10)
-            }, liveReplays);
+            }, liveReplays, safety);
         orchestrator.StateChanged += (_, s) => { lock (_states) { _states.Add(s); } };
         _createdOrchestrators.Add(orchestrator);
         return orchestrator;
@@ -60,6 +61,68 @@ public class StreamOrchestratorTests : IDisposable, IAsyncLifetime
     // Fallback_* tests explicitly verify all starts, including that first recording part.
     private IReadOnlyList<EncoderStartOptions> StartsAfterInitialBackup => _encoder.StartCalls
         .Skip(_configStore.Load().Recording.Enabled ? 1 : 0).ToArray();
+
+    [Fact]
+    public async Task Recording_only_intent_can_restart_without_touching_YouTube()
+    {
+        var safety = new SilentStream.Core.Safety.ApplicationSafetySession(_dir, "boot-one");
+        Assert.True(safety.Begin(12, 123, true, DateTimeOffset.UtcNow));
+        var first = CreateOrchestrator(safety: safety);
+        await first.StartAsync(CancellationToken.None);
+        await first.StopStreamingKeepRecordingAsync();
+        Assert.Equal(SilentStream.Core.Safety.DesiredRunMode.RecordingOnly, safety.DesiredMode);
+        await first.StopForMaintenanceAsync();
+        var calls = _youtube.AuthenticateCalls;
+        var replacementSafety = new SilentStream.Core.Safety.ApplicationSafetySession(_dir, "boot-one");
+        Assert.True(replacementSafety.Begin(13, 124, true, DateTimeOffset.UtcNow));
+        var replacement = CreateOrchestrator(safety: replacementSafety);
+        await replacement.StartRecordingSessionAsync(CancellationToken.None);
+        Assert.Equal(StreamState.RecordingOnly, replacement.State);
+        Assert.Equal(calls, _youtube.AuthenticateCalls);
+        Assert.Equal(string.Empty, _encoder.StartCalls.Last().RtmpUrl);
+        await replacement.StopAsync();
+        Assert.Equal(SilentStream.Core.Safety.DesiredRunMode.Stopped, replacementSafety.DesiredMode);
+    }
+
+    [Fact]
+    public async Task Power_handoff_and_preservation_block_new_capture()
+    {
+        var safety = new SilentStream.Core.Safety.ApplicationSafetySession(_dir, "boot-one");
+        Assert.True(safety.Begin(12, 123, true, DateTimeOffset.UtcNow));
+        var orchestrator = CreateOrchestrator(safety: safety);
+        var power = safety.BeginTransition(SilentStream.Core.Safety.ApplicationTransition.PowerShutdown, "scheduled")!;
+        await orchestrator.StartAsync(CancellationToken.None);
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Empty(_encoder.StartCalls);
+        safety.CancelTransition(power.TransitionToken!);
+        File.WriteAllText(SilentStream.Core.Safety.ApplicationSafetySession.HoldFile(_dir), "preserve originals");
+        await orchestrator.StartRecordingSessionAsync(CancellationToken.None);
+        Assert.Equal(StreamState.Idle, orchestrator.State);
+        Assert.Empty(_encoder.StartCalls);
+    }
+
+    [Fact]
+    public async Task Concurrent_stop_waits_for_the_same_encoder_finalization()
+    {
+        var orchestrator = CreateOrchestrator();
+        await orchestrator.StartAsync(CancellationToken.None);
+        var flush = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _encoder.StopGate = flush;
+        var first = orchestrator.StopAsync();
+        try
+        {
+            await WaitUntilAsync(() => _encoder.StopGate is null, TimeSpan.FromSeconds(3));
+            var second = orchestrator.StopAsync();
+            Assert.False(first.IsCompleted);
+            Assert.False(second.IsCompleted);
+            Assert.Same(first, second);
+            Assert.Equal(StreamState.Stopping, orchestrator.State);
+            flush.SetResult();
+            await Task.WhenAll(first, second).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.Equal(StreamState.Idle, orchestrator.State);
+        }
+        finally { flush.TrySetResult(); }
+    }
 
     [Fact]
     public async Task Happy_path_walks_idle_warmup_connecting_live()

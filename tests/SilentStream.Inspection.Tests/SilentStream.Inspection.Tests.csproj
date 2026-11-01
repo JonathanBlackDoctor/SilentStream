@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><TargetFramework>net8.0</TargetFramework><IsPackable>false</IsPackable><IsTestProject>true</IsTestProject></PropertyGroup>
   <ItemGroup>
+    <Compile Include="..\..\src\SilentStream.App\Uploads\SharedUploadBudget.cs" Link="SharedUploadBudget.cs" />
     <Compile Include="..\..\src\SilentStream.App\Updates\AppUpdateManager.cs" Link="AppUpdateManager.cs" />
     <Compile Include="..\..\src\SilentStream.App\Updates\PrivateUpdateDownloader.cs" Link="PrivateUpdateDownloader.cs" />
     <Compile Include="..\..\src\SilentStream.Inspection.Installer\OfficialRelease.cs" Link="OfficialRelease.cs" />
