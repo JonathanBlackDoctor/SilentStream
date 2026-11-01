@@ -767,11 +767,15 @@ public class StreamOrchestratorTests : IDisposable, IAsyncLifetime
         try
         {
             await orchestrator.StopStreamingKeepRecordingAsync();
+            var recovered = new TaskCompletionSource<EncoderStartOptions>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _encoder.StartOverride = (options, _) => { recovered.TrySetResult(options); return Task.CompletedTask; };
             _recording.ActiveRecordingLength = 1000;
             _encoder.TimeSinceProgress = TimeSpan.FromMinutes(5);
-            await WaitUntilAsync(() => StartsAfterInitialBackup.Count >= 3, TimeSpan.FromSeconds(1));
+            // Observe the recovery itself. A fixed one-second polling deadline can expire on a
+            // busy CI host before its watchdog receives CPU time; expiry must never imply success.
+            var restarted = await recovered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(3, StartsAfterInitialBackup.Count);
-            Assert.Equal(string.Empty, StartsAfterInitialBackup[^1].RtmpUrl);
+            Assert.Equal(string.Empty, restarted.RtmpUrl);
             Assert.Equal(StreamState.RecordingOnly, orchestrator.State);
             Assert.Equal(1, _youtube.CreateCalls);
         }
