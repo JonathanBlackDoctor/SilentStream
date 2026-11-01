@@ -92,18 +92,19 @@ jobs:
             $source = "previous/extracted/current/$optional"
             if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination "publish/$optional" -Recurse }
           }
-      - name: Bundle externally signed helper update
+      - name: Bundle signed helper for explicit app-closed maintenance
         run: |
           $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Path publish/inspection-update -Force | Out-Null
-          gh release download inspection-agent-v0.4.31 --repo "$env:GITHUB_REPOSITORY" --pattern inspection-agent-0.4.31.zip --dir publish/inspection-update
+          New-Item -ItemType Directory -Path publish/inspection-maintenance -Force | Out-Null
+          gh release download inspection-agent-v0.4.31 --repo "$env:GITHUB_REPOSITORY" --pattern inspection-agent-0.4.31.zip --dir publish/inspection-maintenance
           if ($LASTEXITCODE -ne 0) { throw 'Signed helper download failed.' }
-          $signed = 'publish/inspection-update/inspection-agent-0.4.31.zip'
+          $signed = 'publish/inspection-maintenance/inspection-agent-0.4.31.zip'
           if ((Get-Item -LiteralPath $signed).Length -ne 192814134 -or (Get-FileHash -LiteralPath $signed -Algorithm SHA256).Hash.ToLowerInvariant() -ne '846374e7bd060315d8ff48de0e341de743c1146a139ef4f1527f1d3145f846ce') { throw 'Signed helper archive differs from the approved payload.' }
           dotnet publish src/SilentStream.Inspection.OperatorCli/SilentStream.Inspection.OperatorCli.csproj --artifacts-path build-verifier -c Release -r win-x64 --self-contained false -p:Version=0.4.22 -o verification-cli
           if ($LASTEXITCODE -ne 0) { throw 'Helper verifier build failed.' }
           dotnet verification-cli/SilentStreamInspectionCli.dll agent-update verify $signed inspection/releases/0.4.22/silentstream-ops-20261017.public-key.json verified-agent-update
           if ($LASTEXITCODE -ne 0) { throw 'Helper signature verification failed.' }
+          if (Test-Path -LiteralPath 'publish/inspection-update') { throw 'Automatic helper-import directory must remain absent.' }
       - name: Pack and publish immutable app update
         run: |
           dotnet tool install -g vpk --version 1.2.0
