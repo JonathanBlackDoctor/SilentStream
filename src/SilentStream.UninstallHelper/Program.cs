@@ -62,6 +62,7 @@ try
         // The process already exited, which is the normal fast path.
     }
 
+    if (ApplicationSafetySession.IsPreservationHeld(payload.AppDataDirectory)) return 16;
     using var updater = Process.Start(new ProcessStartInfo
     {
         FileName = payload.UpdateExePath,
