@@ -132,7 +132,7 @@ public sealed class VodCoordinator
                     SlotId: boundary.ResolvedSlotId,
                     SlotLabel: slotLabel,
                     SlotKind: boundary.ResolvedSlotKind,
-                    SlotOrder: boundary.ResolvedSlotOrder, SourceKey: clip.SourceKey));
+                    SlotOrder: boundary.ResolvedSlotOrder, SourceKey: clip.SourceKey, VerifiedCoverage: clip.VerifiedCoverage));
             }
             catch (Exception ex)
             {
@@ -147,7 +147,7 @@ public sealed class VodCoordinator
                 boundary.ResolvedSlotId,
                 slotLabel,
                 boundary.ResolvedSlotKind,
-                boundary.ResolvedSlotOrder, SourceKey: clip.SourceKey));
+                boundary.ResolvedSlotOrder, SourceKey: clip.SourceKey, VerifiedCoverage: clip.VerifiedCoverage));
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch (Exception ex) { _log.Error($"{boundary.ResolvedSlotLabel} 부분 영상 처리 실패", ex); }

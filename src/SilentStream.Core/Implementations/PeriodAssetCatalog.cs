@@ -58,7 +58,8 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
                 if (!string.IsNullOrWhiteSpace(existing.VideoId))
                     stamped = stamped with { VideoId = existing.VideoId, SourceKey = existing.SourceKey,
                         UploadedFileSizeBytes = existing.UploadedFileSizeBytes,
-                        UploadValidationVersion = existing.UploadValidationVersion };
+                        UploadValidationVersion = existing.UploadValidationVersion,
+                        VerifiedCoverage = existing.VerifiedCoverage };
                 state.Assets[index] = stamped;
             }
             else
@@ -100,6 +101,10 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
     public bool MarkUploaded(string id, string videoId) => MarkUploaded(id, videoId, null, 0);
 
     public bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion)
+        => MarkUploaded(id, videoId, fileSizeBytes, validationVersion, null);
+
+    public bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion,
+        VerifiedRecordingCoverage? coverage)
     {
         var normalizedId = RequireValue(id, nameof(id));
         var normalizedVideoId = RequireValue(videoId, nameof(videoId));
@@ -116,8 +121,12 @@ public sealed class PeriodAssetCatalog : IPeriodAssetCatalog
             state.Assets[index] = state.Assets[index] with
             {
                 VideoId = normalizedVideoId,
-                UploadedFileSizeBytes = fileSizeBytes ?? state.Assets[index].UploadedFileSizeBytes,
-                UploadValidationVersion = Math.Max(validationVersion, state.Assets[index].UploadValidationVersion),
+                UploadedFileSizeBytes = fileSizeBytes,
+                // Never promote an old acknowledgement based on newly staged metadata.
+                UploadValidationVersion = validationVersion == 2 && coverage?.IsValid == true &&
+                    coverage.FileSizeBytes == fileSizeBytes ? 2 : Math.Min(validationVersion, 1),
+                VerifiedCoverage = validationVersion == 2 && coverage?.IsValid == true &&
+                    coverage.FileSizeBytes == fileSizeBytes ? coverage : null,
                 UpdatedAtUtc = UtcNow()
             };
             PersistLocked();

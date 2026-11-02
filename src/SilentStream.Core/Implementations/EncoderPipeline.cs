@@ -236,20 +236,21 @@ public sealed class EncoderPipeline : IEncoderPipeline
         // Drain the writer tasks before touching the streams they write to.
         try
         {
-            if (_videoWriterTask is not null)
-            {
-                await _videoWriterTask.ConfigureAwait(false);
-            }
-            if (_audioWriterTask is not null)
-            {
-                await _audioWriterTask.ConfigureAwait(false);
-            }
+            // WhenAll observes BOTH completions even if one writer faults first.
+            await Task.WhenAll(_videoWriterTask ?? Task.CompletedTask, _audioWriterTask ?? Task.CompletedTask)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or IOException or ObjectDisposedException)
         {
         }
+        catch (Exception ex) { _log.Error("인코더 입력 writer 종료 중 오류 — 입력과 프로세스를 정리합니다.", ex); }
         _videoWriterTask = null;
         _audioWriterTask = null;
+
+        // Writers no longer touch either input. Send audio EOF BEFORE waiting for ffmpeg;
+        // video EOF alone leaves ffmpeg waiting on the still-open PCM input indefinitely.
+        _audioPipe?.Dispose();
+        _audioPipe = null;
 
         var process = _process;
         if (process is not null)
@@ -264,6 +265,7 @@ public sealed class EncoderPipeline : IEncoderPipeline
                 {
                     _log.Warn("FFmpeg가 제한 시간 내 종료되지 않아 강제 종료합니다(frag mp4라 파일은 안전).");
                     process.Kill(entireProcessTree: true);
+                    await process.WaitForExitAsync().ConfigureAwait(false);
                 }
             }
             catch (Exception ex) when (ex is InvalidOperationException or IOException or ObjectDisposedException)

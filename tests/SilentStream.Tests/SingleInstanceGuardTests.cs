@@ -44,7 +44,7 @@ public class SingleInstanceGuardTests
 
         var afterUpdate = appSource[appSource.IndexOf("private async Task StartAfterUpdateAsync", StringComparison.Ordinal)..];
         AssertOrdered(afterUpdate,
-            "PrepareStartupUpdateAsync()",
+            "PrepareStartupUpdateAsync(token)",
             "_updateManager?.Start()",
             "StartupSequence.RunAsync(_services, this)");
 

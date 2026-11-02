@@ -41,6 +41,7 @@ public partial class App : Application
     private ApplicationRecoveryMonitor? _applicationRecovery;
     private FileStream? _executionLease;
     private bool _unexpectedExit;
+    private readonly CancellationTokenSource _startupStop = new();
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -185,11 +186,14 @@ public partial class App : Application
 
     private async Task StartAfterUpdateAsync(ILogService log)
     {
+        var token = _startupStop.Token;
+        ApplicationRunState? updateHandoff = null;
         try
         {
-            var updateHandoff = _applicationSafety?.BeginTransition(ApplicationTransition.Update, "startup-update-check");
+            token.ThrowIfCancellationRequested();
+            updateHandoff = _applicationSafety?.BeginTransition(ApplicationTransition.Update, "startup-update-check");
             if (updateHandoff is not null && _updateManager is not null &&
-                await _updateManager.PrepareStartupUpdateAsync().ConfigureAwait(false))
+                await _updateManager.PrepareStartupUpdateAsync(token).ConfigureAwait(false))
             {
                 Dispatcher.Invoke(Shutdown); // the silent updater is waiting for this process to exit
                 return;
@@ -197,6 +201,7 @@ public partial class App : Application
             if (updateHandoff?.TransitionToken is { } updateToken)
                 _applicationSafety?.CancelTransition(updateToken);
 
+            token.ThrowIfCancellationRequested();
             if (_applicationSafety?.StartAllowed == true) _updateManager?.Start();
             if (_services is not null)
             {
@@ -205,6 +210,11 @@ public partial class App : Application
                 _applicationRecovery.Start();
                 await StartupSequence.RunAsync(_services, this).ConfigureAwait(false);
             }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            if (updateHandoff?.TransitionToken is { } updateToken)
+                _applicationSafety?.CancelTransition(updateToken);
         }
         catch (Exception ex)
         {
@@ -469,6 +479,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _startupStop.Cancel();
         if (!_unexpectedExit) _applicationSafety?.MarkCleanExit();
         _applicationRecovery?.Dispose();
         _updateManager?.Dispose();

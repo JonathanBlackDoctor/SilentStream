@@ -49,7 +49,8 @@ public sealed class RecordingRetentionSafetyTests : IDisposable
         _assets.Upsert(new PeriodAsset("last", new DateOnly(2026, 10, 28), 8, "last", VideoId: "video",
             SourceKey: Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
                 $"{Path.GetFullPath(segment.FilePath).ToUpperInvariant()}|{start.Ticks}|{start.Ticks}|{periodEnd.Ticks}"))).ToLowerInvariant(),
-            UploadedFileSizeBytes: 4096, UploadValidationVersion: 1));
+            UploadedFileSizeBytes: 4096, UploadValidationVersion: 2,
+            VerifiedCoverage: new(segment.FilePath, start, start, periodEnd, 4096, new string('a',64))));
         Assert.False(Guard.CanDelete(segment));
         Assert.True(Guard.CanDelete(segment with { EndLocal = periodEnd }));
     }
@@ -66,7 +67,8 @@ public sealed class RecordingRetentionSafetyTests : IDisposable
         manager.CreateSessionFilePath(Start.AddHours(1));
         var segment = new RecordingSegment(path, Start, Start.AddHours(1));
         _assets.Upsert(new PeriodAsset("one", new DateOnly(2026, 10, 28), 1, "one", VideoId: "video",
-            SourceKey: Key(segment), UploadedFileSizeBytes: 4096, UploadValidationVersion: 1));
+            SourceKey: Key(segment), UploadedFileSizeBytes: 4096, UploadValidationVersion: 2,
+            VerifiedCoverage: new(path, Start, Start, Start.AddHours(1), 4096, new string('a',64))));
         Assert.True(Guard.CanDelete(segment));
         var checks = 0;
         // The first eligibility check is allowed, but a hold appears before actual deletion.
@@ -102,12 +104,14 @@ public sealed class RecordingRetentionSafetyTests : IDisposable
     [Theory]
     [InlineData(0, 4096, false)]
     [InlineData(1, 1217, false)]
-    [InlineData(1, 4096, true)]
+    [InlineData(1, 4096, false)]
+    [InlineData(2, 4096, true)]
     public void Only_matching_validated_receipts_release_a_completed_recording(int validation, long size, bool expected)
     {
         var segment = new RecordingSegment(Path.Combine(_dir, "source.mp4"), Start, Start.AddHours(1));
         _assets.Upsert(new PeriodAsset("one", new DateOnly(2026, 10, 28), 1, "one", VideoId: "video",
-            SourceKey: Key(segment), UploadedFileSizeBytes: size, UploadValidationVersion: validation));
+            SourceKey: Key(segment), UploadedFileSizeBytes: size, UploadValidationVersion: validation,
+            VerifiedCoverage: validation == 2 ? new(segment.FilePath, Start, Start, Start.AddHours(1), size, new string('a',64)) : null));
         Assert.Equal(expected, Guard.CanDelete(segment));
         Assert.False(Guard.CanDelete(segment with { EndLocal = Start.AddHours(2) })); // missing next period
     }

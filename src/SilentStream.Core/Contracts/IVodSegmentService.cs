@@ -55,4 +55,4 @@ public interface IVodSegmentService
 }
 
 public sealed record VodClip(string FilePath, string? SourceKey, DateTime StartLocal,
-    DateTime EndLocal, int PartNumber, int PartCount);
+    DateTime EndLocal, int PartNumber, int PartCount, VerifiedRecordingCoverage? VerifiedCoverage = null);

@@ -36,6 +36,54 @@ public class UploadQueueTests : IDisposable
             maxPerDay, maxAttempts: 5);
 
     [Fact]
+    public async Task Verified_bytes_remain_stable_during_upload_and_receipt_survives_restart()
+    {
+        var job = MakeJob(1);
+        File.WriteAllBytes(job.FilePath, new byte[4096]);
+        var proof = new VerifiedRecordingCoverage(Path.Combine(_dir, "original.mp4"), _clock.Now,
+            _clock.Now, _clock.Now.AddHours(1), 4096,
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(job.FilePath))));
+        job = job with { SourceKey = "stable-source", VerifiedCoverage = proof };
+        var writeBlocked = false;
+        var uploader = new FakeUploader { BeforeComplete = () =>
+        {
+            try { using var writer = File.OpenWrite(job.FilePath); }
+            catch (IOException) { writeBlocked = true; }
+        }};
+        var catalogPath = Path.Combine(_dir, "assets.json");
+        var queue = new UploadQueue(uploader, _configStore, new LogService(), _queueFile,
+            () => _clock.Now, _clock.Delay, 6, 5, assetCatalog: new PeriodAssetCatalog(catalogPath));
+        queue.Enqueue(job);
+        using var stop = new CancellationTokenSource();
+        queue.Start(stop.Token);
+        await WaitUntilAsync(() => queue.Snapshot().Single().Status == UploadJobStatus.Completed, TimeSpan.FromSeconds(5));
+        stop.Cancel();
+        Assert.True(writeBlocked);
+        var restored = new PeriodAssetCatalog(catalogPath).Find(job.Id)!;
+        Assert.Equal(proof, restored.VerifiedCoverage);
+        Assert.False(restored.RequiresCoverageRevalidation);
+        Assert.Equal(2, restored.UploadValidationVersion);
+    }
+
+    [Fact]
+    public async Task Changed_verified_cut_is_preserved_and_never_uploaded()
+    {
+        var job = MakeJob(1);
+        File.WriteAllBytes(job.FilePath, new byte[4096]);
+        job = job with { VerifiedCoverage = new VerifiedRecordingCoverage(Path.Combine(_dir, "original.mp4"),
+            _clock.Now, _clock.Now, _clock.Now.AddHours(1), 4096, new string('f', 64)) };
+        var uploader = new FakeUploader();
+        var queue = Create(uploader);
+        queue.Enqueue(job);
+        using var stop = new CancellationTokenSource();
+        queue.Start(stop.Token);
+        await WaitUntilAsync(() => queue.Snapshot().Single().Status == UploadJobStatus.Failed, TimeSpan.FromSeconds(5));
+        stop.Cancel();
+        Assert.Equal(0, uploader.Calls);
+        Assert.True(File.Exists(job.FilePath));
+    }
+
+    [Fact]
     public async Task Preservation_hold_arriving_during_upload_keeps_the_cut_and_success_receipt()
     {
         var uploader = new FakeUploader();

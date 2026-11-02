@@ -30,6 +30,8 @@ public interface IPeriodAssetCatalog
 
     /// <summary>Also retains evidence that the local upload video passed the current media gate.</summary>
     bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion) => MarkUploaded(id, videoId);
+    bool MarkUploaded(string id, string videoId, long? fileSizeBytes, int validationVersion,
+        VerifiedRecordingCoverage? coverage) => MarkUploaded(id, videoId, fileSizeBytes, validationVersion);
 
     /// <summary>
     /// Records the completed local M4A path without replacing concurrently-updated YouTube or

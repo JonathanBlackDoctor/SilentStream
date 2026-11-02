@@ -57,7 +57,8 @@ public sealed record UploadJob(
     double? UploadDurationSeconds = null,
     long? FileSizeBytes = null,
     string? SourceKey = null,
-    bool NeedsUploadReconciliation = false)
+    bool NeedsUploadReconciliation = false,
+    Models.VerifiedRecordingCoverage? VerifiedCoverage = null)
 {
     public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
         ? SlotId

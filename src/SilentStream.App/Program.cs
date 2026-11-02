@@ -24,6 +24,9 @@ public static class Program
         using var executionLease = SilentStream.Core.Safety.ApplicationSafetySession.AcquireExecutionLease(AppPaths.AppDataDir, maintenance: false);
         if (executionLease is null) return;
         VelopackApp.Build()
+            // Hooks must run before the mutex, but normal-launch auto-apply must not.
+            // Only the guarded startup handoff below WPF may schedule an update.
+            .SetAutoApplyOnStartup(false)
             // 제거 시 자동 시작 등록과 방화벽 규칙을 정리한다(기존 Inno [UninstallRun] 동등).
             // *FastCallback 후크는 DI 컨테이너 밖에서 짧게 돌고 즉시 종료된다.
             .OnBeforeUninstallFastCallback(_ => CleanupOnUninstall())

@@ -21,8 +21,14 @@ public sealed record PeriodAsset(
     int SlotOrder = 0,
     string? SourceKey = null,
     long? UploadedFileSizeBytes = null,
-    int UploadValidationVersion = 0)
+    int UploadValidationVersion = 0,
+    VerifiedRecordingCoverage? VerifiedCoverage = null)
 {
+    /// <summary>Legacy acknowledgements still prevent duplicate uploads, but require media
+    /// revalidation before they may authorise deleting any original recording.</summary>
+    public bool RequiresCoverageRevalidation => !string.IsNullOrWhiteSpace(VideoId) &&
+        (UploadValidationVersion != 2 || VerifiedCoverage?.IsValid != true ||
+         UploadedFileSizeBytes != VerifiedCoverage.FileSizeBytes);
     public string ResolvedSlotId => !string.IsNullOrWhiteSpace(SlotId)
         ? SlotId
         : $"period-{PeriodNumber}";

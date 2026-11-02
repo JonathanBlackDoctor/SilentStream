@@ -20,7 +20,7 @@ public class VodSegmentServiceTests : IDisposable
     }
 
     private VodSegmentService Create(RecordingSession? session) =>
-        new(new FakeSessionInfo(session), _runner, new LogService(), _outputDir);
+        new(new FakeSessionInfo(session), _runner, new LogService(), _outputDir, new CompleteVodValidationStub());
 
     private string MakeSessionFile()
     {

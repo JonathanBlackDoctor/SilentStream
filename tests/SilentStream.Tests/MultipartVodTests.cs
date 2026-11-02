@@ -21,7 +21,7 @@ public sealed class MultipartVodTests : IDisposable
     private Sessions History => new([
         new(File1, Start.AddMinutes(-5), Start.AddMinutes(20)),
         new(File2, Start.AddMinutes(35), Start.AddMinutes(55))]);
-    private VodSegmentService Cutter => new(History, _runner, new LogService(), Path.Combine(_dir, "vod"));
+    private VodSegmentService Cutter => new(History, _runner, new LogService(), Path.Combine(_dir, "vod"), new CompleteVodValidationStub());
     private void MakeFiles(bool first = true)
     {
         if (first) File.WriteAllBytes(File1, new byte[16]);
@@ -144,7 +144,7 @@ public sealed class MultipartVodTests : IDisposable
     {
         File.WriteAllBytes(File2, new byte[16]);
         var sessions = new Sessions([new(File2, Start, Start.AddHours(1))]);
-        var cutter = new VodSegmentService(sessions, _runner, new LogService(), Path.Combine(_dir, "vod"));
+        var cutter = new VodSegmentService(sessions, _runner, new LogService(), Path.Combine(_dir, "vod"), new CompleteVodValidationStub());
         var clip = Assert.Single(await cutter.ExtractPeriodPartsAsync(Boundary, new HashSet<string>(), default));
         Assert.Equal(1, clip.PartCount); Assert.Equal(1, clip.PartNumber);
     }

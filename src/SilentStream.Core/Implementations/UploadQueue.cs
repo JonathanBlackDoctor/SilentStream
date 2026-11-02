@@ -239,6 +239,9 @@ public sealed class UploadQueue : IUploadQueue
         // YouTube may already have accepted the video before the local process stopped.
         var state = LoadLocked();
         var receipts = _assets?.Snapshot() ?? [];
+        var unverified = receipts.Count(a => a.RequiresCoverageRevalidation);
+        if (unverified > 0)
+            _log.Warn($"{unverified} uploaded receipts need coverage revalidation; originals remain protected.");
         RecoverLegacyQuotaFailuresLocked(state);
         var requeued = 0;
         for (var i = 0; i < state.Jobs.Count; i++)
@@ -422,8 +425,18 @@ public sealed class UploadQueue : IUploadQueue
             FileSizeBytes = j.FileSizeBytes ?? TryGetFileSize(j.FilePath)
         });
         string videoId;
+        Models.VerifiedRecordingCoverage? verifiedCoverage = null;
+        FileStream? coverageLease = null;
         try
         {
+            if (job.VerifiedCoverage is { } proof)
+            {
+                // Keep the hashed bytes stable until the uploader has consumed them.
+                coverageLease = File.OpenRead(job.FilePath);
+                if (!proof.MatchesFile(job.FilePath))
+                    throw new InvalidDataException("추출 후 영상이 변경되어 검증 범위를 사용할 수 없습니다.");
+                verifiedCoverage = proof;
+            }
             var privacy = _configStore.Load().Periods.VodPrivacy;
             videoId = await _uploadService
                 .UploadAsync(job.FilePath, job.Title, privacy, ct).ConfigureAwait(false);
@@ -489,6 +502,8 @@ public sealed class UploadQueue : IUploadQueue
             return;
         }
 
+        finally { coverageLease?.Dispose(); }
+
         // Nothing below this point may requeue the video: the remote service acknowledged it.
         var completedAtUtc = UtcNow();
         var durationSeconds = Math.Max(0, (completedAtUtc - startedAtUtc).TotalSeconds);
@@ -500,8 +515,10 @@ public sealed class UploadQueue : IUploadQueue
                     _assets.Upsert(new Models.PeriodAsset(job.Id, job.Date, job.PeriodNumber, job.Title,
                         SlotId: job.ResolvedSlotId, SlotLabel: job.ResolvedSlotLabel,
                         SlotKind: job.ResolvedSlotKind, SlotOrder: job.ResolvedSlotOrder, SourceKey: job.SourceKey));
-                _assets.MarkUploaded(job.Id, videoId, job.FileSizeBytes ?? TryGetFileSize(job.FilePath),
-                    Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath) ? 1 : 0);
+                _assets.MarkUploaded(job.Id, videoId, verifiedCoverage?.FileSizeBytes ?? job.FileSizeBytes ?? TryGetFileSize(job.FilePath),
+                    verifiedCoverage is not null ? 2 :
+                        Media.Mp4MediaSamples.HasUploadableVideo(job.FilePath) ? 1 : 0,
+                    verifiedCoverage);
             }
         }
         catch (Exception ex) { _log.Warn($"{job.ResolvedSlotLabel} 업로드 영수증 저장 지연: {ex.Message}"); }

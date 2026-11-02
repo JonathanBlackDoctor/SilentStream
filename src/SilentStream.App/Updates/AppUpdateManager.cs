@@ -80,6 +80,7 @@ public sealed class AppUpdateManager : IDisposable
     /// </summary>
     public async Task<bool> PrepareStartupUpdateAsync(CancellationToken ct = default)
     {
+        ct.ThrowIfCancellationRequested();
         if (_preservationHeld()) return false;
         try
         {
@@ -111,10 +112,12 @@ public sealed class AppUpdateManager : IDisposable
             _stagedVersion = version;
             UpdateStaged?.Invoke(version);
             if (_preservationHeld()) return false;
+            ct.ThrowIfCancellationRequested();
             manager.WaitExitThenApplyUpdates(pending, silent: true, restart: true);
             log.Info($"부팅 업데이트 준비 완료: v{version} 적용 후 앱을 자동으로 다시 시작합니다.");
             return true;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             _lastCheckUtc = DateTimeOffset.UtcNow;

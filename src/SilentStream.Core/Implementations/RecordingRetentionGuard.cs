@@ -12,6 +12,22 @@ public sealed class RecordingRetentionGuard(
         var receipts = assets.Snapshot(); // Any unreadable receipt must stop deletion, not imply success.
         var jobs = queue.Snapshot();
         var covered = new List<(DateTime Start, DateTime End)>();
+        // Existing acknowledgements keep their duplicate-prevention role elsewhere. Only
+        // version-2, file-bound decoded coverage grants deletion here, independently of the
+        // configured timetable (which may have changed since the recording was made).
+        foreach (var receipt in receipts)
+        {
+            var proof = receipt.VerifiedCoverage;
+            if (receipt.RequiresCoverageRevalidation || string.IsNullOrWhiteSpace(receipt.VideoId) ||
+                proof is null || proof.SourceStartLocal != segment.StartLocal ||
+                !string.Equals(Path.GetFullPath(proof.SourceFilePath), Path.GetFullPath(segment.FilePath), StringComparison.OrdinalIgnoreCase)) continue;
+            if (jobs.Any(j => j.SourceKey == receipt.SourceKey &&
+                (j.Status != UploadJobStatus.Completed || j.NeedsUploadReconciliation))) return false;
+            var start = proof.StartLocal < segment.StartLocal ? segment.StartLocal : proof.StartLocal;
+            var finish = proof.EndLocal > end ? end : proof.EndLocal;
+            if (finish > start) covered.Add((start, finish));
+        }
+        // Unresolved legacy jobs still protect the original, even without coverage metadata.
         for (var date = DateOnly.FromDateTime(segment.StartLocal); date <= DateOnly.FromDateTime(end); date = date.AddDays(1))
         {
             foreach (var slot in schedules.ResolveForDate(date).Periods)
@@ -22,9 +38,6 @@ public sealed class RecordingRetentionGuard(
                 var key = VodSegmentService.SourceKeyFor(segment, start, finish);
                 if (jobs.Any(j => j.SourceKey == key &&
                     (j.Status != UploadJobStatus.Completed || j.NeedsUploadReconciliation))) return false;
-                if (!receipts.Any(a => a.SourceKey == key && !string.IsNullOrWhiteSpace(a.VideoId) &&
-                    a.UploadValidationVersion >= 1 && a.UploadedFileSizeBytes >= 2048)) return false;
-                covered.Add((start < segment.StartLocal ? segment.StartLocal : start, finish > end ? end : finish));
             }
         }
         // No scheduled clip means there is no upload receipt for this original. Off-hours

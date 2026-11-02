@@ -21,6 +21,7 @@ public sealed class VodSegmentService : IVodSegmentService
     private readonly IProcessRunner _processRunner;
     private readonly ILogService _log;
     private readonly string _outputDir;
+    private readonly IVodMediaValidator _validator;
 
     public VodSegmentService(
         IRecordingSessionInfo sessionInfo, IProcessRunner processRunner, ILogService log)
@@ -30,12 +31,14 @@ public sealed class VodSegmentService : IVodSegmentService
 
     /// <summary>Test seam: redirect the VOD output directory.</summary>
     public VodSegmentService(
-        IRecordingSessionInfo sessionInfo, IProcessRunner processRunner, ILogService log, string outputDir)
+        IRecordingSessionInfo sessionInfo, IProcessRunner processRunner, ILogService log, string outputDir,
+        IVodMediaValidator? validator = null)
     {
         _sessionInfo = sessionInfo;
         _processRunner = processRunner;
         _log = log;
         _outputDir = outputDir;
+        _validator = validator ?? new VodMediaValidator(processRunner);
     }
 
     public Task<string?> ExtractPeriodAsync(PeriodBoundary period, CancellationToken ct)
@@ -66,9 +69,9 @@ public sealed class VodSegmentService : IVodSegmentService
             var key = SourceKeyFor(segment, period.StartLocal, period.EndLocal);
             if (queuedParts.Contains(key)) continue;
             var label = period.ResolvedSlotLabel + (segments.Length > 1 ? $"_{i + 1}-{segments.Length}" : "");
-            var path = await ExtractRangeAsync(new RecordingSession(segment.FilePath, segment.StartLocal),
+            var cut = await ExtractVerifiedRangeAsync(new RecordingSession(segment.FilePath, segment.StartLocal),
                 start, end, label, ct).ConfigureAwait(false);
-            if (path is not null) result.Add(new VodClip(path, key, start, end, i + 1, segments.Length));
+            if (cut is not null) result.Add(new VodClip(cut.Path, key, start, end, i + 1, segments.Length, cut.Coverage));
         }
         return result;
     }
@@ -82,6 +85,12 @@ public sealed class VodSegmentService : IVodSegmentService
     }
 
     public async Task<string?> ExtractRangeAsync(
+        RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
+        CancellationToken ct)
+        => (await ExtractVerifiedRangeAsync(session, startLocal, endLocal, fileBaseLabel, ct).ConfigureAwait(false))?.Path;
+
+    private sealed record ValidatedCut(string Path, VerifiedRecordingCoverage Coverage);
+    private async Task<ValidatedCut?> ExtractVerifiedRangeAsync(
         RecordingSession session, DateTime startLocal, DateTime endLocal, string fileBaseLabel,
         CancellationToken ct)
     {
@@ -138,9 +147,17 @@ public sealed class VodSegmentService : IVodSegmentService
                 return null;
             }
 
+            var actualStart = startLocal < session.StartLocal ? session.StartLocal : startLocal;
+            var verified = await _validator.VerifyAsync(session, actualStart, endLocal, outputPath, ct).ConfigureAwait(false);
+            if (verified is null)
+            {
+                _log.Warn($"{fileBaseLabel} 영상 범위/디코딩 검증 실패 — 원본을 보존하고 완성 후 다시 추출합니다.");
+                TryDelete(outputPath);
+                return null;
+            }
             _log.Info($"{fileBaseLabel} 컷 완료: {Path.GetFileName(outputPath)} " +
                      $"({new FileInfo(outputPath).Length / (1024.0 * 1024.0):F1} MB)");
-            return outputPath;
+            return new(outputPath, verified);
         }
         catch (OperationCanceledException)
         {
@@ -238,7 +255,9 @@ public sealed class VodSegmentService : IVodSegmentService
                     $"\"{piece}\"");
                 var (exitCode, output) = await _processRunner
                     .RunAsync(FfmpegLocator.Resolve(), args, CutTimeout, ct).ConfigureAwait(false);
-                if (exitCode != 0 || !File.Exists(piece) || new FileInfo(piece).Length == 0)
+                if (exitCode != 0 || !File.Exists(piece) || new FileInfo(piece).Length == 0 ||
+                    await _validator.VerifyAsync(new RecordingSession(segment.FilePath, segment.StartLocal),
+                        partStart, partEnd, piece, ct).ConfigureAwait(false) is null)
                 {
                     _log.Warn($"{fileBaseLabel}: recording part {i + 1} cut failed (exit={exitCode}). {Tail(output)}");
                     return null;
@@ -287,6 +306,12 @@ public sealed class VodSegmentService : IVodSegmentService
                 return null;
             }
 
+            if (!await _validator.VerifyJoinedAsync(outputPath, endLocal - startLocal, ct).ConfigureAwait(false))
+            {
+                _log.Warn($"{fileBaseLabel}: joined video could not prove complete decoded coverage.");
+                TryDelete(outputPath);
+                return null;
+            }
             _log.Info($"{fileBaseLabel}: joined {pieces.Count} recording parts into {Path.GetFileName(outputPath)}.");
             return outputPath;
         }
