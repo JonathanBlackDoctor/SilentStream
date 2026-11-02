@@ -1,0 +1,102 @@
+name: verify staged app 0.4.32
+on:
+  push:
+    branches: ["codex/release-0.4.32"]
+    paths: [".github/workflows/verify-staged-app-0.4.32.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: release-app-0.4.6
+  cancel-in-progress: false
+jobs:
+  verify-staged:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require successful release and corrected cross-platform CI
+        run: |
+          foreach ($run in @(41474235091,41475627394)) {
+            gh run watch $run --repo "$env:GITHUB_REPOSITORY" --exit-status --interval 10
+            if ($LASTEXITCODE -ne 0) { throw "Required CI failed: $run" }
+          }
+          git diff --exit-code 54d0eee72716e0e208419b3ac754da497201bf0d eca0c4c8dcb7f827a1ba746bd67055247a360f43 -- src
+          if ($LASTEXITCODE -ne 0) { throw 'Test correction changed packaged source.' }
+      - name: Verify all downloaded assets and embedded versions
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $commit = '54d0eee72716e0e208419b3ac754da497201bf0d'
+          New-Item -ItemType Directory -Path verification,downloaded -Force | Out-Null
+          $metadata = gh api "repos/$env:GITHUB_REPOSITORY/releases/431650749" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $metadata.draft -or $metadata.tag_name -ne 'v0.4.32' -or $metadata.target_commitish -ne $commit) { throw 'Draft identity mismatch.' }
+          $metadata | ConvertTo-Json -Depth 20 | Set-Content verification/release-before.json
+          gh release download v0.4.32 --repo "$env:GITHUB_REPOSITORY" --dir downloaded
+          if ($LASTEXITCODE -ne 0) { throw 'Draft download failed.' }
+          $required = @('MediaCaptureHelper-win-Setup.exe','MediaCaptureHelper-win-Portable.zip','MediaCaptureHelper-0.4.32-full.nupkg','releases.win.json','RELEASES','assets.win.json')
+          if (@($metadata.assets).Count -ne $required.Count) { throw 'Unexpected release asset count.' }
+          $hashes = @()
+          foreach ($name in $required) {
+            $file = Get-Item -LiteralPath (Join-Path downloaded $name)
+            $asset = @($metadata.assets | Where-Object name -eq $name)
+            if ($asset.Count -ne 1 -or $asset[0].size -ne $file.Length) { throw "Asset size mismatch: $name" }
+            $sha = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($asset[0].digest -ne "sha256:$sha") { throw "GitHub digest mismatch: $name" }
+            $hashes += @{ name=$name; size=$file.Length; sha256=$sha }
+          }
+          $feed = Get-Content downloaded/releases.win.json -Raw | ConvertFrom-Json
+          if (@($feed.Assets).Count -ne 1) { throw 'Unexpected feed entries.' }
+          $item = $feed.Assets[0]
+          if ($item.Version -ne '0.4.32' -or $item.Type -ne 'Full' -or $item.PackageId -ne 'MediaCaptureHelper' -or $item.FileName -ne 'MediaCaptureHelper-0.4.32-full.nupkg') { throw 'Feed identity mismatch.' }
+          $package = Get-Item -LiteralPath (Join-Path downloaded $item.FileName)
+          $sha1 = (Get-FileHash $package.FullName -Algorithm SHA1).Hash
+          $sha256 = (Get-FileHash $package.FullName -Algorithm SHA256).Hash
+          if ($item.Size -ne $package.Length -or $item.SHA1 -ne $sha1 -or $item.SHA256 -ne $sha256) { throw 'Feed hash or size mismatch.' }
+          $legacy = (Get-Content downloaded/RELEASES -Raw).Trim() -split '\s+'
+          if ($legacy.Count -ne 3 -or $legacy[0] -ne $sha1 -or $legacy[1] -ne $package.Name -or [long]$legacy[2] -ne $package.Length) { throw 'Legacy feed mismatch.' }
+          Get-Content downloaded/assets.win.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 10 | Set-Content verification/assets-index.json
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archives = @()
+          foreach ($archiveName in @($package.Name,'MediaCaptureHelper-win-Portable.zip')) {
+            $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $PWD "downloaded/$archiveName"))
+            try {
+              if (@($zip.Entries | Where-Object FullName -match '(^|/)inspection-update/').Count -gt 0) { throw 'Automatic helper import is forbidden.' }
+              $entry = @($zip.Entries | Where-Object FullName -match '(^|/)MediaCaptureHelper\.dll$')
+              if ($entry.Count -ne 1) { throw 'Application DLL missing or ambiguous.' }
+              $dll = Join-Path $PWD "verification/$archiveName.app.dll"
+              [IO.Compression.ZipFileExtensions]::ExtractToFile($entry[0],$dll)
+              $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($dll).ProductVersion
+              if ($version -notlike "0.4.32*$commit*") { throw "Unexpected application version: $version" }
+              $core = @($zip.Entries | Where-Object FullName -match '(^|/)MediaCaptureHelper.Core\.dll$')
+              if ($core.Count -ne 1) { throw 'Core DLL missing.' }
+              $s=$core[0].Open(); $h=[Security.Cryptography.SHA256]::Create()
+              try { $coreHash=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','').ToLowerInvariant() } finally { $s.Dispose(); $h.Dispose() }
+              $helper = @($zip.Entries | Where-Object FullName -match '(^|/)inspection-maintenance/inspection-agent-0\.4\.31\.zip$')
+              if ($helper.Count -ne 1) { throw 'Signed maintenance payload missing.' }
+              $s=$helper[0].Open(); $h=[Security.Cryptography.SHA256]::Create()
+              try { $helperHash=[BitConverter]::ToString($h.ComputeHash($s)).Replace('-','').ToLowerInvariant() } finally { $s.Dispose(); $h.Dispose() }
+              if ($helperHash -ne '846374e7bd060315d8ff48de0e341de743c1146a139ef4f1527f1d3145f846ce') { throw 'Signed helper payload changed.' }
+              $archives += @{archive=$archiveName;appVersion=$version;coreSha256=$coreHash;helperSha256=$helperHash}
+            } finally { $zip.Dispose() }
+          }
+          if ($archives[0].coreSha256 -ne $archives[1].coreSha256) { throw 'Portable and update Core assemblies differ.' }
+          @{release='v0.4.32';commit=$commit;files=$hashes;archives=$archives;feedsVerified=$true;installedOnDevice=$false} | ConvertTo-Json -Depth 8 | Set-Content verification/verification.json
+          Get-Content verification/verification.json
+      - name: Preserve verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-0.4.32-publication-verification
+          path: verification/*.json
+          if-no-files-found: error
