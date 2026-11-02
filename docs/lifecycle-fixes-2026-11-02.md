@@ -2,6 +2,8 @@
 
 Status: isolated implementation and regression verification complete; not deployed.
 
+Independent re-review of `c38e357` passed the three AAC acceptance windows and 36 focused tests, including preservation of the real 21-ms prefix gap. It also identified a normal 0.1–4.1-second window between keyframes that still failed extraction. The additional keyframe-preroll correction below is implemented and awaiting independent review; release remains held.
+
 ## Scope and base
 
 Branch: `codex/lifecycle-fixes-20261102`, based on `0517e2e461fa81666ee0bf9dd263df63e24f031b`.
@@ -58,6 +60,20 @@ To rerun, set `SSTREAM_AUDIT_FFMPEG` to an explicit FFmpeg test executable and o
 
 This is not a proof that the application has no other defects. Real signed-package installation, rollback after machine power loss, restart on school PCs, and a six-hour or multi-day production soak were deliberately not executed. The two unrelated Windows test projects were not run in this change; the affected app and its platform dependencies compiled.
 
-Full frame validation performs two video decodes and stores frame traces in memory. Performance at classroom resolution/hour-long duration during capture is not measured. Strict timestamp/coverage checks may conservatively defer valid but non-frame-aligned or irregular-timestamp clips, and legacy receipts retain originals until separately revalidated. This protects data but can increase disk use and delay VOD availability. Audio completeness is not newly certified by the video proof.
+Full frame validation performs two video decodes and stores frame traces in memory. Performance at classroom resolution/hour-long duration during capture is not measured. Strict timestamp/coverage checks may conservatively defer irregular-timestamp clips, and legacy receipts retain originals until separately revalidated. This protects data but can increase disk use and delay VOD availability. Audio completeness is not newly certified by the video proof.
+
+## Non-keyframe availability correction
+
+The same normal synthetic AAC original was passed through the actual base `0517e2e` service DLL and the `c38e357` service DLL using an isolated comparison harness. For 0.1–4.1 seconds, the base returned one clip while `c38e357` returned none. Frame hashes show that the base clip's first frame comes from source time **2.0213541667 seconds**, omitting **1.9213541667 seconds** of the requested prefix. The old clip has 63 video frames; the source window including its necessary keyframe preroll has 123. Thus the strict validator exposed an existing incomplete-copy defect while also making ordinary VOD requests unavailable.
+
+This is a normal code path, not a rare alignment promise: `FfmpegArgumentsBuilder` sets GOP to `EffectiveFps * 2`; `StreamOrchestrator` stamps recording/restart times with `DateTime.Now`; `PeriodScheduler` builds boundaries independently from the timetable. There is no quantization of recording starts to period/GOP boundaries. Field incidence was not measured, but ordinary fractional-second recording starts and subsequent encoder restarts can leave every period request off the GOP grid.
+
+The correction removes the output-side `-ss 0` that discarded the preceding keyframe and dependent frames. The video remains stream-copied, retaining the small early prefix already allowed by the cutter's documented D2 behavior. Validation uses `-noaccurate_seek` on the source trace to decode the identical preceding keyframe and compare all of its frames, including the frame straddling the requested start. There is no relaxed missing-frame/duration allowance and no re-encoding. Only the requested interval is stored as verified coverage, after the actual preserved frames prove it.
+
+On the identical comparison original, the corrected service returns one verified clip with the same SourceKey as the base and coverage exactly 0.1–4.1 seconds (at DateTime tick precision). Synthetic AAC regressions cover 0–4, 0–8, 2–6, 0.1–4.1, 1.9–5.9, 2.1–6.1 and 7.9–8 seconds; video-only nonaligned extraction also succeeds. The old incomplete `-ss 0` cut is explicitly rejected by the validator, and an active-session request entirely beyond the real EOF remains rejected. Existing short-video/long-audio, corruption, completed-source retry and receipt-retention cases remain included.
+
+The formerly missing 21-ms prefix of the 2–6-second AAC case is now physically present in the retained preroll, so that new clip can prove 2–6 seconds. Existing receipts are not promoted. Cost is the extra preceding GOP in the copied file and frame trace, normally up to about two seconds for this encoder; the VOD can visibly begin that much before the period. There is no full-video encoding cost. The previously noted full-decode validation cost still needs representative long-duration measurement.
+
+Comparison evidence is in sibling temp directory `silentstream-unaligned-comparison-20261102`: `base/result.json`, `current/result.json`, `preroll-fixed/result.json`, `baseline-comparison.json` and decoded frame traces. New regression results use `artifacts/test-results/unaligned-*.trx` and `artifacts/unaligned-regression/evidence/` in this worktree. No operational media or processes were used.
 
 Before release: review these changes, run a disposable installed-package update/rollback test and a synthetic hour-long workload on representative hardware with CPU/memory/disk measurements. Any school-PC restart, production upload, original deletion or deployment remains a separately authorized step. No deployment artifact or push was produced here.

@@ -105,13 +105,13 @@ public sealed class LifecycleRegressionTests
         var start = new DateTime(2026, 11, 2, 10, 0, 0);
         var service = new VodSegmentService(new CompletedSession(source, start, start.AddSeconds(8)), runner, new Log(), Path.Combine(dir, "clips"));
         var results = new List<object>();
-        foreach (var (from, to) in new[] { (0, 4), (0, 8), (2, 6) })
+        foreach (var (from, to) in new[] { (0d, 4d), (0d, 8d), (2d, 6d), (0.1d, 4.1d), (1.9d, 5.9d), (2.1d, 6.1d), (7.9d, 8d) })
         {
             var boundary = new PeriodBoundary(DateOnly.FromDateTime(start), 1, start.AddSeconds(from), start.AddSeconds(to));
             var clip = Assert.Single(await service.ExtractPeriodPartsAsync(boundary, new HashSet<string>(), default));
             var proof = Assert.IsType<VerifiedRecordingCoverage>(clip.VerifiedCoverage);
             Assert.True(proof.MatchesFile(clip.FilePath));
-            Assert.InRange(proof.StartLocal, boundary.StartLocal, boundary.StartLocal.AddTicks(TimeSpan.TicksPerSecond / 30));
+            Assert.Equal(boundary.StartLocal, proof.StartLocal); // actual preroll now covers a straddling frame
             Assert.Equal(boundary.EndLocal, proof.EndLocal);
             var catalogPath = Path.Combine(dir, $"catalog-{from}-{to}.json");
             var catalog = new PeriodAssetCatalog(catalogPath);
@@ -123,6 +123,16 @@ public sealed class LifecycleRegressionTests
                 .CanDelete(new RecordingSegment(source, start, start.AddSeconds(8))));
             results.Add(new { from, to, proof.StartLocal, proof.EndLocal });
         }
+        // The old output-side seek silently drops the prefix until the next keyframe.
+        // It must remain invalid even though the corrected cutter now succeeds for this window.
+        var unsafeCut = Path.Combine(dir, "legacy-missing-prefix.mp4");
+        Assert.Equal(0, (await runner.RunAsync("", $"-hide_banner -y -ss 0.1 -i \"{source}\" -ss 0 -t 4 -c copy -avoid_negative_ts make_zero -movflags +faststart \"{unsafeCut}\"", TimeSpan.FromSeconds(15), default)).ExitCode);
+        Assert.True(Mp4MediaSamples.HasUploadableVideo(unsafeCut));
+        Assert.Null(await new VodMediaValidator(runner).VerifyAsync(new(source, start), start.AddSeconds(0.1), start.AddSeconds(4.1), unsafeCut, default));
+        // Retaining preroll must not resurrect the old beyond-EOF false-success bug.
+        var activeService = new VodSegmentService(new Session(source, start), runner, new Log(), Path.Combine(dir, "clips"));
+        Assert.Empty(await activeService.ExtractPeriodPartsAsync(new(DateOnly.FromDateTime(start), 1,
+            start.AddSeconds(8.5), start.AddSeconds(9.5)), new HashSet<string>(), default));
         File.WriteAllText(Path.Combine(dir, "result.json"), JsonSerializer.Serialize(results));
     }
 
@@ -162,7 +172,7 @@ public sealed class LifecycleRegressionTests
     [FfmpegTheory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Video_coverage_not_audio_duration_or_shifted_keyframe_controls_acceptance(bool longAudio)
+    public async Task Short_video_is_rejected_but_healthy_unaligned_copy_retains_its_preroll(bool longAudio)
     {
         var dir = NewDir("coverage-boundary");
         var source = Path.Combine(dir, "source.mp4");
@@ -177,7 +187,14 @@ public sealed class LifecycleRegressionTests
         var boundary = new PeriodBoundary(DateOnly.FromDateTime(start), 1,
             longAudio ? start : start.AddMilliseconds(100),
             longAudio ? start.AddSeconds(4) : start.AddMilliseconds(1100));
-        Assert.Empty(await service.ExtractPeriodPartsAsync(boundary, new HashSet<string>(), default));
+        var clips = await service.ExtractPeriodPartsAsync(boundary, new HashSet<string>(), default);
+        if (longAudio) Assert.Empty(clips);
+        else
+        {
+            var clip = Assert.Single(clips);
+            Assert.Equal(boundary.StartLocal, clip.VerifiedCoverage!.StartLocal);
+            Assert.Equal(boundary.EndLocal, clip.VerifiedCoverage.EndLocal);
+        }
         Assert.True(File.Exists(source));
     }
 

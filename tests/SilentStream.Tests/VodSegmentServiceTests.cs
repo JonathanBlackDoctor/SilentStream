@@ -47,7 +47,7 @@ public class VodSegmentServiceTests : IDisposable
         Assert.Equal(60d, ParseArg(_runner.LastArgs, "-ss"), 3);
         Assert.Equal(3000d, ParseArg(_runner.LastArgs, "-t"), 3);
         Assert.Contains("-c copy", _runner.LastArgs);
-        Assert.Contains($"-i \"{sessionFile}\" -ss 0", _runner.LastArgs);
+        Assert.DoesNotContain($"-i \"{sessionFile}\" -ss 0", _runner.LastArgs); // retain keyframe preroll
         Assert.Contains(sessionFile, _runner.LastArgs);
     }
 

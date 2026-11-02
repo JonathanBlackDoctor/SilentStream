@@ -125,9 +125,10 @@ public sealed class VodSegmentService : IVodSegmentService
             // still being written and shorter than requested, copy stops at EOF (best-effort).
             $"-ss {Seconds(startOffset)}",
             $"-i \"{session.FilePath}\"",
-            // Stream-copy input seeking can preserve packets before the seek target, even
-            // beyond EOF. Discard those negative-time packets before normalizing timestamps.
-            "-ss 0",
+            // Preserve the preceding keyframe and its dependent frames. An output-side -ss 0
+            // discards them and can silently lose the requested prefix until the NEXT keyframe.
+            // Source-frame validation below rejects beyond-EOF copies; discarding preroll is
+            // neither necessary nor safe. The small early prefix is allowed by the VOD design.
             $"-t {Seconds(duration)}",
             "-c copy", "-avoid_negative_ts make_zero", "-movflags +faststart",
             $"\"{outputPath}\"");

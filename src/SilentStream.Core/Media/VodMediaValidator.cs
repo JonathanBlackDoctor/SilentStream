@@ -25,7 +25,9 @@ public sealed class VodMediaValidator(IProcessRunner runner) : IVodMediaValidato
         if (stableOutput.Length < 2048 || end <= start) return null;
         var from = (start - source.StartLocal).TotalSeconds;
         var until = (end - source.StartLocal).TotalSeconds;
-        var sourceTrace = await TraceAsync($"-copyts -ss {Number(from)} -i \"{source.FilePath}\" -to {Number(until)}", ct);
+        // Decode the same keyframe preroll retained by the stream copy. Accurate input seek
+        // would discard the frame straddling the requested start, leaving its prefix unproven.
+        var sourceTrace = await TraceAsync($"-copyts -noaccurate_seek -ss {Number(from)} -i \"{source.FilePath}\" -to {Number(until)}", ct);
         var outputTrace = await TraceAsync($"-copyts -i \"{outputPath}\"", ct);
         var requestedStart = (start - source.StartLocal).Ticks;
         var requestedEnd = (end - source.StartLocal).Ticks;
