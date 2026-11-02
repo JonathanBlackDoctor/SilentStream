@@ -13,7 +13,7 @@ public interface IVodMediaValidator
 }
 
 /// <summary>Decode video (not container/audio duration), reject decoder errors, and match every
-/// output frame against the requested source window. A duration-only check cannot detect a shifted
+/// requested source frame inside the output. A duration-only check cannot detect a shifted
 /// stream-copy start. No GOP-sized shortfall allowance: uncertain coverage is retried/preserved.</summary>
 public sealed class VodMediaValidator(IProcessRunner runner) : IVodMediaValidator
 {
@@ -27,13 +27,21 @@ public sealed class VodMediaValidator(IProcessRunner runner) : IVodMediaValidato
         var until = (end - source.StartLocal).TotalSeconds;
         var sourceTrace = await TraceAsync($"-copyts -ss {Number(from)} -i \"{source.FilePath}\" -to {Number(until)}", ct);
         var outputTrace = await TraceAsync($"-copyts -i \"{outputPath}\"", ct);
-        if (sourceTrace is null || outputTrace is null || !sourceTrace.SameFrames(outputTrace)) return null;
+        var requestedStart = (start - source.StartLocal).Ticks;
+        var requestedEnd = (end - source.StartLocal).Ticks;
+        if (sourceTrace is null || outputTrace is null ||
+            !sourceTrace.ContainsRequestedFrames(outputTrace, requestedStart, requestedEnd)) return null;
         // Absolute source PTS anchors coverage. Ceil start / floor end so tick conversion never
         // grants permission for an unobserved interval; no arbitrary 1-2 second tolerance.
         var verifiedStart = source.StartLocal.AddTicks(sourceTrace.StartTicks);
         var verifiedEnd = source.StartLocal.AddTicks(sourceTrace.EndTicks);
-        if (verifiedStart > start || verifiedEnd < end) return null;
-        return new(Path.GetFullPath(source.FilePath), source.StartLocal, start, end, stableOutput.Length,
+        if (verifiedEnd < end) return null;
+        // AAC priming / a non-frame-aligned seek can place the first selected frame just after
+        // the requested boundary. Accept the clip, but NEVER certify that unobserved prefix.
+        // A full missing frame is still a failed extraction; this is not a duration tolerance.
+        if (verifiedStart > start && verifiedStart.Ticks - start.Ticks >= sourceTrace.FirstFrameDurationTicks) return null;
+        return new(Path.GetFullPath(source.FilePath), source.StartLocal, verifiedStart > start ? verifiedStart : start,
+            end, stableOutput.Length,
             Convert.ToHexString(await SHA256.HashDataAsync(stableOutput, ct)));
     }
 
@@ -46,7 +54,9 @@ public sealed class VodMediaValidator(IProcessRunner runner) : IVodMediaValidato
     private async Task<FrameTrace?> TraceAsync(string input, CancellationToken ct)
     {
         var (code, text) = await runner.RunAsync(FfmpegLocator.Resolve(),
-            $"-hide_banner -v error -xerror {input} -map 0:v:0 -an -fps_mode passthrough -f framemd5 -", Timeout, ct)
+            // Preserve the demuxer's timebase: rounding AAC-shifted PTS to 1/fps can change
+            // frame durations/counts at a cut boundary and falsely reject healthy media.
+            $"-hide_banner -v error -xerror {input} -map 0:v:0 -an -enc_time_base demux -fps_mode passthrough -f framemd5 -", Timeout, ct)
             .ConfigureAwait(false);
         return code == 0 ? FrameTrace.Parse(text) : null;
     }
@@ -58,11 +68,31 @@ public sealed class VodMediaValidator(IProcessRunner runner) : IVodMediaValidato
         private decimal Ticks(long pts) => (decimal)pts * Numerator * TimeSpan.TicksPerSecond / Denominator;
         public long StartTicks => checked((long)decimal.Ceiling(Ticks(Frames[0].Pts)));
         public long EndTicks => checked((long)decimal.Floor(Ticks(Frames[^1].Pts + Frames[^1].Duration)));
-        public bool SameFrames(FrameTrace other) => Frames.Count == other.Frames.Count &&
-            Frames.Zip(other.Frames).All(pair => pair.First.Size == pair.Second.Size &&
-                pair.First.Hash == pair.Second.Hash &&
-                Math.Abs(Ticks(pair.First.Pts - Frames[0].Pts) - other.Ticks(pair.Second.Pts - other.Frames[0].Pts)) < 1 &&
-                Math.Abs(Ticks(pair.First.Duration) - other.Ticks(pair.Second.Duration)) < 1);
+        public decimal FirstFrameDurationTicks => Ticks(Frames[0].Duration);
+        public bool ContainsRequestedFrames(FrameTrace output, long requestedStart, long requestedEnd)
+        {
+            if (Frames.Count > output.Frames.Count) return false;
+            for (var offset = 0; offset <= output.Frames.Count - Frames.Count; offset++)
+            {
+                var anchor = output.Frames[offset].Pts;
+                // Map output PTS to source PTS using the matched frame, never container duration.
+                decimal SourceTicks(long outputPts) => Ticks(Frames[0].Pts) + output.Ticks(outputPts - anchor);
+                if (offset > 0 && SourceTicks(output.Frames[offset - 1].Pts + output.Frames[offset - 1].Duration) > requestedStart) continue;
+                var after = offset + Frames.Count;
+                if (after < output.Frames.Count && SourceTicks(output.Frames[after].Pts) < requestedEnd) continue;
+                var matches = true;
+                for (var i = 0; i < Frames.Count; i++)
+                {
+                    var expected = Frames[i]; var actual = output.Frames[offset + i];
+                    if (expected.Size != actual.Size || expected.Hash != actual.Hash ||
+                        Math.Abs(Ticks(expected.Pts - Frames[0].Pts) - output.Ticks(actual.Pts - anchor)) >= 1 ||
+                        Math.Abs(Ticks(expected.Duration) - output.Ticks(actual.Duration)) >= 1)
+                    { matches = false; break; }
+                }
+                if (matches) return true;
+            }
+            return false;
+        }
 
         public static FrameTrace? Parse(string text)
         {

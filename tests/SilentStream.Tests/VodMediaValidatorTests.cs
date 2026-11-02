@@ -24,6 +24,27 @@ public sealed class VodMediaValidatorTests : IDisposable
     [Fact] public async Task Same_duration_but_shifted_or_different_frames_are_rejected()=>Assert.False(await Verify(Trace(Frame(0),Frame(1)),Trace(Frame(0,"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),Frame(1))));
     [Fact] public async Task Missing_frame_or_timestamp_gap_is_rejected()=>Assert.False(await Verify(Trace(Frame(0),Frame(2)),Trace(Frame(0),Frame(2)),3));
     [Fact] public async Task A_later_source_start_is_not_relabelled_as_full_coverage()=>Assert.False(await Verify(Trace(Frame(1),Frame(2)),Trace(Frame(0),Frame(1))));
+    [Fact] public async Task Extra_boundary_frames_do_not_invalidate_all_matched_requested_frames()
+    {
+        Assert.True(await Verify(Trace(Frame(0), Frame(1)), Trace(Frame(0), Frame(1), Frame(2))));
+        Assert.True(await Verify(Trace(Frame(0), Frame(1)), Trace(
+            Frame(-1, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), Frame(0), Frame(1), Frame(2))));
+    }
+    [Fact] public async Task An_extra_output_frame_does_not_certify_a_short_source()
+        => Assert.False(await Verify(Trace(Frame(0)), Trace(Frame(0), Frame(1))));
+    [Fact] public async Task A_missing_requested_frame_is_not_rescued_by_extra_frames_after_the_window()
+        => Assert.False(await Verify(Trace(Frame(0), Frame(1, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")), Trace(Frame(0), Frame(1), Frame(2))));
+    [Fact] public async Task Subframe_source_offset_is_recorded_not_waived_in_the_receipt()
+    {
+        var output = Path.Combine(_dir, "clip.mp4"); File.WriteAllBytes(output, new byte[4096]);
+        var source = "#tb 0: 1/4\n0, 1, 1, 4, 100, aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n0, 5, 5, 4, 100, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        var clip = "#tb 0: 1/4\n0, 0, 0, 4, 100, aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n0, 4, 4, 4, 100, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        var proof = await new VodMediaValidator(new Runner(source, clip)).VerifyAsync(
+            new(Path.Combine(_dir, "source.mp4"), _start), _start, _start.AddSeconds(2), output, default);
+        Assert.NotNull(proof);
+        Assert.Equal(_start.AddMilliseconds(250), proof!.StartLocal);
+        Assert.Equal(_start.AddSeconds(2), proof.EndLocal);
+    }
     [Fact] public async Task Equivalent_rational_timebases_are_compared_without_a_GOP_tolerance()
     {
         var source = "#tb 0: 1/3\n" + string.Join("\n", Enumerable.Range(0, 3).Select(i => Frame(i)));

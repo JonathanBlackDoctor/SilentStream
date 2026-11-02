@@ -97,6 +97,36 @@ public sealed class LifecycleRegressionTests
     }
 
     [FfmpegFact]
+    public async Task Healthy_aac_fragment_accepts_requested_windows_and_persists_only_proven_coverage()
+    {
+        var dir = NewDir("healthy-aac"); var source = Path.Combine(dir, "source.mp4");
+        var runner = new RealFfmpeg();
+        Assert.Equal(0, (await runner.RunAsync("", $"-hide_banner -y -f lavfi -i testsrc2=size=160x120:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 8 -c:v libx264 -preset ultrafast -g 60 -bf 0 -c:a aac -movflags +frag_keyframe+empty_moov \"{source}\"", TimeSpan.FromSeconds(20), default)).ExitCode);
+        var start = new DateTime(2026, 11, 2, 10, 0, 0);
+        var service = new VodSegmentService(new CompletedSession(source, start, start.AddSeconds(8)), runner, new Log(), Path.Combine(dir, "clips"));
+        var results = new List<object>();
+        foreach (var (from, to) in new[] { (0, 4), (0, 8), (2, 6) })
+        {
+            var boundary = new PeriodBoundary(DateOnly.FromDateTime(start), 1, start.AddSeconds(from), start.AddSeconds(to));
+            var clip = Assert.Single(await service.ExtractPeriodPartsAsync(boundary, new HashSet<string>(), default));
+            var proof = Assert.IsType<VerifiedRecordingCoverage>(clip.VerifiedCoverage);
+            Assert.True(proof.MatchesFile(clip.FilePath));
+            Assert.InRange(proof.StartLocal, boundary.StartLocal, boundary.StartLocal.AddTicks(TimeSpan.TicksPerSecond / 30));
+            Assert.Equal(boundary.EndLocal, proof.EndLocal);
+            var catalogPath = Path.Combine(dir, $"catalog-{from}-{to}.json");
+            var catalog = new PeriodAssetCatalog(catalogPath);
+            catalog.Upsert(new PeriodAsset("test", boundary.Date, 1, "synthetic", SourceKey: clip.SourceKey));
+            catalog.MarkUploaded("test", "fake-id", proof.FileSizeBytes, 2, proof);
+            var restored = new PeriodAssetCatalog(catalogPath);
+            Assert.Equal(proof, restored.Find("test")!.VerifiedCoverage);
+            Assert.Equal(from == 0 && to == 8, new RecordingRetentionGuard(restored, new Queue(), new PeriodScheduleStore())
+                .CanDelete(new RecordingSegment(source, start, start.AddSeconds(8))));
+            results.Add(new { from, to, proof.StartLocal, proof.EndLocal });
+        }
+        File.WriteAllText(Path.Combine(dir, "result.json"), JsonSerializer.Serialize(results));
+    }
+
+    [FfmpegFact]
     public async Task Growing_fragmented_original_must_remain_protected_after_short_clip_receipt()
     {
         var dir=NewDir("growing-receipt");var source=Path.Combine(dir,"growing.mp4");

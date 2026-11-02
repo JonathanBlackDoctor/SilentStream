@@ -30,8 +30,8 @@ Windows, .NET SDK 8.0.426, actual test FFmpeg `N-125119-g4bbb7d9b99-20260619`; b
 
 Final related test-project runs:
 
-- `SilentStream.Tests`: **713 passed, 0 failed, 0 skipped**.
-- `SilentStream.Inspection.Tests`: **97 passed, 0 failed, 0 skipped**. Synthetic FFmpeg/named-pipe cases were enabled, not skipped.
+- `SilentStream.Tests`: **717 passed, 0 failed, 0 skipped**.
+- `SilentStream.Inspection.Tests`: **98 passed, 0 failed, 0 skipped**. Synthetic FFmpeg/named-pipe cases were enabled, not skipped.
 - `SilentStream.App` build: **0 errors, 0 warnings**, no application execution.
 - `git diff --check`: clean.
 
@@ -41,7 +41,16 @@ Evidence remains under the local temp directories:
 
 - `silentstream-lifecycle-audit-20261102/audit-manifest.json`: baseline source hashes, release/base, tools and safety boundary.
 - That directory's `results/lifecycle-audit.trx` and `results/growing-original-640-audit.trx`: failing baseline reproductions.
-- This worktree's `artifacts/test-results/full-core.trx`, `full-inspection.trx` and `artifacts/regression/evidence/`: final test results and synthetic media/process logs.
+- This worktree's `artifacts/test-results/full-core.trx`, `full-inspection.trx` and `artifacts/regression/evidence/`: initial fix test results and synthetic media/process logs.
+- `artifacts/test-results/aac-before.trx`: the independent review's healthy-AAC regression reproduced against the initial fix. `aac-after-focused.trx` has all 12 lifecycle regressions passing. `aac-full-core.trx` and `aac-full-inspection.trx` are the final **815 passing** tests after the AAC correction. `artifacts/aac-regression-after/evidence/` contains the new synthetic run evidence.
+
+## Independent-review AAC correction
+
+Review of `af054701` found a release-blocking regression: normal H.264/AAC 48-kHz fragmented MP4 cuts were rejected by whole-trace frame-count equality. The initial synthetic acceptance tests had no ordinary AAC soundtrack, so they missed this case. A new test first reproduced failure against `af054701`, then passed after correction for 0–4, 0–8 and 2–6 seconds of a completed 8-second recording.
+
+The validator now preserves the demuxer's timebase instead of rounding timestamps to 1/fps. Every selected source frame must still appear in order with equal decoded hash, size, relative timestamp and duration. Additional decoded frames are permitted only outside the requested window after mapping to source time; they cannot replace a missing requested frame or extend short-source evidence. Decoder errors and internal timestamp gaps still reject the cut.
+
+AAC timing can put the first selected frame slightly after a requested seek boundary. A prefix smaller than the measured first-frame duration can yield an accepted clip, but that prefix is excluded from its receipt: the 2–6 second fixture records **2.0213542–6 seconds**, not 2–6. One full missing frame is still rejected. This is a narrower verified interval, not a waived duration deficit. Persistence and retention tests confirm that partial receipts do not release the full original, whereas the verified 0–8 second receipt does. Short video with long audio, corrupted payload, shifted keyframes, completed-source retry and all previous retention safeguards pass again. Independent re-review is still pending; no deployment was performed.
 
 To rerun, set `SSTREAM_AUDIT_FFMPEG` to an explicit FFmpeg test executable and optionally `SSTREAM_REGRESSION_OUTPUT` to an isolated output directory, then run `dotnet test` for the two projects above. FFmpeg cases explicitly skip if that environment variable is missing. Do not point fixtures at operational recordings or catalogs.
 
