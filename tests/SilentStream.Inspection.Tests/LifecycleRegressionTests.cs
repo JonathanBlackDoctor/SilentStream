@@ -262,7 +262,16 @@ public sealed class LifecycleRegressionTests
     [Fact]
     public async Task Writer_fault_still_waits_for_other_writer_before_disposing_pipe()
     {
-        using var pipe = new NamedPipeServerStream("writer-drain-" + Guid.NewGuid().ToString("N"), PipeDirection.Out);
+        var pipeName = "writer-drain-" + Guid.NewGuid().ToString("N");
+        using var pipe = new NamedPipeServerStream(pipeName, PipeDirection.Out, 1,
+            PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+        using var reader = new NamedPipeClientStream(".", pipeName, PipeDirection.In, PipeOptions.Asynchronous);
+        using var connectTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(pipe.WaitForConnectionAsync(connectTimeout.Token), reader.ConnectAsync(connectTimeout.Token));
+        // Unix creates the pipe handle on connection; reading it before connection throws.
+        // Acquire it before installing the deliberately incomplete writer task so fixture
+        // setup failures cannot deadlock EncoderPipeline.Dispose while draining that task.
+        var handle = pipe.SafePipeHandle;
         using var encoder = new EncoderPipeline(DispatchProxy.Create<IScreenCaptureSource, NoopProxy>(),
             DispatchProxy.Create<IAudioMixer, NoopProxy>(), null!, new Log(), new ProcessRunner());
         var audioDrained = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -270,7 +279,6 @@ public sealed class LifecycleRegressionTests
         Set("_audioPipe", pipe);
         Set("_videoWriterTask", Task.FromException(new IOException("synthetic writer failure")));
         Set("_audioWriterTask", audioDrained.Task);
-        var handle = pipe.SafePipeHandle;
         var stop = encoder.StopAsync();
         try
         {

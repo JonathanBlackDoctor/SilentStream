@@ -27,7 +27,7 @@ jobs:
       - name: Test
         run: |
           dotnet test tests/SilentStream.Tests/SilentStream.Tests.csproj -c Release
-          dotnet test tests/SilentStream.Inspection.Tests/SilentStream.Inspection.Tests.csproj -c Release
+          dotnet test tests/SilentStream.Inspection.Tests/SilentStream.Inspection.Tests.csproj -c Release --blame-hang-timeout 2m --logger "console;verbosity=normal"
       - name: Compile Windows media project (cross-targeting)
         run: dotnet build src/SilentStream.Media.Windows/SilentStream.Media.Windows.csproj -c Release
 
